@@ -53,3 +53,53 @@ button { cursor: pointer; border: 0; }
 @media (max-width: 760px) { .calendar-intro, .portfolio-intro { align-items: flex-start; flex-direction: column; margin-bottom: 20px; }.calendar-layout, .portfolio-layout { grid-template-columns: 1fr; }.day-planner, .project-detail-panel { position: static; }.portfolio-summary { grid-template-columns: repeat(2, 1fr); }.portfolio-summary .replan-button { grid-column: 1 / -1; }.calendar-cell { min-height: 86px; padding: 7px 5px; }.calendar-pill { padding: 3px 4px; font-size: 9px; }.month-card-head { padding: 17px 14px 14px; }.month-hint { display: none; } }
 @media (max-width: 650px) { .sidebar { display: none; }.main-content { margin: 0; width: 100%; padding: 0 18px 40px; }.topbar { height: 69px; }.mobile-menu { display: grid; }.date-control { gap: 2px; }.date-control button { display: none; }.date-control div { min-width: 95px; }.topbar-actions .icon-button { display: none; }.topbar-actions .primary-button { font-size: 11px; padding: 9px 10px; }.hero-row { padding: 42px 0 28px; }.hero-row h1 { font-size: 36px; letter-spacing: -2px; }.hero-description { font-size: 13px; }.timeline-panel, .coach-panel { border-radius: 14px; }.timeline-panel { padding: 22px 16px; }.task-card { grid-template-columns: 45px 12px minmax(0,1fr); gap: 7px; }.task-actions { position: absolute; right: 0; top: 13px; }.task-main { padding: 19px 54px 19px 0; }.task-title-row { display: block; }.duration { margin-top: 4px; }.quick-check { left: 65px; }.add-slot { margin-left: 64px; }.coach-panel { padding: 20px; }.plan-modal, .checkin-modal, .memory-modal { padding: 29px 20px 20px; border-radius: 16px; }.memory-actions .primary-button { margin-left: 0; }.memory-toast { right: 14px; bottom: 14px; width: calc(100% - 28px); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
+
+/* 담당 범위: 프로젝트·단계별 할 일·캘린더 일정·기억 CRUD */
+.placeholder-workspace, .memory-workspace { padding: 52px 0 30px; }
+.placeholder-workspace h1 { margin: 0 0 14px; font-size: clamp(30px, 4vw, 48px); letter-spacing: -2px; }
+.placeholder-workspace > p:last-child { color: var(--muted); }
+.memory-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.memory-card { min-height: 180px; padding: 18px; border: 1px solid rgba(210,220,212,.95); border-radius: 15px; background: rgba(255,255,255,.76); display: flex; flex-direction: column; justify-content: space-between; }
+.memory-card > div, .list-heading { display: flex; align-items: center; justify-content: space-between; }
+.memory-card p { margin: 21px 0; font-size: 16px; line-height: 1.6; }
+.memory-card small { color: var(--muted); font-size: 11px; }
+.empty-state { margin: 16px 0; padding: 24px 14px; border: 1px dashed #ccd6ce; border-radius: 12px; color: var(--muted); text-align: center; font-size: 12px; }
+.full-spaced { width: 100%; margin-top: 9px; }
+.project-legend { display: flex; flex-wrap: wrap; gap: 7px 13px; margin: 15px 0 18px; color: #5f6d66; font-size: 10px; }
+.project-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.project-legend i, .project-color-dot { width: 9px; height: 9px; flex: 0 0 auto; display: inline-block; border-radius: 50%; }
+.project-name-row h3 { display: flex; align-items: center; gap: 7px; }
+.calendar-pill.project { border-left: 4px solid; background: #f2f3f0; color: #46524c; }
+.day-planner .selected-plan-list div { display: flex; align-items: center; gap: 9px; }
+.day-planner .selected-plan-list div > span:not(.row-actions) { display: grid; gap: 2px; flex: 1; }
+.day-planner .selected-plan-list small { color: var(--muted); font-size: 10px; }
+.row-actions { display: inline-flex; align-items: center; gap: 3px; }
+.row-actions button { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; background: transparent; color: #68746e; }
+.row-actions button:hover { color: var(--violet); background: #efefff; }
+.project-progress-card { width: 100%; }
+.project-detail-panel { border-top-color: var(--violet); }
+.detail-goal { margin: 20px 0; color: #56635d; font-size: 13px; line-height: 1.6; }
+.milestone-list { margin: 23px 0 16px; }
+.milestone-list h3 { margin: 0; font-size: 14px; }
+.milestone-row { display: flex; align-items: center; gap: 9px; padding: 11px 0; border-bottom: 1px solid #e7ece7; }
+.milestone-row > span:nth-child(2) { display: grid; flex: 1; gap: 3px; }
+.milestone-row strong { font-size: 12px; }
+.milestone-row small { color: var(--muted); font-size: 10px; }
+.milestone-status { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%; background: #aab3ae; }
+.milestone-status.in_progress { background: var(--violet); }
+.milestone-status.done { background: #4aab70; }
+.milestone-status.deferred { background: #df8320; }
+.data-modal { width: min(100%, 510px); max-height: min(760px, calc(100vh - 40px)); overflow-y: auto; position: relative; padding: 34px; background: #fbfcf9; border: 1px solid white; border-radius: 19px; box-shadow: 0 24px 80px rgba(16,24,19,.25); }
+.data-modal h2 { margin: 0 0 18px; font-size: 26px; letter-spacing: -1px; }
+.data-modal label { display: grid; gap: 7px; margin: 13px 0; color: #56635d; font-size: 12px; font-weight: 700; }
+.data-modal input, .data-modal textarea, .data-modal select { width: 100%; padding: 10px 11px; border: 1px solid #dfe5df; outline: none; border-radius: 9px; color: var(--ink); background: white; font: inherit; font-size: 13px; font-weight: 400; }
+.data-modal input:focus, .data-modal textarea:focus, .data-modal select:focus { border-color: #9290e9; box-shadow: 0 0 0 3px #ededff; }
+.form-date-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.data-modal .checkbox-label { display: flex; align-items: center; gap: 8px; }
+.data-modal .checkbox-label input { width: auto; }
+.month-nav { width: 34px; height: 34px; border-radius: 8px; background: #f0f2ef; color: var(--ink); font-size: 22px; line-height: 1; }
+.month-nav:hover { background: #e8e9ff; color: var(--violet-dark); }
+.form-error { margin: 10px 0; padding: 10px 12px; border-radius: 9px; background: #fff0f0; color: #a13d3d; font-size: 12px; }
+.mobile-nav { display: none; }
+.secondary-button:disabled { cursor: not-allowed; opacity: .5; }
+@media (max-width: 650px) { .data-modal { padding: 29px 20px 20px; }.form-date-grid { grid-template-columns: 1fr; gap: 0; }.memory-grid { grid-template-columns: 1fr; }.mobile-nav { position: absolute; z-index: 8; top: 62px; left: 18px; right: 18px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: white; box-shadow: var(--shadow); }.mobile-nav button { padding: 10px; border-radius: 8px; background: #f2f4f1; color: #56635d; font-weight: 700; }.mobile-nav button.active { background: #e8e9ff; color: var(--violet-dark); } }
