@@ -2,7 +2,7 @@
 
 프로젝트 일정, 단계별 할 일, 캘린더, 기억을 한곳에서 관리하고 AI에게 프로젝트 계획 초안을 요청할 수 있는 플래너입니다.
 
-현재 데이터는 브라우저 `localStorage`에 저장됩니다. AI 계획은 **초안 생성 → 사용자 검토 → 단계별 할 일 반영** 순서로 동작하며, 생성만으로는 저장되지 않습니다.
+현재 데이터는 브라우저 `localStorage`에 저장됩니다. **Supabase와 로그인 기능은 아직 없습니다.** AI 계획은 **초안 생성 → 사용자 검토 → 단계별 할 일 반영** 순서로 동작하며, 생성만으로는 저장되지 않습니다.
 
 ## 기술 스택
 
@@ -83,23 +83,54 @@ npm run dev
 | `npm run preview` | 빌드 결과 미리보기 |
 | `python3 -m unittest discover -s server/tests -v` | FastAPI·OpenAI 계획 로직 테스트 |
 
-## 현재 구현 범위
+## 현재 상태
 
-- 프로젝트·단계별 할 일 CRUD
-- 캘린더 일정 CRUD
-- 기억 CRUD
-- 프로젝트별 AI 계획 초안 생성 및 검토 후 반영
-- 전체 계획 화면용 달성률·마감일·위험도 표시
+구현됨:
 
-## 협업 규칙
+- 브라우저에 저장되는 프로젝트·할 일·캘린더·기억 관리
+- AI 계획 초안 생성 → 사용자 확인 → 할 일 반영
 
-1. 작업 전 최신 `main` 브랜치를 받습니다.
-2. 기능별 브랜치에서 작업합니다. 현우 작업 브랜치는 `hw/...` 이름을 사용합니다.
-3. 프론트엔드 테스트, 백엔드 테스트, 빌드를 모두 확인합니다.
-4. 작업 내용을 Pull Request로 올려 검토한 뒤 `main`에 병합합니다.
+아직 안 됨:
 
-## 향후 예정
+- Supabase, 로그인·회원가입, 사용자별 DB 저장
+- 달성률·마감일·위험도 API
+- LangGraph 채팅·전체 재조정·AI 기억 승인
 
-- Supabase Auth 및 데이터베이스 연동
-- LangGraph 기반 복합 계획·재계획 흐름
-- AI 제안 변경사항의 세부 편집 및 승인 기록
+## 팀 작업 기준
+
+지금 단계에서는 Supabase를 사용하지 않습니다. 각자 만든 기능을 합칠 수 있도록 **localStorage 키와 객체 필드 이름을 똑같이 사용합니다.**
+
+### localStorage 키
+
+| 저장 데이터 | 키 | 타입 |
+| --- | --- | --- |
+| 프로젝트 | `replan-projects-v1` | `Project[]` |
+| 단계별 할 일 | `replan-milestones-v1` | `Milestone[]` |
+| 캘린더 일정 | `replan-events-v1` | `CalendarEvent[]` |
+| 기억 | `replan-memories-v1` | `Memory[]` |
+
+### 객체 필드 이름
+
+- `Project`: `id`, `title`, `goal`, `startDate`, `dueDate`, `priority`, `status`
+- `Milestone`: `id`, `projectId`, `title`, `startDate`, `dueDate`, `estimatedHours`, `status`
+- `CalendarEvent`: `id`, `title`, `date`, `startTime`, `endTime`, `projectId`, `isFixed`
+- `Memory`: `id`, `content`, `category`, `source`, `createdAt`
+
+값도 아래 문자열로 통일합니다.
+
+- `priority`: `high | medium | low`
+- 프로젝트 `status`: `active | completed | paused`
+- 할 일 `status`: `todo | in_progress | done | deferred`
+- `category`: `availability | preference | priority | context`
+- `source`: `user | ai_approved`
+- `CalendarEvent.projectId`만 선택값이며, 나머지 필드는 필수입니다.
+
+꼭 지킬 것:
+
+1. 위 이름을 그대로 사용하고 비슷한 이름의 키나 필드를 새로 만들지 않습니다.
+2. 필드 이름은 `camelCase`를 사용합니다. 예: `startDate`, `projectId`.
+3. 날짜는 `YYYY-MM-DD`, 시간은 `HH:mm`, `id`는 문자열로 저장합니다.
+4. 스키마 기준은 `src/shared/types.ts`입니다. 바꿔야 하면 먼저 팀에 알리고 이 파일부터 함께 수정합니다.
+5. 작업 전 최신 `main`에서 새 브랜치를 만들고, 작업 후 테스트와 빌드를 확인해 Pull Request를 올립니다.
+
+> 현재 데이터는 각자의 브라우저에 따로 저장됩니다. 브라우저끼리 데이터를 공유하는 기능은 아직 없습니다.
