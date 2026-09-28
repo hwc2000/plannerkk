@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './styles.css'
 import { AppShell } from './app/AppShell'
 import { AiPlanningView } from './features/ai-planning/AiPlanningView'
@@ -17,6 +17,8 @@ import {
   TODAY,
 } from './shared/constants'
 import { useStoredState } from './shared/storage'
+import { ExecutionView } from './features/execution/ExecutionView'
+import { executionApi, planCalendarEvents } from './features/execution/api'
 import type {
   CalendarEvent,
   Editor,
@@ -26,6 +28,7 @@ import type {
   Milestone,
   Project,
   View,
+  ExecutionState,
 } from './shared/types'
 
 function App() {
@@ -38,6 +41,15 @@ function App() {
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '')
   const [editor, setEditor] = useState<Editor>(null)
   const [notice, setNotice] = useState('')
+  const [execution, setExecution] = useState<ExecutionState | null>(null)
+  const [executionError, setExecutionError] = useState('')
+  async function loadExecution() {
+    setExecutionError('')
+    try { setExecution(await executionApi()) }
+    catch (error) { setExecutionError(error instanceof Error ? error.message : '실행 프로필을 불러오지 못했습니다.') }
+  }
+  useEffect(() => { void loadExecution() }, [])
+  const generatedEvents = planCalendarEvents(execution?.plan ?? null, projects)
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0]
 
   function removeProject(projectId: string) {
@@ -119,12 +131,18 @@ function App() {
       activeView={activeView}
       onChangeView={setActiveView}
       onCreateProject={() => setEditor({ kind: 'project' })}
-      onShowSettingsNotice={() => setNotice('설정은 다음 단계에서 연결합니다.')}
+      onShowSettingsNotice={() => setActiveView('execution')}
       projectCount={projects.length}
       notice={notice}
       onCloseNotice={() => setNotice('')}
       editor={entityForm}
     >
+      {activeView === 'execution' && (execution ? <ExecutionView
+        state={execution} onChange={setExecution} projects={projects} milestones={milestones} events={events}
+      /> : <section className="execution-card"><h1>실행 프로필과 주간 계획</h1>
+        <p role={executionError ? 'alert' : 'status'}>{executionError || '저장된 프로필을 불러오는 중입니다…'}</p>
+        {executionError && <button className="primary-button" onClick={() => { void loadExecution() }}>다시 불러오기</button>}
+      </section>)}
       {activeView === 'today' && (
         <AiPlanningView
           projects={projects}
@@ -139,7 +157,9 @@ function App() {
         <CalendarView
           projects={projects}
           milestones={milestones}
-          events={events}
+          events={[...events, ...generatedEvents]}
+          readOnlyEventIds={generatedEvents.map(event => event.id)}
+          onOpenExecution={() => setActiveView('execution')}
           selectedDate={selectedDate}
           setSelectedDate={setSelectedDate}
           onCreateEvent={(date) => setEditor({ kind: 'event', date })}

@@ -1,4 +1,4 @@
-export type View = 'today' | 'calendar' | 'memory' | 'portfolio'
+export type View = 'today' | 'calendar' | 'memory' | 'portfolio' | 'execution'
 
 export type ProjectStatus = 'active' | 'completed' | 'paused'
 export type MilestoneStatus = 'todo' | 'in_progress' | 'done' | 'deferred'
@@ -52,3 +52,58 @@ export type Editor = {
 } | null
 
 export type Entity = Project | Milestone | CalendarEvent | Memory
+
+export type ExecutionAnswers = {
+  roles: string[]
+  regularity: string
+  barriers: string[]
+  focusMinutes: number | null
+  dailyMinutes: number | null
+  energy: string
+  recovery: string
+  constraints: string
+  context: string
+}
+
+export type ExecutionProfile = {
+  id: string
+  schemaVersion: string
+  createdAt: string
+  source: 'demo' | 'llm'
+  status: 'draft' | 'confirmed'
+  facts: ExecutionAnswers
+  planningPreferences: {
+    blockMinutes: number
+    breakMinutes: number
+    bufferPercent: number
+    dailyPlannedMinutes: number | null
+    scheduleStyle: string
+    recoveryPreference: string
+    starterMinutes: number | null
+    status: string
+  }
+  insights: {
+    summary: string
+    strategies: Array<{ action: string; reason: string; evidence: string[] }>
+    followUpQuestions: string[]
+  }
+}
+
+export type AvailabilitySlot = { day: number; hour: number }
+export type PlannerSettings = { slots: AvailabilitySlot[]; view: 'timeline' | 'checklist' }
+export type ExecutionTask = { title: string; minutes: number; doneWhen: string; dueDate: string | null }
+export type ExecutionEntry = ExecutionTask & {
+  id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean
+}
+export type ExecutionPlan = {
+  id: string; profileId: string; projectId: string | null
+  project: Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'> | null
+  goal: string; startDate: string; endDate: string; timezone: string
+  status: 'draft' | 'confirmed'; slots: AvailabilitySlot[]
+  entries: ExecutionEntry[]; pendingTasks: Array<ExecutionTask & { reason: string }>
+}
+export type ExecutionState = {
+  revision: number; profile: ExecutionProfile | null; profileDraft: ExecutionProfile | null
+  settings: PlannerSettings; plan: ExecutionPlan | null; planDraft: ExecutionPlan | null
+  llmAvailable: boolean; model: string
+}

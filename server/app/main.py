@@ -1,8 +1,13 @@
 import os
+from pathlib import Path
 from typing import Protocol
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from .execution_api import execution_router
+from .execution_store import ConflictError
 
 from .planner import (
     PlanDraft,
@@ -17,9 +22,21 @@ class PlanGenerator(Protocol):
     async def generate(self, request: PlanDraftRequest) -> object: ...
 
 
-def create_app(generator: PlanGenerator | None = None) -> FastAPI:
+def create_app(generator: PlanGenerator | None = None, execution_store=None, execution_llm=None) -> FastAPI:
     app = FastAPI(title="PlannerKK API")
+    app.include_router(execution_router(execution_store, execution_llm))
 
+    @app.exception_handler(ConflictError)
+    async def conflict_error(request, exc):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(PlanGenerationError)
+    async def generation_error(request, exc):
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+    @app.exception_handler(ValueError)
+    async def value_error(request, exc):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -105,6 +122,10 @@ def create_app(generator: PlanGenerator | None = None) -> FastAPI:
                 except Exception:
                     pass
 
+    # Optional single-server local preview after `npm run build`.
+    dist = Path(__file__).resolve().parents[2] / "dist"
+    if dist.is_dir():
+        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
     return app
 
 
