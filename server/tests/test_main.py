@@ -66,6 +66,14 @@ class PlanDraftApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
 
+    def test_project_overview_endpoint_survives_execution_integration(self):
+        with TestClient(create_app(generator=FakeGenerator())) as client:
+            response = client.get("/api/projects/project-1/overview")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["projectId"], "project-1")
+        # Completed estimated hours: 15 of 35.
+        self.assertEqual(response.json()["progressPercent"], 43)
+
     def test_returns_structured_plan_without_persisting_it(self):
         client = TestClient(create_app(generator=FakeGenerator()))
         response = client.post(
