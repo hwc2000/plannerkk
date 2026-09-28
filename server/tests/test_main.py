@@ -140,3 +140,16 @@ class PlanDraftApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LegacyProjectRequestTests(unittest.TestCase):
+    def test_full_project_from_older_client_is_accepted(self):
+        payload = {**PlanDraftApiTests.request_payload, "project": {**PlanDraftApiTests.request_payload["project"], "priority":"high", "status":"active"}}
+        response = TestClient(create_app(generator=FakeGenerator())).post("/api/ai/plan-draft", json=payload)
+        self.assertEqual(response.status_code, 200)
+
+    def test_invalid_input_has_readable_detail(self):
+        payload = {**PlanDraftApiTests.request_payload, "goal":"a"}
+        response = TestClient(create_app(generator=FakeGenerator())).post("/api/ai/plan-draft", json=payload)
+        self.assertEqual(response.status_code, 422)
+        self.assertIsInstance(response.json()["detail"], str)

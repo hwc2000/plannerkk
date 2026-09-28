@@ -97,11 +97,22 @@ export async function requestPlanDraft(input: {
   const response = await fetch('/api/ai/plan-draft', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      goal: input.goal,
+      project: {
+        id: input.project.id, title: input.project.title, goal: input.project.goal,
+        startDate: input.project.startDate, dueDate: input.project.dueDate,
+      },
+      existingTasks: input.existingTasks.map(({title, startDate, dueDate, estimatedHours, status}) =>
+        ({title, startDate, dueDate, estimatedHours, status})),
+    }),
   })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const detail = typeof payload.detail === 'string' ? payload.detail : 'AI 계획을 만들지 못했습니다.'
+    const detail = typeof payload.detail === 'string' ? payload.detail
+      : response.status === 422
+        ? '입력 내용을 확인해 주세요. 요청은 3자 이상, 프로젝트 목표와 기간은 필수이며 기존 할 일의 예상 시간은 0보다 커야 합니다.'
+        : 'AI 계획을 만들지 못했습니다.'
     throw new Error(detail)
   }
   const draft = normalizePlanDraft(payload)

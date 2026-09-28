@@ -4,6 +4,7 @@ from typing import Protocol
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .execution_api import execution_router
@@ -25,6 +26,12 @@ class PlanGenerator(Protocol):
 def create_app(generator: PlanGenerator | None = None, execution_store=None, execution_llm=None) -> FastAPI:
     app = FastAPI(title="PlannerKK API")
     app.include_router(execution_router(execution_store, execution_llm))
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, exc):
+        fields = {"goal": "요청 내용 또는 프로젝트 목표", "startDate": "시작일", "dueDate": "마감일", "estimatedHours": "예상 시간", "title": "제목"}
+        labels = sorted({fields.get(str(e["loc"][-1]), "입력 항목") for e in exc.errors()})
+        return JSONResponse(status_code=422, content={"detail": "입력값을 확인해 주세요: " + ", ".join(labels) + ". 요청은 3자 이상이며 날짜와 예상 시간을 확인해 주세요."})
 
     @app.exception_handler(ConflictError)
     async def conflict_error(request, exc):

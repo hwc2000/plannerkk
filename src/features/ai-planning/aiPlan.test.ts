@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { draftTasksToMilestones, ensureDraftWithinProject, normalizePlanDraft } from './aiPlan'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { draftTasksToMilestones, ensureDraftWithinProject, normalizePlanDraft, requestPlanDraft } from './aiPlan'
 
 const project = {
   id: 'project-1',
@@ -142,4 +142,19 @@ describe('draftTasksToMilestones', () => {
       }],
     })).toThrow('AI 계획 응답')
   })
+})
+
+
+afterEach(() => vi.unstubAllGlobals())
+it('sends only the server project context fields', async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ok:true,json:async()=>({summary:'계획',tasks:[{title:'작업',startDate:project.startDate,dueDate:project.dueDate,estimatedHours:1}]})})
+  vi.stubGlobal('fetch',fetchMock)
+  const fullProject = {...project,title:'프로젝트',goal:'완료하기',priority:'high',status:'active'}
+  await requestPlanDraft({goal:'계획을 만들어줘',project:fullProject,existingTasks:[]})
+  const sent = JSON.parse(fetchMock.mock.calls[0][1].body)
+  expect(Object.keys(sent.project).sort()).toEqual(['id','title','goal','startDate','dueDate'].sort())
+})
+it('explains request validation failures', async () => {
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:false,status:422,json:async()=>({detail:[{type:'string_too_short'}]})}))
+  await expect(requestPlanDraft({goal:'a',project:{...project,title:'프로젝트',goal:'완료'},existingTasks:[]})).rejects.toThrow('3자 이상')
 })

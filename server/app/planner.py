@@ -34,6 +34,14 @@ class PlanDraft(BaseModel):
 class ProjectContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def accept_ui_metadata(cls, value):
+        # Older clients send the complete Project, including presentation fields.
+        if isinstance(value, dict):
+            return {k: v for k, v in value.items() if k not in {"priority", "status"}}
+        return value
+
     id: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=120)
     goal: str = Field(min_length=1, max_length=1000)
