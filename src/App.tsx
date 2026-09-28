@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import './styles.css'
 import { AppShell } from './app/AppShell'
+import { AiPlanningView } from './features/ai-planning/AiPlanningView'
+import { draftTasksToMilestones, type AiPlanDraft } from './features/ai-planning/aiPlan'
 import { CalendarView } from './features/calendar/CalendarView'
 import { EventForm } from './features/calendar/EventForm'
 import { MemoryForm } from './features/memories/MemoryForm'
@@ -48,6 +50,24 @@ function App() {
     )))
     setSelectedProjectId(projects.find((item) => item.id !== projectId)?.id ?? '')
     setNotice('프로젝트를 삭제했습니다.')
+  }
+
+  function applyAiDraft(projectId: string, draft: AiPlanDraft) {
+    const project = projects.find((item) => item.id === projectId)
+    if (!project) {
+      setNotice('프로젝트가 변경되었습니다. AI 계획 초안을 다시 요청해주세요.')
+      return
+    }
+    let generated: Milestone[]
+    try {
+      generated = draftTasksToMilestones(project, draft)
+    } catch (caught) {
+      setNotice(caught instanceof Error ? caught.message : 'AI 계획 초안을 반영하지 못했습니다.')
+      return
+    }
+    setMilestones((items) => [...items, ...generated])
+    setSelectedProjectId(projectId)
+    setNotice(`AI 초안의 단계별 할 일 ${generated.length}개를 반영했습니다.`)
   }
 
   function saveEntity(kind: EntityKind, value: Entity) {
@@ -106,11 +126,13 @@ function App() {
       editor={entityForm}
     >
       {activeView === 'today' && (
-        <section className="placeholder-workspace">
-          <p className="eyebrow">TODAY</p>
-          <h1>오늘 계획은 다음 단계에서 연결합니다.</h1>
-          <p>현재 브랜치는 프로젝트·단계별 할 일·캘린더 일정·기억 CRUD만 담당합니다.</p>
-        </section>
+        <AiPlanningView
+          projects={projects}
+          milestones={milestones}
+          selectedProjectId={selectedProject?.id ?? ''}
+          onSelectProject={setSelectedProjectId}
+          onApply={applyAiDraft}
+        />
       )}
 
       {activeView === 'calendar' && (
