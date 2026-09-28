@@ -4,6 +4,9 @@
 
 현재 데이터는 브라우저 `localStorage`에 저장됩니다. AI 계획은 **초안 생성 → 사용자 검토 → 단계별 할 일 반영** 순서로 동작하며, 생성만으로는 저장되지 않습니다.
 
+> **현재 Supabase 프로젝트, Supabase Auth, 데이터베이스 스키마 및 migration은 아직 없습니다.**
+> 프로젝트·일정·기억 CRUD는 로컬 UI 프로토타입이며, 로그인 사용자별 서버 저장 기능으로 오해하면 안 됩니다.
+
 ## 기술 스택
 
 - React + TypeScript + Vite
@@ -85,21 +88,44 @@ npm run dev
 
 ## 현재 구현 범위
 
-- 프로젝트·단계별 할 일 CRUD
-- 캘린더 일정 CRUD
-- 기억 CRUD
+- 브라우저 `localStorage` 기반 프로젝트·단계별 할 일 CRUD
+- 브라우저 `localStorage` 기반 캘린더 일정 CRUD
+- 브라우저 `localStorage` 기반 기억 CRUD
 - 프로젝트별 AI 계획 초안 생성 및 검토 후 반영
-- 전체 계획 화면용 달성률·마감일·위험도 표시
+- FastAPI 상태 확인 및 AI 계획 초안 API
+
+## 아직 구현되지 않은 범위
+
+- Supabase 프로젝트와 공용 개발 환경
+- Supabase Auth 기반 로그인·회원가입 및 사용자 세션
+- DB 스키마, RLS 정책 및 migration
+- `user_profiles` 성향 온보딩
+- 프로젝트·마일스톤·일정·기억의 서버/DB CRUD
+- 전체 계획 화면용 달성률·마감일·위험도 계산 API
+- LangGraph `PlannerState`, DB 컨텍스트 로드, 채팅 및 전체 재조정 흐름
+- AI 기억 후보 생성·사용자 승인 저장과 검증 실패 재생성 순환
+
+## 데이터베이스 도입 전 협업 기준
+
+Supabase가 아직 없으므로 팀원이 각자 별도 테이블을 구현하지 않습니다. 먼저 [Supabase 도입 및 데이터 계약](docs/architecture/supabase-foundation.md)을 검토·합의한 뒤 공용 프로젝트와 최초 migration을 만듭니다.
+
+- 합의 전 Supabase 대시보드에서 테이블을 임의 생성하지 않습니다.
+- Supabase 생성 이후에는 `supabase/migrations/*.sql`을 스키마의 기준으로 사용합니다.
+- `main`에 병합된 migration을 수정하지 않고 새 migration을 추가합니다.
+- 팀 작업 순서와 PR 규칙은 [DB 협업 워크플로](docs/collaboration/database-workflow.md)를 따릅니다.
+- 서비스 키와 실제 환경변수는 Git에 커밋하지 않습니다.
 
 ## 협업 규칙
 
 1. 작업 전 최신 `main` 브랜치를 받습니다.
 2. 기능별 브랜치에서 작업합니다. 현우 작업 브랜치는 `hw/...` 이름을 사용합니다.
-3. 프론트엔드 테스트, 백엔드 테스트, 빌드를 모두 확인합니다.
-4. 작업 내용을 Pull Request로 올려 검토한 뒤 `main`에 병합합니다.
+3. 공용 타입, API, DB 계약을 바꿀 때 관련 문서와 migration을 함께 갱신합니다.
+4. 프론트엔드 테스트, 백엔드 테스트, 빌드를 모두 확인합니다.
+5. 작업 내용을 Pull Request로 올려 검토한 뒤 `main`에 병합합니다.
+6. squash 병합된 이전 기능 브랜치를 다시 `main`에 병합하지 않습니다.
 
 ## 향후 예정
 
-- Supabase Auth 및 데이터베이스 연동
+- Supabase 기반 인증·RLS·데이터베이스 연동
 - LangGraph 기반 복합 계획·재계획 흐름
 - AI 제안 변경사항의 세부 편집 및 승인 기록
