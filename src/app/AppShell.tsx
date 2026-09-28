@@ -30,9 +30,11 @@ const mobileNavigation: ReadonlyArray<readonly [View, string]> = [
   ['calendar', '캘린더'],
   ['memory', '기억'],
   ['portfolio', '전체 계획'],
+  ['execution', '실행 프로필·주간 계획'],
 ]
 
 function viewTitle(view: View) {
+  if (view === 'execution') return '실행 프로필·주간 계획'
   if (view === 'portfolio') return '전체 계획'
   if (view === 'calendar') return '캘린더'
   if (view === 'memory') return '기억 관리'
@@ -60,6 +62,9 @@ export function AppShell({
           <span>re:plan</span>
         </div>
         <nav className="nav-list" aria-label="주요 메뉴">
+          <button className={`nav-item ${activeView === 'execution' ? 'active' : ''}`} onClick={() => onChangeView('execution')}>
+            <Sparkles size={18} />실행 프로필·주간 계획
+          </button>
           <button className={`nav-item ${activeView === 'today' ? 'active' : ''}`} onClick={() => onChangeView('today')}>
             <LayoutDashboard size={18} />오늘
           </button>
@@ -92,7 +97,7 @@ export function AppShell({
           </button>
           <div className="date-control">
             <CalendarDays size={17} />
-            <div><span>LOCAL CRUD</span><strong>{viewTitle(activeView)}</strong></div>
+            <div><span>PERSONAL PLANNER</span><strong>{viewTitle(activeView)}</strong></div>
           </div>
           <button className="primary-button compact" onClick={onCreateProject}>
             <Plus size={16} />새 프로젝트

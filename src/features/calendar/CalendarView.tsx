@@ -15,6 +15,8 @@ type CalendarViewProps = {
   onCreateMilestone: (projectId: string) => void
   onEditEvent: (id: string) => void
   onDeleteEvent: (id: string) => void
+  readOnlyEventIds?: string[]
+  onOpenExecution?: () => void
 }
 
 export function CalendarView({
@@ -27,6 +29,8 @@ export function CalendarView({
   onCreateMilestone,
   onEditEvent,
   onDeleteEvent,
+  readOnlyEventIds = [],
+  onOpenExecution,
 }: CalendarViewProps) {
   const selectedDateValue = new Date(`${selectedDate}T00:00:00`)
   const [visibleYear, setVisibleYear] = useState(selectedDateValue.getFullYear())
@@ -130,12 +134,13 @@ export function CalendarView({
               <div key={`${entry.type}-${entry.id}`}>
                 <i style={{ backgroundColor: entry.color }} />
                 <span>{entry.label}<small>{entry.suffix}</small></span>
-                {entry.type === 'event' && (
+                {entry.type === 'event' && !readOnlyEventIds.includes(entry.id) && (
                   <span className="row-actions">
                     <button onClick={() => onEditEvent(entry.id)} aria-label="일정 수정"><Pencil size={14} /></button>
                     <button onClick={() => onDeleteEvent(entry.id)} aria-label="일정 삭제"><Trash2 size={14} /></button>
                   </span>
                 )}
+                {entry.type === 'event' && readOnlyEventIds.includes(entry.id) && <button className="secondary-button" onClick={onOpenExecution}>주간 계획</button>}
               </div>
             ))}
             {!entries(selectedDate).length && <span className="empty-day">등록된 항목이 없습니다.</span>}

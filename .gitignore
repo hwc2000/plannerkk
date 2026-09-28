@@ -1,4 +1,7 @@
 node_modules/
+data/
+.integration-backup/
+.pnpm-store/
 dist/
 __pycache__/
 *.py[cod]
