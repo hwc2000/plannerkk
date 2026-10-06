@@ -5,7 +5,6 @@ A의 사용자 컨텍스트와 B의 실행 결과를 받아 계획 생성·재�
 - `state.py` 그래프 실행 상태 · `graph.py` 그래프 · `context.py` 변환 경계 · `ports.py` 생성기·저장소 경계
 - `llm_generator.py` 실제 LLM 축소 생성기 · `local.py` 로컬 DB 어댑터 · `api.py` `/api/adaptive/*`
 팀원 C의 State 계약과 연동 경계: [adaptive-planner-state-contract.md](adaptive-planner-state-contract.md)
-할 일 목록: [roadmap.md](roadmap.md)
 
 > 이 문서의 소유 범위는 팀원 C의 `PlannerState`, 계획 생성·복구, 검증·승인 흐름이다. A의 `UserProfile`과 B의 `ExecutionRecord`·`ProfileUpdateProposal`은 각 담당자가 확정하며, 현재 코드는 독립 검증용 임시 어댑터만 제공한다.
 
