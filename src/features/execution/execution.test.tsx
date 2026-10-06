@@ -4,10 +4,10 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { AvailabilityGrid } from './AvailabilityGrid'
 import { ProfileForm } from './ProfileForm'
-import { planCalendarEvents } from './api'
-import type { AvailabilitySlot, ExecutionPlan } from '../../shared/types'
+import { approveProposalAndReplan, planCalendarEvents } from './api'
+import type { AvailabilitySlot, ExecutionPlan, ExecutionState } from '../../shared/types'
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 describe('execution onboarding and availability',()=>{
   it('selects and deselects weekly hours without duplicates',()=>{
     function Harness(){const [slots,setSlots]=useState<AvailabilitySlot[]>([]);return <AvailabilityGrid slots={slots} onChange={setSlots}/>}
@@ -39,5 +39,71 @@ describe('calendar bridge',()=>{
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({id:'execution:week1:task1',title:'✓ 문제 풀기',date:'2030-01-07',startTime:'18:00',endTime:'18:25'})
     expect(planCalendarEvents({...plan,status:'draft'},[])).toEqual([])
+  })
+})
+
+describe('profile proposal replan flow', () => {
+  it('uses the approval response revision for the replan request', async () => {
+    const settings = { slots: [{ day: 0, hour: 18 }], view: 'timeline' as const }
+    const plan = {
+      id: 'week1', profileId: 'old', projectId: null, project: null, goal: '시험 공부',
+      startDate: '2030-01-07', endDate: '2030-01-13', timezone: 'Asia/Seoul', status: 'confirmed',
+      slots: settings.slots, entries: [], pendingTasks: [],
+    } as ExecutionPlan
+    const state = { revision: 4, settings, plan } as unknown as ExecutionState
+    const approved = { revision: 5, settings, plan }
+    const replanned = { revision: 6, settings, plan, planDraft: { ...plan, id: 'draft1', profileId: 'new', status: 'draft' } }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => approved })
+      .mockResolvedValueOnce({ ok: true, json: async () => replanned })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await approveProposalAndReplan(state, 'proposal-1', {
+      goal: plan.goal, startDate: plan.startDate, consent: true, project: null,
+      existingTasks: [], events: [{ date: '2030-01-08', startTime: '19:00', endTime: '20:00' }],
+    })
+
+    expect(result.revision).toBe(6)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/proposals/proposal-1/approve')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ revision: 4 })
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/execution/plan')
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
+      revision: 5, profileChangeProposalId: 'proposal-1', consent: true,
+      goal: '시험 공부', startDate: '2030-01-07',
+    })
+  })
+
+  it('retries an approved proposal without approving it again', async () => {
+    const settings = { slots: [{ day: 0, hour: 18 }], view: 'timeline' as const }
+    const plan = {
+      id: 'week1', profileId: 'old', projectId: null, project: null, goal: '시험 공부',
+      startDate: '2030-01-07', endDate: '2030-01-13', timezone: 'Asia/Seoul', status: 'confirmed',
+      slots: settings.slots, entries: [], pendingTasks: [],
+    } as ExecutionPlan
+    const state = {
+      revision: 5, settings, plan,
+      profileUpdateProposals: [{ id: 'proposal-1', status: 'approved', appliedProfileId: 'new' }],
+    } as unknown as ExecutionState
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ ...state, revision: 6 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await approveProposalAndReplan(state, 'proposal-1', {
+      goal: plan.goal, startDate: plan.startDate, consent: true, project: null, existingTasks: [], events: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/plan')
+  })
+
+  it('does not approve before replan consent is given', async () => {
+    const settings = { slots: [], view: 'timeline' as const }
+    const state = { revision: 4, settings, plan: { id: 'week1' } } as unknown as ExecutionState
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(approveProposalAndReplan(state, 'proposal-1', {
+      goal: '시험 공부', startDate: '2030-01-07', consent: false, project: null, existingTasks: [], events: [],
+    })).rejects.toThrow('동의')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

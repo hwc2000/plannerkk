@@ -1,5 +1,5 @@
 """Adaptive planner: routes new-plan, recovery and review requests through one graph."""
-from .context import to_execution_context
+from .context import to_execution_context, to_profile_change_context
 from .graph import build_adaptive_planner_graph
 from .ports import PlanConflictError, PlanWriter
 from .state import (
@@ -20,4 +20,5 @@ __all__ = [
     "RecoveryTask",
     "build_adaptive_planner_graph",
     "to_execution_context",
+    "to_profile_change_context",
 ]

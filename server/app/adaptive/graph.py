@@ -6,13 +6,13 @@ bounded.  The injected generator (later an LLM) only writes draft content, and
 its output is validated before anyone can approve it.
 
 Connected today:
+- new_plan / replan: full-plan generator creates a reviewable plan_draft
 - recovery / shrink: LLM splits the task, code places the pieces in free time
   (generate → validate → bounded retry)
 - recovery / reschedule: code moves the remaining work into free time; when it
   cannot all fit before the deadline, the LLM cuts the scope to what fits and
   code places it (fit_deadline)
-- review of a waiting draft: approve (re-validate → PlanWriter), reject, revise
-new_plan and replan are routed but end in ``route_not_connected``.
+- review of a waiting recovery draft: approve (re-validate → PlanWriter), reject, revise
 
 The graph is stateless between requests: a waiting draft and its
 revision_count are stored by the caller and passed back in for review, so the
@@ -35,6 +35,7 @@ from .state import (
     CurrentTaskModel,
     ExecutionContextModel,
     PlannerState,
+    ProfileChangeContextModel,
     RequestModel,
     ScheduleContextModel,
 )
@@ -50,6 +51,7 @@ from .validation import (
 )
 
 RecoveryGenerator = Callable[[PlannerState], Mapping[str, Any]]
+FullPlanGenerator = Callable[[PlannerState], Mapping[str, Any]]
 
 GENERATION_UNAVAILABLE = "generation_unavailable"
 
@@ -75,6 +77,7 @@ def _initialize(policy: RecoveryPolicy):
         return {
             "route": None,
             "draft": None,
+            "plan_draft": None,
             "validation_errors": [],
             "retry_count": 0,
             "retry_limit": policy.max_retries,
@@ -82,7 +85,6 @@ def _initialize(policy: RecoveryPolicy):
             "fit_limits": None,
             "fallback": None,
             "approval_status": "not_required",
-            "profile_update_proposal": None,
             "error": None,
         }
 
@@ -122,6 +124,7 @@ def _input_errors(state: PlannerState) -> tuple[list[str], list[str]]:
         ("check_in", CheckInSignalModel, request == "recovery"),
         ("execution_context", ExecutionContextModel, False),
         ("schedule_context", ScheduleContextModel, False),
+        ("profile_change_context", ProfileChangeContextModel, False),
     )
     for section, model, required in sections:
         raw_value = state.get(section)
@@ -132,9 +135,11 @@ def _input_errors(state: PlannerState) -> tuple[list[str], list[str]]:
         _collect_errors(model, raw_value, section, missing_fields, invalid_fields)
 
     required: list[str] = []
-    if request == "new_plan":
-        # A new plan without the user's context would be a generic plan.
+    if request in {"new_plan", "replan"}:
+        # A full plan without the user's context would be generic.
         required.append("planning_context")
+    if request == "replan":
+        required.append("profile_change_context")
     if request == "review":
         required.append("decision")
         if reviews_draft:
@@ -245,6 +250,8 @@ def _placement_precheck(state: PlannerState) -> dict[str, Any] | None:
 
 
 def _strategy_precheck(state: PlannerState, strategy: str, policy: RecoveryPolicy) -> dict[str, Any] | None:
+    if strategy == "replan" and not state.get("planning_context"):
+        return _request_input(missing_fields=["planning_context"])
     if strategy == "shrink":
         return _shrink_precheck(state, policy)
     if strategy == "reschedule":
@@ -285,8 +292,8 @@ def _analyze_execution(policy: RecoveryPolicy):
                 missing_fields=missing_fields,
                 invalid_fields=invalid_fields,
             )
-        if state["request"] == "new_plan":
-            return {"route": "new_plan"}
+        if state["request"] in {"new_plan", "replan"}:
+            return {"route": state["request"]}
         if state["request"] == "review":
             return _analyze_review(state, policy)
 
@@ -312,12 +319,53 @@ def _after_analysis(state: PlannerState) -> str:
         return "finish"
     if state["route"] == "review" and state["decision"] == "reject":
         return "reject_draft"
+    if state["route"] in {"new_plan", "replan"}:
+        return "generate_full_plan"
     strategy = state.get("strategy")
+    if strategy == "replan":
+        return "generate_full_plan"
     if strategy not in {"shrink", "reschedule"}:
         return "unsupported_route"
     if state["route"] == "review" and state["decision"] == "approve":
         return "validate_approval"
     return "generate_recovery" if strategy == "shrink" else "plan_reschedule"
+
+
+def _generate_full_plan(generator: FullPlanGenerator | None):
+    def node(state: PlannerState) -> dict[str, Any]:
+        if generator is None:
+            return _fallback(state, source="route_not_connected",
+                             reason="전체 계획 생성 경로가 연결되지 않았습니다.")
+        try:
+            plan_draft = dict(generator(state))
+        except GenerationUnavailableError:
+            return {
+                "plan_draft": None, "error": GENERATION_UNAVAILABLE,
+                **_fallback(state, source=GENERATION_UNAVAILABLE,
+                            reason="AI 서비스를 사용할 수 없어 계획 초안을 만들지 못했습니다."),
+            }
+        except Exception:  # noqa: BLE001 - generator boundary; keep provider details out of state
+            return {
+                "plan_draft": None, "error": "plan_generation_failed",
+                **_fallback(state, source="plan_generation_failed",
+                            reason="계획 초안 생성에 실패했습니다."),
+            }
+        if (
+            not isinstance(plan_draft.get("id"), str)
+            or not plan_draft["id"].strip()
+            or not isinstance(plan_draft.get("profileId"), str)
+            or not plan_draft["profileId"].strip()
+            or not isinstance(plan_draft.get("entries"), list)
+        ):
+            return {
+                "plan_draft": None,
+                "error": "invalid_plan_draft",
+                **_fallback(state, source="invalid_plan_draft",
+                            reason="생성된 계획 초안의 형식이 올바르지 않습니다."),
+            }
+        return {"plan_draft": plan_draft, "approval_status": "waiting", "error": None}
+
+    return node
 
 
 def _format(start: Any) -> str:
@@ -548,6 +596,7 @@ def _apply_approved(writer: PlanWriter | None):
 def build_adaptive_planner_graph(
     recovery_generator: RecoveryGenerator,
     *,
+    full_plan_generator: FullPlanGenerator | None = None,
     plan_writer: PlanWriter | None = None,
     max_retries: int = 2,
     max_revisions: int = 2,
@@ -570,6 +619,7 @@ def build_adaptive_planner_graph(
     graph = StateGraph(PlannerState)
     graph.add_node("initialize", _initialize(policy))
     graph.add_node("analyze_execution", _analyze_execution(policy))
+    graph.add_node("generate_full_plan", _generate_full_plan(full_plan_generator))
     graph.add_node("generate_recovery", _generate_recovery(recovery_generator))
     graph.add_node("plan_reschedule", _plan_reschedule(policy))
     graph.add_node("revise_not_supported", _revise_not_supported)
@@ -588,6 +638,7 @@ def build_adaptive_planner_graph(
         "analyze_execution",
         _after_analysis,
         {
+            "generate_full_plan": "generate_full_plan",
             "generate_recovery": "generate_recovery",
             "plan_reschedule": "plan_reschedule",
             "finish": END,
@@ -606,6 +657,7 @@ def build_adaptive_planner_graph(
             "finish": END,
         },
     )
+    graph.add_edge("generate_full_plan", END)
     graph.add_edge("generate_recovery", "validate_recovery")
     graph.add_conditional_edges(
         "validate_recovery",

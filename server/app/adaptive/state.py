@@ -12,8 +12,8 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-PlanRequest = Literal["new_plan", "recovery", "review"]
-Route = Literal["new_plan", "recovery", "review", "continue", "request_information"]
+PlanRequest = Literal["new_plan", "replan", "recovery", "review"]
+Route = Literal["new_plan", "replan", "recovery", "review", "continue", "request_information"]
 Strategy = Literal["shrink", "reschedule", "replan"]
 # What the user did with a waiting draft (request = "review").
 ReviewDecision = Literal["approve", "reject", "revise"]
@@ -67,6 +67,18 @@ class ExecutionContext(TypedDict):
     break_minutes: int | None  # gap between pieces in one window for time_blocks; None = no gap
 
 
+class ProfileChangeContext(TypedDict):
+    """C-owned normalized view of an approved external profile proposal."""
+
+    before: dict[str, Any]
+    after: dict[str, Any]
+    changed_fields: list[str]
+    reason: str
+    evidence_record_ids: list[str]
+    source_profile_id: str
+    applied_profile_id: str
+
+
 class RecoveryTask(TypedDict, total=False):
     id: str
     title: str
@@ -102,6 +114,7 @@ class PlannerState(TypedDict, total=False):
     project_id: str | None
     planning_context: dict[str, Any] | None  # A's get_planning_context(user, project), read-only
     execution_context: ExecutionContext
+    profile_change_context: ProfileChangeContext | None
     current_task: RecoveryTask  # recovery only
     check_in: CheckInSignal  # recovery only; converted from B's ExecutionRecord
     schedule_context: ScheduleContext | None  # required for shrink, reschedule and approval
@@ -117,6 +130,7 @@ class PlannerState(TypedDict, total=False):
     # Progress: written by graph nodes.
     route: Route | None
     draft: dict[str, Any] | None
+    plan_draft: dict[str, Any] | None
     validation_errors: list[str]
     retry_count: int
     retry_limit: int
@@ -126,7 +140,6 @@ class PlannerState(TypedDict, total=False):
     # Result.
     approval_status: ApprovalStatus
     fallback: dict[str, Any] | None
-    profile_update_proposal: dict[str, Any] | None  # B's ProfileUpdateProposal; never applied here
     error: str | None
 
 
@@ -162,6 +175,7 @@ class RequestModel(BaseModel):
     user_id: Id | None = None
     project_id: Id | None = None
     planning_context: dict[str, Any] | None = None
+    profile_change_context: dict[str, Any] | None = None
     base_revision: int | None = Field(default=None, ge=0, strict=True)
     strategy: Strategy | None = None
     decision: ReviewDecision | None = None
@@ -178,6 +192,32 @@ class ExecutionContextModel(BaseModel):
     schedule_style: ScheduleStyle | None = None
     focus_minutes: int | None = Field(default=None, ge=1, strict=True)
     break_minutes: int | None = Field(default=None, ge=0, strict=True)
+
+
+class ProfileChangeContextModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    before: dict[Id, Any]
+    after: dict[Id, Any]
+    changed_fields: list[Id] = Field(min_length=1)
+    reason: Text
+    evidence_record_ids: list[Id] = Field(min_length=1)
+    source_profile_id: Id
+    applied_profile_id: Id
+
+    @model_validator(mode="after")
+    def consistent_change(self) -> "ProfileChangeContextModel":
+        if len(set(self.changed_fields)) != len(self.changed_fields):
+            raise ValueError("changed_fields: 중복 필드는 허용하지 않습니다.")
+        if set(self.before) != set(self.changed_fields) or set(self.after) != set(self.changed_fields):
+            raise ValueError("before와 after는 changed_fields와 정확히 일치해야 합니다.")
+        if any(self.before[field] == self.after[field] for field in self.changed_fields):
+            raise ValueError("changed_fields의 변경 전후 값은 달라야 합니다.")
+        if len(set(self.evidence_record_ids)) != len(self.evidence_record_ids):
+            raise ValueError("evidence_record_ids: 중복 ID는 허용하지 않습니다.")
+        if self.source_profile_id == self.applied_profile_id:
+            raise ValueError("적용 프로필 ID는 원본 프로필 ID와 달라야 합니다.")
+        return self
 
 
 class CurrentTaskModel(BaseModel):

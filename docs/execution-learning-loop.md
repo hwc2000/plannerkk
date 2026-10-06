@@ -29,7 +29,12 @@ POST /api/execution/proposals/{id}/approve 또는 /reject
 - 승인 시 프로필 변경과 결정 기록을 같은 트랜잭션으로 저장.
 - 프로필 교체·수정 중, 중복 처리, 오래된 revision은 충돌 처리.
 - 승인 시 새 프로필 ID를 부여하고 기존 계획 초안을 무효화.
-  확정된 계획은 유지하며 다음 생성 요청에서 변경값을 사용.
+  확정된 계획은 유지한다.
+- 확정 계획이 있으면 화면은 명시적 LLM 전송 동의를 받은 뒤 승인 응답의 새
+  revision으로 `/api/execution/plan`을 호출한다. 이때 `profileChangeProposalId`를
+  전달하고, C converter가 변경 전후·이유·근거를 `profile_change_context`로 바꾼다.
+- 재계획 결과는 기존 `planDraft` 검토 화면에만 저장된다. 사용자가
+  `/plan/confirm`을 호출하기 전에는 기존 확정 계획을 바꾸지 않는다.
 
 ## 첫 규칙: long-task-v1
 
@@ -112,7 +117,14 @@ set_recovery_action(state, record_id, action)은 같은 트랜잭션 안에서
 shrink/reschedule/keep_current_plan/plan_replaced 결정과 recoveryDecidedAt을 저장한다.
 C의 close_draft에서 호출하므로 복구안 승인 시 계획 변경과 기록 갱신이 함께 커밋된다.
 
-그래프 입력 profile_update_proposal에는 현재 프로필의 대기 후보를 전달한다.
-이번 체크인으로 새로 생성된 후보는 adaptive 응답의 profileUpdateProposals에 포함된다.
-프로필 변경 승인은 기존 B 승인 API를 사용하며 C의 계획 승인과 별개다.
-A의 프로필 버전·갱신 함수 연결은 아직 남아 있다.
+대기 중인 B 제안 객체는 그래프 입력에 직접 넣지 않는다. 승인된 제안만 C의
+`profile_change_context`로 변환해 전체 재계획 근거로 전달한다. 이번 체크인으로
+새로 생성된 후보는 adaptive 응답의 profileUpdateProposals에 포함된다.
+프로필 변경 승인과 계획 초안 확정은 별도 사용자 결정이다. 프로필 변경 후에도
+기존 계획의 완료 기록과 복구안 거절은 가능하지만, 새 프로필 값으로 기존 계획의
+일부만 복구하는 것은 새 계획 확정 전까지 차단한다.
+
+`profileId`는 사용자를 식별하지 않는다. 같은 사용자의 프로필 버전을 구분해
+계획과 실행 성과가 어떤 설정에서 만들어졌는지 추적한다. `userId`는 별도 소유자
+식별자이고 `projectId`는 계획의 프로젝트 범위다. 현재 SQLite 문서는 단일 로컬
+사용자용이므로 실제 다중 사용자 환경에서는 인증에서 얻은 userId 기반 분리가 필요하다.

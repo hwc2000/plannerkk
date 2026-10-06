@@ -1,7 +1,9 @@
 import unittest
+from typing import cast
 
 from server.app.adaptive import build_adaptive_planner_graph
 from server.app.adaptive.ports import PlanConflictError
+from server.app.adaptive.state import PlannerState
 from server.tests.test_adaptive_planner_graph import base_state
 
 
@@ -293,9 +295,12 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(result["fallback"]["action"], "keep_pending_draft")
 
     def test_revise_to_unconnected_strategy_keeps_pending_draft(self):
-        result = build_adaptive_planner_graph(never_generate).invoke(
-            review_state("revise", user_feedback="우선순위를 다시 정해줘", strategy="replan")
-        )
+        state = cast(PlannerState, review_state(
+            "revise", user_feedback="우선순위를 다시 정해줘", strategy="replan"
+        ))
+        state["planning_context"] = {"goal": "시험 준비"}
+
+        result = build_adaptive_planner_graph(never_generate).invoke(state)
 
         self.assertEqual(result["approval_status"], "waiting")
         self.assertEqual(result["fallback"]["source"], "route_not_connected")

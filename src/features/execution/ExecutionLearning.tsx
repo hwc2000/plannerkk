@@ -7,14 +7,16 @@ const reasons: Record<string, string> = {
   interruption: '외부 방해', priority_changed: '우선순위 변경', unclear_task: '불명확한 작업',
   underestimated: '시간 과소 추정', other: '기타',
 }
-export function ExecutionLearning({ state, busy, run }: {
+export function ExecutionLearning({ state, busy, run, approveProposal }: {
   state: ExecutionState; busy: boolean
   run: (action: () => Promise<ExecutionState>, message: string) => Promise<boolean>
+  approveProposal?: (proposalId: string, consent: boolean) => Promise<boolean>
 }) {
   const [taskId, setTaskId] = useState('')
   const [result, setResult] = useState<ExecutionRecord['result']>('completed')
+  const [replanConsent, setReplanConsent] = useState(false)
   const records = state.executionRecords ?? []
-  const tasks = state.plan?.entries.filter(e => e.kind === 'task' && !records.some(r => r.planId === state.plan?.id && r.taskId === e.id)) ?? []
+  const tasks = state.plan?.entries.filter(e => e.kind === 'task' && !e.completed && !records.some(r => r.planId === state.plan?.id && r.taskId === e.id)) ?? []
   return <section className="execution-card"><h2>실행 결과와 개선 제안</h2>
     <p className="execution-help">실제 실행을 기록하면 반복되는 어려움을 바탕으로 변경을 제안합니다. 승인 전에는 프로필이 바뀌지 않습니다. 작업당 한 번 기록할 수 있습니다.</p>
     {tasks.length > 0 && <form onSubmit={event => {
@@ -44,7 +46,16 @@ export function ExecutionLearning({ state, busy, run }: {
       <h3>집중 구간 {p.proposedChanges.blockMinutes.from}분 → {p.proposedChanges.blockMinutes.to}분</h3>
       <p>{p.reason}</p><p>상태: {{ pending: '사용자 승인 대기', approved: '승인됨', rejected: '거절됨' }[p.status]}</p>
       <ul>{p.evidenceRecordIds.map(id => { const r = records.find(r => r.id === id); return <li key={id}>{r ? `${r.taskTitle}: 예정 ${r.plannedMinutes}분 / 실제 ${r.actualMinutes ?? '미입력'}분 · ${r.reasonCode ? reasons[r.reasonCode] : ''}` : '실행 기록'}<small> · 근거 ID: {id}</small></li> })}</ul>
-      {p.status === 'pending' && <div className="execution-actions">{(['approve', 'reject'] as const).map(action => <button key={action} disabled={busy} className="secondary-button" onClick={() => { void run(() => executionApi(`/proposals/${p.id}/${action}`, { revision: state.revision }), action === 'approve' ? '승인했습니다. 다음 계획부터 적용됩니다.' : '제안을 거절했습니다.') }}>{action === 'approve' ? '승인' : '거절'}</button>)}</div>}
+      {(p.status === 'pending' || (p.status === 'approved' && Boolean(state.plan) && p.appliedProfileId === state.profile?.id)) && <>
+        {state.plan && <label className="execution-inline"><input type="checkbox" checked={replanConsent} onChange={e => setReplanConsent(e.target.checked)}/>목표·프로필·가용 시간·프로젝트·기존 할 일·현재 계획·변경 근거를 LLM에 전송해 재계획 초안을 만드는 데 동의합니다.</label>}
+        <div className="execution-actions">
+          <button disabled={busy || Boolean(state.plan && !replanConsent)} className="secondary-button" onClick={() => {
+            if (approveProposal) void approveProposal(p.id, replanConsent)
+            else if (p.status === 'pending') void run(() => executionApi(`/proposals/${p.id}/approve`, { revision: state.revision }), '승인했습니다.')
+          }}>{p.status === 'approved' ? '재계획 초안 다시 만들기' : state.plan ? '승인하고 재계획 초안 만들기' : '승인'}</button>
+          {p.status === 'pending' && <button disabled={busy} className="secondary-button" onClick={() => { void run(() => executionApi(`/proposals/${p.id}/reject`, { revision: state.revision }), '제안을 거절했습니다.') }}>거절</button>}
+        </div>
+      </>}
     </article>)}
     <details><summary>실행 기록 {records.length}건</summary>{[...records].reverse().map(r => <p key={r.id}>{r.taskTitle} · {{ completed: '완료', partial: '부분 완료', not_started: '미시작', incomplete: '미완료' }[r.result]}<br/>예정 {r.plannedMinutes}분 / 실제 {r.actualMinutes ?? '미입력'}분 · 차이 {r.actualMinutes === null ? '미정' : r.actualMinutes - r.plannedMinutes}분{r.reasonCode && ` · ${reasons[r.reasonCode]}`}<br/>{r.note}{r.recoveryAction && ` · 다음 시도: ${r.recoveryAction}`}</p>)}</details>
   </section>

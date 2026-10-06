@@ -46,6 +46,36 @@ def execution_context_from_profile(profile: Mapping[str, Any] | None, _records: 
     }
 
 
+def _snake_key(value: str) -> str:
+    return "".join(("_" + char.lower()) if char.isupper() else char for char in value)
+
+
+def profile_change_context_from_proposal(proposal: object) -> dict[str, Any]:
+    """Local B ProfileUpdateProposal (camelCase) -> C profile change context."""
+    if not isinstance(proposal, Mapping):
+        raise ValueError("profile proposal must be a mapping")
+    if proposal.get("status") != "approved" or not proposal.get("appliedProfileId"):
+        raise ValueError("profile proposal must be approved and applied")
+    changes = proposal.get("proposedChanges")
+    if not isinstance(changes, Mapping) or not changes:
+        raise ValueError("profile proposal has no changes")
+    before: dict[str, Any] = {}
+    after: dict[str, Any] = {}
+    for external_name, change in changes.items():
+        if not isinstance(external_name, str) or not isinstance(change, Mapping) or set(change) != {"from", "to"}:
+            raise ValueError("profile proposal change is malformed")
+        name = _snake_key(external_name)
+        before[name] = change["from"]
+        after[name] = change["to"]
+    return {
+        "before": before, "after": after, "changed_fields": list(before),
+        "reason": proposal.get("reason"),
+        "evidence_record_ids": proposal.get("evidenceRecordIds"),
+        "source_profile_id": proposal.get("profileId"),
+        "applied_profile_id": proposal.get("appliedProfileId"),
+    }
+
+
 def find_open_task(plan: Mapping[str, Any], task_id: str) -> dict[str, Any] | None:
     return next(
         (e for e in plan["entries"] if e["id"] == task_id and e["kind"] == "task" and not e["completed"]),

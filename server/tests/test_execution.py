@@ -124,6 +124,71 @@ class ExecutionTests(unittest.TestCase):
                 self.assertEqual(call['context']['maxBlockMinutes'], max_block)
                 self.assertIn(SCHEDULE_STYLE_INSTRUCTIONS[style], call['instructions'])
 
+    def test_approved_profile_change_creates_new_profile_plan_draft_then_confirm_replaces_plan(self):
+        self.setup_profile()
+        self.post('/plan', goal='기존 공부', startDate='2030-01-07', consent=True)
+        self.post('/plan/confirm', planId=self.state['planDraft']['id'])
+        old_plan = self.state['plan']
+        old_profile_id = self.state['profile']['id']
+        proposal = {
+            'id': 'proposal-1', 'profileId': old_profile_id,
+            'proposedChanges': {'blockMinutes': {'from': self.state['profile']['planningPreferences']['blockMinutes'], 'to': 20}},
+            'reason': '반복 미완료', 'evidenceRecordIds': ['record-1'], 'ruleVersion': 'test',
+            'status': 'pending', 'createdAt': '2030-01-01T00:00:00+00:00', 'decidedAt': None,
+        }
+        self.store.change(self.state['revision'], lambda doc: doc['profileUpdateProposals'].append(proposal))
+        self.state = self.client.get('/api/execution').json()
+        self.post('/proposals/proposal-1/approve')
+        new_profile_id = self.state['profile']['id']
+
+        # Replan scope is taken from the confirmed plan, not client-supplied replacements.
+        self.post('/plan', goal='악의적 다른 목표', startDate='2030-02-04', consent=True,
+                  profileChangeProposalId='proposal-1')
+
+        self.assertEqual(self.state['plan'], old_plan)
+        self.assertEqual(self.state['planDraft']['goal'], old_plan['goal'])
+        self.assertEqual(self.state['planDraft']['startDate'], old_plan['startDate'])
+        self.assertEqual(self.state['planDraft']['profileId'], new_profile_id)
+        self.assertNotEqual(new_profile_id, old_profile_id)
+        draft_id = self.state['planDraft']['id']
+        self.post('/plan/confirm', planId=draft_id)
+        self.assertEqual(self.state['plan']['id'], draft_id)
+        self.assertEqual(self.state['plan']['profileId'], new_profile_id)
+
+    def test_plan_rejects_unapproved_profile_change_proposal(self):
+        self.setup_profile()
+        proposal = {
+            'id': 'proposal-1', 'profileId': self.state['profile']['id'],
+            'proposedChanges': {'blockMinutes': {'from': 30, 'to': 20}}, 'reason': 'reason',
+            'evidenceRecordIds': ['record-1'], 'ruleVersion': 'test', 'status': 'pending',
+            'createdAt': '2030-01-01T00:00:00+00:00', 'decidedAt': None,
+        }
+        self.store.change(self.state['revision'], lambda doc: doc['profileUpdateProposals'].append(proposal))
+        self.state = self.client.get('/api/execution').json()
+        response = self.client.post('/api/execution/plan', json={
+            'revision': self.state['revision'], 'goal': '공부', 'startDate': '2030-01-07',
+            'consent': True, 'profileChangeProposalId': 'proposal-1',
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIsNone(self.store.read()['planDraft'])
+
+    def test_stale_profile_plan_draft_cannot_be_confirmed(self):
+        self.setup_profile()
+        self.post('/plan', goal='공부', startDate='2030-01-07', consent=True)
+        draft = self.state['planDraft']
+        self.post('/profile', answers={**ANSWERS, 'focusMinutes': 20})
+        self.post('/profile/confirm')
+        # Reinsert the old draft to isolate the confirmation freshness guard.
+        self.store.change(self.state['revision'], lambda doc: doc.update(planDraft=draft))
+        self.state = self.client.get('/api/execution').json()
+
+        response = self.client.post('/api/execution/plan/confirm', json={
+            'revision': self.state['revision'], 'planId': draft['id'],
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIsNone(self.store.read()['plan'])
+
 class SchedulerTests(unittest.TestCase):
     def test_busy_events_past_time_and_deadlines(self):
         slots=[Slot(day=0,hour=18),Slot(day=0,hour=19)]

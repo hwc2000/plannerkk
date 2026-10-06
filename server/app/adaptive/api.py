@@ -112,10 +112,9 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             "execution_context": to_execution_context(state["profile"], [], converter=execution_context_from_profile),
             # Stand-in for A's get_planning_context until it is published.
             "planning_context": {"goal": state["plan"]["goal"]},
+            "project_id": state["plan"].get("projectId"),
             "current_task": current_task(state["plan"], task_id),
             "schedule_context": schedule_context(state, task_id, events, local_now()),
-            "profile_update_proposal": next((p for p in reversed(state.get("profileUpdateProposals", []))
-                                             if p["status"] == "pending" and p["profileId"] == state["profile"]["id"]), None),
         }
 
     def respond(saved: dict[str, Any], task_id: str, result: dict[str, Any], **extra: Any) -> dict[str, Any]:
