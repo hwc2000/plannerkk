@@ -2,7 +2,8 @@ import json
 from datetime import date
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
+from .planning_context import MemoryInput
 
 
 class PlanGenerationError(ValueError):
@@ -72,6 +73,17 @@ class ExistingTask(BaseModel):
 
 
 class PlanDraftRequest(BaseModel):
+    _planning_context: dict | None = PrivateAttr(default=None)
+    memories: list[MemoryInput] = Field(default_factory=list, max_length=200)
+
+    @property
+    def planning_context(self):
+        return self._planning_context
+
+    @planning_context.setter
+    def planning_context(self, value):
+        self._planning_context = value
+
     model_config = ConfigDict(extra="forbid")
 
     goal: str = Field(min_length=3, max_length=2000)
@@ -100,11 +112,12 @@ def parse_plan_for_project(
     return draft
 
 
-def build_plan_prompt(goal: str, project: dict[str, Any], existing_tasks: list[dict[str, Any]]) -> str:
+def build_plan_prompt(goal: str, project: dict[str, Any], existing_tasks: list[dict[str, Any]], planning_context: dict | None = None) -> str:
     context = {
         "project": project,
         "existingTasks": existing_tasks,
         "userRequest": goal,
+        "planningContext": planning_context,
     }
     return (
         "사용자가 검토할 프로젝트 실행 초안을 만드세요. "

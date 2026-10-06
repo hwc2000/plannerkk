@@ -1,9 +1,10 @@
 import { LoaderCircle, Sparkles } from 'lucide-react'
 import { useRef, useState } from 'react'
-import type { Milestone, Project } from '../../shared/types'
+import type { Milestone, Project, Memory } from '../../shared/types'
 import { requestPlanDraft, type AiPlanDraft } from './aiPlan'
 
 type AiPlanningViewProps = {
+  memories?: Memory[]
   projects: Project[]
   milestones: Milestone[]
   selectedProjectId: string
@@ -14,6 +15,7 @@ type AiPlanningViewProps = {
 
 export function AiPlanningView({
   projects,
+  memories = [],
   milestones,
   selectedProjectId,
   onSelectProject,
@@ -50,6 +52,7 @@ export function AiPlanningView({
     try {
       const nextDraft = await requestDraft({
         goal,
+        memories,
         project: selectedProject,
         existingTasks: milestones
           .filter((item) => item.projectId === selectedProject.id)

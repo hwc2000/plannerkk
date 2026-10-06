@@ -34,6 +34,10 @@ def validate_answers(value):
         if not isinstance(v, str) or len(v) > 1500:
             raise ValueError("추가 설명은 각각 1,500자 이내로 입력해 주세요.")
         result[key] = v.strip()
+    if "scheduleStyle" in value:
+        if value["scheduleStyle"] not in ("time_blocks", "flexible_queue", "unknown"):
+            raise ValueError("계획 방식은 시간 지정형, 작업량 지정형 또는 모름이어야 합니다.")
+        result["scheduleStyle"] = value["scheduleStyle"]
     return result
 
 def object_schema(properties):
@@ -41,7 +45,7 @@ def object_schema(properties):
 
 SCHEMA = object_schema({
     "summary": {"type": "string"},
-    "strategies": {"type": "array", "items": object_schema({"action": {"type": "string"}, "reason": {"type": "string"}, "evidence": {"type": "array", "items": {"type": "string", "enum": list(OPTIONS) + ["focusMinutes", "dailyMinutes", "constraints", "context"]}}})},
+    "strategies": {"type": "array", "items": object_schema({"action": {"type": "string"}, "reason": {"type": "string"}, "evidence": {"type": "array", "items": {"type": "string", "enum": list(OPTIONS) + ["focusMinutes", "dailyMinutes", "constraints", "context", "scheduleStyle"]}}})},
     "followUpQuestions": {"type": "array", "items": {"type": "string"}},
 })
 
@@ -53,7 +57,7 @@ def validate_insights(data):
     strategies = data["strategies"]
     if not isinstance(strategies, list) or not 1 <= len(strategies) <= 6:
         raise ValueError("LLM 전략 개수가 올바르지 않습니다.")
-    fields = set(OPTIONS) | {"focusMinutes", "dailyMinutes", "constraints", "context"}
+    fields = set(OPTIONS) | {"focusMinutes", "dailyMinutes", "constraints", "context", "scheduleStyle"}
     for s in strategies:
         if not isinstance(s, dict) or set(s) != {"action", "reason", "evidence"} or any(not isinstance(s[k], str) or not 1 <= len(s[k]) <= 1500 for k in ("action", "reason")):
             raise ValueError("LLM 전략 형식이 올바르지 않습니다.")
@@ -79,7 +83,8 @@ def generate_profile(raw):
         "blockMinutes": block, "breakMinutes": 5,
         "bufferPercent": buffer,
         "dailyPlannedMinutes": int(daily * (100 - buffer) / 100) if daily else None,
-        "scheduleStyle": "time_blocks" if a["regularity"] == "regular" else "flexible_queue",
+        "scheduleStyle": a.get("scheduleStyle") if a.get("scheduleStyle") in ("time_blocks", "flexible_queue") else ("time_blocks" if a["regularity"] == "regular" else "flexible_queue"),
+        "scheduleStyleSource": "user" if a.get("scheduleStyle") in ("time_blocks", "flexible_queue") else "rule",
         "recoveryPreference": a["recovery"],
         "starterMinutes": min(5, block) if "starting" in a["barriers"] else None,
         "status": "provisional",

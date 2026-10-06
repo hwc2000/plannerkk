@@ -37,10 +37,10 @@ def execution_context_from_profile(profile: Mapping[str, Any] | None, _records: 
     prefs = profile["planningPreferences"]
     # blockMinutes falls back to a default when the user answered "모름";
     # only use it when the user actually gave a focus time.
-    known_focus = profile["facts"].get("focusMinutes") is not None
+    known_focus = profile.get("declaredFacts", profile.get("facts", {})).get("focusMinutes") is not None
     return {
         "schedule_style": prefs.get("scheduleStyle"),
-        "focus_minutes": prefs["blockMinutes"] if known_focus else None,
+        "focus_minutes": prefs["blockMinutes"] if (known_focus or profile.get("learnedPatterns")) else None,
         "break_minutes": prefs.get("breakMinutes"),
     }
 

@@ -14,11 +14,14 @@ class ExecutionLLM:
         key = os.getenv("OPENAI_API_KEY", "").strip()
         if not key:
             raise LLMUnavailableError("서버에 OPENAI_API_KEY를 설정해 주세요.")
+        # Conversation replies are short; plan generation retains its existing budget.
+        chat = name in ("profile_conversation", "profile_reply_rewrite")
+        output_limit = 1800 if name == "profile_conversation" else 500 if chat else 6500
         try:
-            async with AsyncOpenAI(api_key=key, timeout=60, max_retries=0) as client:
+            async with AsyncOpenAI(api_key=key, timeout=25 if chat else 60, max_retries=0) as client:
                 result = await client.chat.completions.create(
                     model=os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini"),
-                    store=False, max_completion_tokens=6500,
+                    store=False, max_completion_tokens=output_limit,
                     messages=[{"role": "system", "content": instructions},
                               {"role": "user", "content": json.dumps(context, ensure_ascii=False)}],
                     response_format={"type": "json_schema", "json_schema": {

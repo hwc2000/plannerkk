@@ -138,13 +138,14 @@ function App() {
       editor={entityForm}
     >
       {activeView === 'execution' && (execution ? <ExecutionView
-        state={execution} onChange={setExecution} projects={projects} milestones={milestones} events={events}
+        state={execution} onChange={setExecution} projects={projects} milestones={milestones} events={events} memories={memories}
       /> : <section className="execution-card"><h1>실행 프로필과 주간 계획</h1>
         <p role={executionError ? 'alert' : 'status'}>{executionError || '저장된 프로필을 불러오는 중입니다…'}</p>
         {executionError && <button className="primary-button" onClick={() => { void loadExecution() }}>다시 불러오기</button>}
       </section>)}
       {activeView === 'today' && (
         <AiPlanningView
+          memories={memories}
           projects={projects}
           milestones={milestones}
           selectedProjectId={selectedProject?.id ?? ''}

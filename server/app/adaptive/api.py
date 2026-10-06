@@ -17,6 +17,7 @@ from ..execution_api import BusyEvent
 from ..execution_llm import ExecutionLLM
 from ..execution_store import ConflictError, ExecutionStore
 from .context import to_execution_context
+from ..planning_context import get_planning_context, MemoryInput
 from .graph import build_adaptive_planner_graph
 from .llm_generator import LLMRecoveryGenerator
 from .local import (
@@ -52,6 +53,7 @@ class CheckInRequest(BaseModel):
     strategy: Strategy | None = None
     consent: bool = False
     # Calendar events live in the browser, so the client sends them like /api/execution/plan.
+    memories: list[MemoryInput] = Field(default_factory=list, max_length=200)
     events: list[BusyEvent] = Field(default_factory=list, max_length=500)
 
 
@@ -63,6 +65,7 @@ class ReviewRequest(BaseModel):
     feedback: str | None = Field(default=None, max_length=1000)
     strategy: Strategy | None = None
     consent: bool = False
+    memories: list[MemoryInput] = Field(default_factory=list, max_length=200)
     events: list[BusyEvent] = Field(default_factory=list, max_length=500)
 
 
@@ -107,11 +110,13 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             raise ValueError("계획을 만든 뒤 실행 프로필이 바뀌었습니다. 새 프로필로 주간 계획을 다시 생성해 주세요.")
         return state
 
-    def graph_input(state: dict[str, Any], task_id: str, events: list[BusyEvent]) -> dict[str, Any]:
+    def graph_input(state: dict[str, Any], task_id: str, events: list[BusyEvent], memories=None) -> dict[str, Any]:
+        planning = get_planning_context(store.user_id, state["plan"].get("project"), state=state, memories=memories)
         return {
-            "execution_context": to_execution_context(state["profile"], [], converter=execution_context_from_profile),
-            # Stand-in for A's get_planning_context until it is published.
-            "planning_context": {"goal": state["plan"]["goal"]},
+            "user_id": store.user_id,
+            "project_id": state["plan"].get("projectId"),
+            "execution_context": to_execution_context(planning["userProfile"], [], converter=execution_context_from_profile),
+            "planning_context": {**planning, "goal": state["plan"]["goal"]},
             "current_task": current_task(state["plan"], task_id),
             "schedule_context": schedule_context(state, task_id, events, local_now()),
         }
@@ -136,7 +141,7 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
         if not completed and not request.consent:
             raise HTTPException(400, "작업·체크인 정보의 LLM 전송에 동의해 주세요.")
         state = load(request.revision, needs_current_profile=not completed)
-        task_input = graph_input(state, request.taskId, request.events)
+        task_input = graph_input(state, request.taskId, request.events, [m.model_dump() for m in request.memories])
         check_in = request.checkIn.model_dump()
         result = graph.invoke({
             "request": "recovery",
@@ -184,7 +189,7 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             raise ValueError("승인할 때는 복구 방법을 바꿀 수 없습니다. 다른 방법은 수정(revise)으로 요청해 주세요.")
         result = graph.invoke({
             "request": "review",
-            **graph_input(state, task_id, request.events),
+            **graph_input(state, task_id, request.events, [m.model_dump() for m in request.memories]),
             "check_in": to_snake(stored["checkIn"]),
             "decision": request.decision,
             "strategy": request.strategy or stored["strategy"],

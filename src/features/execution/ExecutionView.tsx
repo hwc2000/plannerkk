@@ -1,15 +1,17 @@
 import { useState } from 'react'
 import './execution.css'
-import type { CalendarEvent, ExecutionPlan, ExecutionState, Milestone, Project } from '../../shared/types'
+import type { CalendarEvent, ExecutionPlan, ExecutionState, Milestone, Project, Memory } from '../../shared/types'
 import { dateKey } from '../../shared/constants'
+import { ProfileChat } from './ProfileChat'
 import { AvailabilityGrid } from './AvailabilityGrid'
-import { answerLabels, ProfileForm } from './ProfileForm'
+import { answerLabels, formatAnswer } from './profileLabels'
 import { downloadJson, executionApi, projectContext } from './api'
 
-export function ExecutionView({ state, onChange, projects, milestones, events }: {
+export function ExecutionView({ state, onChange, projects, milestones, events, memories = [] }: {
   state: ExecutionState; onChange: (state: ExecutionState) => void
-  projects: Project[]; milestones: Milestone[]; events: CalendarEvent[]
+  projects: Project[]; milestones: Milestone[]; events: CalendarEvent[]; memories?: Memory[]
 }) {
+  const [chatKey, setChatKey] = useState(0)
   const [editing, setEditing] = useState(!state.profile && !state.profileDraft)
   const [slots, setSlots] = useState(state.settings.slots)
   const [goal, setGoal] = useState(state.planDraft?.goal ?? state.plan?.goal ?? '')
@@ -41,14 +43,15 @@ export function ExecutionView({ state, onChange, projects, milestones, events }:
       let current = state
       if (slotsDirty) current = await executionApi('/settings', { revision: current.revision, settings: { slots, view: current.settings.view } }, 'PUT')
       return executionApi('/plan', {
-        revision: current.revision, goal, startDate, consent, project: projectContext(selectedProject), events: busyEvents,
+        revision: current.revision, goal, startDate, consent, memories, project: projectContext(selectedProject), events: busyEvents,
         existingTasks: milestones.filter(m => m.projectId === projectId).map(({ title, startDate, dueDate, estimatedHours, status }) => ({ title, startDate, dueDate, estimatedHours, status })),
       })
     }, '주간 계획 초안을 만들었습니다. 검토 후 확정하면 캘린더에도 표시됩니다.')
   }
 
   function planCard(plan: ExecutionPlan, draft: boolean) {
-    const entries = plan.entries.filter(e => state.settings.view==='timeline' || e.kind==='task')
+    const timed = (plan.scheduleStyle ?? state.profile?.planningPreferences.scheduleStyle) !== 'flexible_queue' && state.settings.view === 'timeline'
+    const entries = plan.entries.filter(e => timed || e.kind==='task')
     const dates = [...new Set(entries.map(e => e.start.slice(0,10)))]
     const completed = plan.entries.filter(e => e.kind==='task' && e.completed).length
     return <section className="execution-card" key={plan.id} aria-label={draft?'주간 계획 초안':'확정한 주간 계획'}>
@@ -59,7 +62,7 @@ export function ExecutionView({ state, onChange, projects, milestones, events }:
         {entries.filter(e => e.start.startsWith(day)).map(e => e.kind==='break'?<div className="execution-break" key={e.id}>{e.start.slice(11)} ~ {e.end.slice(11)} · 휴식</div>:
           <label className={`execution-task ${e.completed?'done':''}`} key={e.id}>
             <input aria-label={`${e.title} 완료`} type="checkbox" checked={e.completed} disabled={draft||busy} onChange={event => { void run(() => executionApi('/task',{ revision:state.revision,planId:plan.id,taskId:e.id,completed:event.target.checked }),'완료 상태를 저장했습니다.') }} />
-            <span>{state.settings.view==='timeline' && <b className="execution-task-time">{e.start.slice(11)} ~ {e.end.slice(11)}</b>}<strong>{e.title}</strong><small>{e.doneWhen} · {e.minutes}분</small></span>
+            <span>{timed && <b className="execution-task-time">{e.start.slice(11)} ~ {e.end.slice(11)}</b>}<strong>{e.title}</strong><small>{e.doneWhen} · {e.minutes}분</small></span>
           </label>)}
       </div>)}
       {!dates.length && <p>선택한 시간에 배치된 작업이 없습니다. 가용 시간이나 목표를 조정해 주세요.</p>}
@@ -75,14 +78,21 @@ export function ExecutionView({ state, onChange, projects, milestones, events }:
 
   return <section className="execution-workspace">
     <header className="ai-planning-intro"><div><p className="eyebrow">PERSONAL EXECUTION PLAN</p><h1>나에게 맞는 <em>실행 계획</em>.</h1><p>나의 리듬을 파악하고, 가능한 시간 안에 무엇을 할지 구체적으로 정해요.</p></div><span className="ai-draft-badge">{state.model}</span></header>
+    <div className="execution-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => {
+      if (!window.confirm('프로필과 대화 기록, 작성 중인 초안을 초기화할까요? 가용 시간과 확정 계획은 유지됩니다.')) return
+      void run(() => executionApi('/profile/reset', { revision: state.revision }), '프로필을 초기화했습니다. 새 대화를 시작해 주세요.').then(ok => {
+        if (ok) { setEditing(true); setChatKey(key => key + 1); setConsent(false) }
+      })
+    }}>프로필 초기화하기</button></div>
     {error && <p className="form-error" role="alert">{error}</p>}{notice && <p className="execution-notice" role="status">{notice}</p>}
     {busy && <p role="status">요청을 처리하고 있습니다. 잠시 기다려 주세요.</p>}
-    {editing ? <ProfileForm key={shownProfile?.id??'new'} initial={shownProfile?.facts} busy={busy} llmAvailable={state.llmAvailable} requestError={error} onCancel={shownProfile?()=>setEditing(false):undefined}
-      onGenerate={async (answers,mode,consent) => { if(await run(() => executionApi('/profile',{revision:state.revision,answers,mode,consent}),'프로필 초안을 만들었습니다. 확인 후 확정해 주세요.'))setEditing(false) }} /> : shownProfile &&
-      <section className="execution-card"><p className="section-kicker">MY PROFILE · {shownProfile.status==='draft'?'확정 전 초안':'확정됨'}</p><h2>나의 실행 프로필</h2><p className="execution-help">{shownProfile.source==='llm'?'LLM 분석':'규칙 기반 미리보기 · LLM 미사용'}</p><p>{shownProfile.insights.summary}</p>
+    {editing ? <ProfileChat key={chatKey} state={state} busy={busy} run={run} onCancel={shownProfile ? () => setEditing(false) : undefined} onReviewed={() => setEditing(false)}/> : shownProfile &&
+      <section className="execution-card"><p className="section-kicker">MY PROFILE · {shownProfile.status==='draft'?'확정 전 초안':'확정됨'}</p><h2>나의 실행 프로필</h2><p className="execution-help">{shownProfile.source==='llm'?'LLM 분석':'답변에서 계산한 계획 선호'}</p><p>{shownProfile.insights.summary}</p>
         <div className="execution-metrics"><div><strong>{shownProfile.planningPreferences.blockMinutes}분</strong><span>첫 집중 구간</span></div><div><strong>{shownProfile.planningPreferences.bufferPercent}%</strong><span>계획의 여유분</span></div><div><strong>{shownProfile.planningPreferences.dailyPlannedMinutes??'미정'}</strong><span>하루 작업 예산(분)</span></div></div>
-        <details><summary>추천 근거와 추가 질문</summary>{shownProfile.insights.strategies.map((s,i)=><div key={i}><h3>{s.action}</h3><p>{s.reason}</p><small>답변 근거: {s.evidence.map(k=>answerLabels[k]??k).join(', ')}</small></div>)}{shownProfile.insights.followUpQuestions.map(q=><p key={q}>{q}</p>)}<p className="execution-help">추가 질문은 답변 수정의 추가 설명에 적어 주세요. 추천값은 실행 후 조정할 초기 가설입니다.</p></details>
-        <div className="execution-actions"><button className="secondary-button" disabled={busy} onClick={()=>setEditing(true)}>답변 수정</button><button className="secondary-button" onClick={()=>downloadJson(shownProfile,'replan-profile.json')}>프로필 JSON 다운로드</button>{state.profileDraft && <button type="button" className="primary-button" disabled={busy} onClick={()=>{void run(()=>executionApi('/profile/confirm',{revision:state.revision}),'프로필 저장 완료. 아래에서 가용 시간을 선택하고 주간 계획을 요청해 주세요.') }}>{busy?'프로필 저장 중…':'프로필 확정'}</button>}</div>
+        <p><strong>계획 방식: </strong>{shownProfile.planningPreferences.scheduleStyle === 'time_blocks' ? '시간 지정형 · 18:30~19:00' : '작업량 지정형 · A 1시간, B 2시간'}</p>
+        <details open={shownProfile.status === 'draft'}><summary>대화에서 정리한 답변 확인</summary>{Object.entries(shownProfile.declaredFacts ?? shownProfile.facts).map(([key,value]) => <p key={key}><strong>{answerLabels[key] ?? key}: </strong>{formatAnswer(key, value)}</p>)}<p className="execution-help">다르게 정리된 내용은 ‘대화로 수정’에서 고친 뒤 확정해 주세요.</p></details>
+        <details><summary>추천 근거와 추가 질문</summary>{shownProfile.insights.strategies.map((s,i)=><div key={i}><h3>{s.action}</h3><p>{s.reason}</p><small>답변 근거: {s.evidence.map(k=>answerLabels[k]??k).join(', ')}</small></div>)}{shownProfile.insights.followUpQuestions.map(q=><p key={q}>{q}</p>)}<p className="execution-help">추가 질문은 ‘대화로 수정’에서 답해 주세요. 추천값은 실행 후 조정할 초기 가설입니다.</p></details>
+        <div className="execution-actions"><button className="secondary-button" disabled={busy} onClick={()=>{setEditing(true)}}>대화로 수정</button><button className="secondary-button" onClick={()=>downloadJson(shownProfile,'replan-profile.json')}>프로필 JSON 다운로드</button>{state.profileDraft && <button type="button" className="primary-button" disabled={busy} onClick={()=>{void run(()=>executionApi('/profile/confirm',{revision:state.revision}),'프로필 저장 완료. 아래에서 가용 시간을 선택하고 주간 계획을 요청해 주세요.') }}>{busy?'프로필 저장 중…':'프로필 확정'}</button>}</div>
         {error && <p className="form-error" role="alert">{error}</p>}
         {notice && <p className="execution-notice" role="status">{notice}</p>}
         {shownProfile.status==='confirmed' && <div className="execution-next"><strong>프로필이 DB에 저장되었습니다.</strong><p>다음 단계는 가용 시간 선택과 목표 입력입니다.</p><a className="primary-button" href="#weekly-setup">가용 시간·계획 입력으로 이동 →</a></div>}
@@ -99,7 +109,7 @@ export function ExecutionView({ state, onChange, projects, milestones, events }:
         <label className="execution-label">목표와 할 일<textarea required maxLength={2000} value={goal} onChange={e=>setGoal(e.target.value)} placeholder="예: 금요일까지 전공 3장 연습문제 10개, 주말까지 포트폴리오 소개 페이지 완성. 전공 공부를 먼저 하고 싶어요." /></label>
         <label className="execution-label">계획 시작일<input type="date" required value={startDate} onChange={e=>setStartDate(e.target.value)}/></label>
         <p className="execution-help">시작일부터 7일 · 한국 시간. 지난 시간과 기존 캘린더 일정은 제외합니다. 연결한 프로젝트가 있으면 해당 기간 안에서만 배치합니다.</p>
-        <label className="execution-inline"><input type="checkbox" required checked={consent} onChange={e=>setConsent(e.target.checked)}/>목표·프로필·가용 시간·프로젝트와 기존 할 일을 OpenAI에 전송하는 데 동의합니다.</label>
+        <label className="execution-inline"><input type="checkbox" required checked={consent} onChange={e=>setConsent(e.target.checked)}/>목표·프로필·기억·가용 시간·프로젝트와 기존 할 일을 OpenAI에 전송하는 데 동의합니다.</label>
         <p className="execution-help">선택한 가용 시간과 생성한 초안은 DB에 저장됩니다. 확정 전에는 기존 계획과 캘린더를 바꾸지 않습니다. 확정하면 이전 주간 계획을 대체합니다.</p>
         <button className="primary-button" type="submit" disabled={!slots.length||!state.llmAvailable}>{busy?'계획 생성 중…':'주간 계획 초안 만들기'}</button>{!state.llmAvailable&&<p className="execution-help">서버 API 키를 설정하면 LLM 계획을 만들 수 있습니다.</p>}
       </fieldset></form>
