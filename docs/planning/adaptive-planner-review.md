@@ -4,10 +4,10 @@ A의 사용자 컨텍스트와 B의 실행 결과를 받아 계획 생성·재�
 코드: `server/app/adaptive/`
 - `state.py` 그래프 실행 상태 · `graph.py` 그래프 · `context.py` 변환 경계 · `ports.py` 생성기·저장소 경계
 - `llm_generator.py` 실제 LLM 축소 생성기 · `local.py` 로컬 DB 어댑터 · `api.py` `/api/adaptive/*`
-공유 객체 형식: [adaptive-planner-data-contract.md](adaptive-planner-data-contract.md)
+팀원 C의 State 계약과 연동 경계: [adaptive-planner-state-contract.md](adaptive-planner-state-contract.md)
 할 일 목록: [roadmap.md](roadmap.md)
 
-> 팀 규칙: 공용 데이터 계약은 먼저 GitHub에 올린 쪽에 나중 사람이 맞추고, 추가 의견은 그때 조율한다. 여기서 말하는 데이터 계약은 객체 필드 형식이며 관계형 DB 테이블이나 `PlannerState`를 뜻하지 않는다.
+> 이 문서의 소유 범위는 팀원 C의 `PlannerState`, 계획 생성·복구, 검증·승인 흐름이다. A의 `UserProfile`과 B의 `ExecutionRecord`·`ProfileUpdateProposal`은 각 담당자가 확정하며, 현재 코드는 독립 검증용 임시 어댑터만 제공한다.
 
 ## 체크인 흐름 (API)
 
@@ -19,7 +19,7 @@ POST /api/adaptive/check-in   작업 하나의 실행 결과
 POST /api/adaptive/review     초안에 대한 결정 → 승인한 strategy 또는 거절을 실행 기록의 recoveryAction에 기록
 ```
 
-- **실행 기록**: B의 ExecutionRecord 초안 필드(`taskId`, `plannedMinutes`, `actualMinutes`, `result`, `reasonCode`, `note`, `recoveryAction`, `createdAt`)에 `planId`, `taskTitle`을 더했다. 작업이 축소로 교체돼도 기록이 남도록 작업 정보를 복사해 둔다. `difficulty`는 아직 입력이 없어 넣지 않았다.
+- **임시 실행 기록 어댑터**: 그래프를 독립적으로 시험하려고 B의 `ExecutionRecord` 제안 필드 일부를 로컬에 저장한다. B의 최종 스키마나 API를 확정하는 구현은 아니다. 작업이 축소로 교체돼도 테스트 기록이 남도록 `planId`, `taskTitle`을 함께 복사한다.
   - 같은 작업의 미완료 체크인을 결정 전에 다시 보내면(예: 복구 방법을 고르라는 질문에 답할 때) 기록을 새로 만들지 않고 기존 기록을 고친다.
 - **초안은 작업마다 하나**다. 같은 작업에 새 체크인이 오면 이전 초안은 항상 사라지거나 새 초안으로 바뀐다.
 - **새 계획을 확정하면** 승인 대기 초안은 모두 닫히고, 그 체크인 기록의 `recoveryAction`은 `plan_replaced`가 된다.

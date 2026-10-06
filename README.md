@@ -118,9 +118,9 @@ npm run dev
 | **PlannerState** | LangGraph를 한 번 실행하는 동안 노드 사이에서 전달하는 임시 상태 | `server/app/adaptive/state.py`. DB 구조가 아니며 실행이 끝나면 자체 저장되지 않음 |
 | **LLM 출력 스키마** | AI 응답 형식을 검사하는 JSON Schema | 각 LLM 생성기에서만 사용하며 DB 구조와 무관 |
 
-따라서 지금 팀이 먼저 맞출 것은 **공용 관계형 DB 테이블이 아니라 공용 데이터 계약**입니다. `PlannerState`는 그래프 내부 형식입니다. 현재 A의 프로필은 converter로 연결하고, B의 실행 기록은 임시 필드 매핑을 쓰며 B의 공용 계약이 올라오면 경계에서 맞춥니다.
+팀원 C가 소유하는 스키마는 그래프 내부의 **`PlannerState`**입니다. A의 프로필과 B의 실행 기록은 C가 확정하는 스키마가 아니며, 현재는 그래프를 시험하기 위한 임시 converter와 로컬 어댑터만 둡니다. A·B의 공용 계약이 올라오면 경계에서 맞춥니다.
 
-계획 실행 중 기능의 공유 필드와 API 예시는 [계획 실행 중 데이터 계약](docs/planning/adaptive-planner-data-contract.md)에 정리했습니다.
+팀원 C의 State와 A·B 연동 경계는 [PlannerState와 연동 경계](docs/planning/adaptive-planner-state-contract.md)에 정리했습니다.
 
 ### localStorage 키
 
