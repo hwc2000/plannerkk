@@ -23,6 +23,7 @@ export function ProfileChat({ state, busy, run, onReviewed, onCancel }: {
   const [consent, setConsent] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const sending = useRef(false)
   const end = useRef<HTMLDivElement>(null)
   useEffect(() => {
     let active = true
@@ -47,13 +48,18 @@ export function ProfileChat({ state, busy, run, onReviewed, onCancel }: {
       return [...previous, value]
     })
   }
-  async function send(value: string) {
-    if (!session || !value.trim() || busy || loading) return false
+  async function send(value: string, field?: string) {
+    if (!session || !value.trim() || busy || loading || sending.current) return false
+    sending.current = true
+    setError('')
+    try {
     const ok = await run(() => executionApi('/profile/chat/message', {
-      revision: state.revision, sessionId: session.id, text: value, mode, consent,
+      revision: state.revision, sessionId: session.id, text: value, mode, consent, field,
     }), '답변을 대화에 저장했습니다.')
     if (ok) { setText(''); setSelected([]) }
+    else setError('답변을 저장하지 못했어. 입력한 내용은 그대로 남아 있어. 화면 위의 오류 안내를 확인하고 다시 보내 줘.')
     return ok
+    } finally { sending.current = false }
   }
   return <section className="execution-card profile-chat" aria-label="프로필 설문 대화">
     <p className="section-kicker">LET’S TALK</p><h2>대화로 알아가는 나의 계획 습관</h2>
@@ -71,13 +77,13 @@ export function ProfileChat({ state, busy, run, onReviewed, onCancel }: {
       <div ref={end}/>
     </div>
     {!session ? <button className="primary-button" disabled={busy || loading || !!error} onClick={() => { void run(() => executionApi('/profile/chat/start', { revision: state.revision }), '대화를 시작했습니다.') }}>대화 시작</button> : <>
-      {session.question?.field === 'constraints' && <FixedSchedulePicker disabled={busy || loading} canSend={mode !== 'llm' || consent} onSend={send}/>}
+      {session.question?.field === 'constraints' && <FixedSchedulePicker disabled={busy || loading} canSend={mode !== 'llm' || consent} onSend={value => send(value, 'constraints')}/>}
       {session.question && session.question.field !== 'constraints' && <div>
         <p className="execution-help">{multiple ? '여러 항목을 선택할 수 있어요. 선택을 마치면 아래 버튼으로 보내 주세요.' : '답변을 선택한 뒤 아래 버튼으로 보내 주세요.'}</p>
         <div className="profile-chat-choices" role="group" aria-label="답변 선택">{session.question.choices.map(c => <button type="button" className="secondary-button" aria-pressed={selected.includes(c.value)} key={c.label} disabled={busy || loading} onClick={() => toggleChoice(c.value)}>{c.label}</button>)}</div>
         <button type="button" className="primary-button" disabled={busy || loading || !selected.length || (mode === 'llm' && !consent)} onClick={() => {
           const labels = selected.map(value => session.question!.choices.find(c => c.value === value)!.label)
-          void send(labels.join(', '))
+          void send(labels.join(', '), session.question!.field)
         }}>선택한 답변 보내기{selected.length > 0 ? ` (${selected.length})` : ''}</button>
       </div>}
       {session.question?.field !== 'constraints' && (!session.ready || mode === 'llm') && <form onSubmit={e => { e.preventDefault(); void send(text) }}>

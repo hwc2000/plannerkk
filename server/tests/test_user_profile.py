@@ -185,13 +185,13 @@ class ChatTests(unittest.TestCase):
 
     def test_guided_conversation_restores_and_builds_unconfirmed_profile(self):
         sid = self.start()
-        for value in ('학생', '규칙적이에요', '시작이 어려워요', '30분', '2시간', '저녁·밤', '할 일을 줄여요', '작업량 지정형', '없음', '없음'):
+        for value in ('학생', '규칙적이에요', '시작이 어려워요', '30분', '저녁·밤', '할 일을 줄여요', '작업량 지정형', '없음', '없음'):
             r = self.post('/profile/chat/message', sessionId=sid, text=value)
             self.assertEqual(r.status_code, 200, r.text)
         session = self.client.get('/api/execution/profile/chat').json()['session']
         self.assertTrue(session['ready'])
-        self.assertEqual(len(session['messages']), 21)
-        self.assertEqual(session['answers']['dailyMinutes'], 120)
+        self.assertEqual(len(session['messages']), 19)
+        self.assertNotIn('dailyMinutes', session['answers'])
         self.assertIsNone(self.store.read()['profile'])
         r = self.post('/profile/chat/draft', sessionId=sid)
         self.assertEqual(r.status_code, 200, r.text)
@@ -199,7 +199,7 @@ class ChatTests(unittest.TestCase):
         self.assertIsNone(r.json()['profile'])
         survey = self.store.read()['surveyResponses'][-1]
         self.assertEqual(survey['conversationId'], sid)
-        self.assertEqual(len(survey['extractionEvidence']), 10)
+        self.assertEqual(len(survey['extractionEvidence']), 9)
 
     def test_invalid_chat_and_stale_revision_do_not_lose_messages(self):
         sid = self.start()
@@ -237,7 +237,7 @@ class ChatTests(unittest.TestCase):
 
     def test_editing_completed_chat_preserves_other_answers(self):
         sid = self.start()
-        for value in ('학생', '규칙적이에요', '시작이 어려워요', '30분', '2시간', '저녁·밤', '할 일을 줄여요', '시간 지정형', '없음', '없음'):
+        for value in ('학생', '규칙적이에요', '시작이 어려워요', '30분', '저녁·밤', '할 일을 줄여요', '시간 지정형', '없음', '없음'):
             self.assertEqual(self.post('/profile/chat/message', sessionId=sid, text=value).status_code, 200)
         self.assertEqual(self.post('/profile/chat/question', sessionId=sid, field='scheduleStyle').status_code, 200)
         self.assertEqual(self.post('/profile/chat/message', sessionId=sid, text='작업량 지정형').status_code, 200)
@@ -300,6 +300,19 @@ class ReplyValidationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await checked_reply(Rewriter(), 'OK', None)
 
+    async def test_failed_wording_repair_keeps_valid_turn_moving(self):
+        from server.app.profile_chat import checked_reply
+        from server.app.planner import PlanGenerationError
+        class Rewriter:
+            async def generate(self, **kwargs):
+                raise PlanGenerationError('timeout')
+        reply = await checked_reply(Rewriter(), 'OK', 'focusMinutes')
+        self.assertIn('몇 분', reply)
+        class InvalidRewriter:
+            async def generate(self, **kwargs):
+                return {'reply': 'English'}
+        self.assertEqual(await checked_reply(InvalidRewriter(), 'OK', 'focusMinutes'), reply)
+
     def test_distinguishes_session_duration_daily_capacity_and_language(self):
         from server.app.profile_chat import reply_problem
         self.assertIsNotNone(reply_problem('하루에 얼마 정도 집중할 수 있나요?', 'focusMinutes'))
@@ -308,6 +321,19 @@ class ReplyValidationTests(unittest.IsolatedAsyncioTestCase):
         for text in ('좋아요 OK', '了解했어요', 'こんにちは', 'Хорошо'):
             self.assertIsNotNone(reply_problem(text, None))
 
+
+    def test_schedule_style_compares_concrete_examples(self):
+        from server.app.profile_chat import reply_problem, QUESTIONS
+        self.assertIsNotNone(reply_problem('어떤 형태로 받아보고 싶어? 시간 싸이클을 정해야 할까, 할 양만 정하면 될까?', 'scheduleStyle'))
+        text = next(q[1] for q in QUESTIONS if q[0] == 'scheduleStyle')
+        self.assertIsNone(reply_problem(text, 'scheduleStyle'))
+
+    def test_focus_question_never_asks_daily_frequency(self):
+        from server.app.profile_chat import reply_problem
+        for field in ('focusMinutes', 'context', None):
+            self.assertIsNotNone(reply_problem('자연스럽게 몇 번 집중할 수 있어? 하루에 그런 시간들이 몇 번이야?', field))
+        self.assertIsNotNone(reply_problem('한 번에 집중할 수 있는 시간은 어느 정도야?', 'focusMinutes'))
+        self.assertIsNone(reply_problem('쉬지 않고 한 번에 집중하기 편한 시간은 몇 분 정도야?', 'focusMinutes'))
 
     def test_regularity_asks_current_routine_not_preferred_frequency(self):
         from server.app.profile_chat import reply_problem
@@ -344,3 +370,51 @@ class RepeatedQuestionTests(unittest.TestCase):
         session=self.client.get('/api/execution/profile/chat').json()['session']
         self.assertEqual(session['question']['field'],'regularity')
         self.assertEqual(session['answers']['roles'],['student'])
+
+    def test_selected_answer_survives_missing_model_extraction(self):
+        sid = self.start()
+        class Repeater:
+            async def generate(inner, **kwargs):
+                if kwargs['name'] == 'profile_reply_rewrite':
+                    return {'reply': '평소 생활 시간이 매일 비슷한 편이야, 아니면 날마다 달라져?'}
+                return {'reply': '학생이야, 직장인이야?', 'nextField': 'roles', 'updates': []}
+        with TestClient(create_app(execution_store=self.store, execution_llm=Repeater())) as client:
+            r = client.post('/api/execution/profile/chat/message', json={
+                'revision': self.store.read()['revision'], 'sessionId': sid,
+                'text': '학생, 직장인', 'field': 'roles', 'mode': 'llm', 'consent': True})
+        self.assertEqual(r.status_code, 200, r.text)
+        session = self.client.get('/api/execution/profile/chat').json()['session']
+        self.assertEqual(session['answers']['roles'], ['student', 'employee'])
+        self.assertEqual(session['question']['field'], 'regularity')
+        self.assertEqual(session['evidence']['roles']['source'], 'user')
+
+    def test_selected_answer_ignores_fabricated_model_evidence(self):
+        sid = self.start()
+        class Extractor:
+            async def generate(inner, **kwargs):
+                return {'reply': '평소 생활 시간이 매일 비슷한 편이야, 아니면 날마다 달라져?',
+                        'nextField': 'regularity', 'updates': [
+                            {'field': 'roles', 'value': ['employee'], 'messageId': 'wrong', 'quote': 'invented'}]}
+        with TestClient(create_app(execution_store=self.store, execution_llm=Extractor())) as client:
+            response = client.post('/api/execution/profile/chat/message', json={
+                'revision': self.store.read()['revision'], 'sessionId': sid, 'text': '학생',
+                'field': 'roles', 'mode': 'llm', 'consent': True})
+        self.assertEqual(response.status_code, 200, response.text)
+        session = self.client.get('/api/execution/profile/chat').json()['session']
+        self.assertEqual(session['answers']['roles'], ['student'])
+        self.assertEqual(session['evidence']['roles']['source'], 'user')
+
+    def test_exact_quote_repairs_wrong_message_id(self):
+        sid = self.start()
+        class Extractor:
+            async def generate(inner, **kwargs):
+                return {'reply': '평소 생활 시간이 매일 비슷한 편이야, 아니면 날마다 달라져?',
+                        'nextField': 'regularity', 'updates': [
+                            {'field': 'roles', 'value': ['student'], 'messageId': 'wrong', 'quote': '학생'}]}
+        with TestClient(create_app(execution_store=self.store, execution_llm=Extractor())) as client:
+            response = client.post('/api/execution/profile/chat/message', json={
+                'revision': self.store.read()['revision'], 'sessionId': sid, 'text': '학생',
+                'mode': 'llm', 'consent': True})
+        self.assertEqual(response.status_code, 200, response.text)
+        session = self.client.get('/api/execution/profile/chat').json()['session']
+        self.assertEqual(session['evidence']['roles']['messageId'], session['messages'][-2]['id'])

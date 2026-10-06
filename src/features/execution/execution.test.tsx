@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { useState } from 'react'
 import { AvailabilityGrid } from './AvailabilityGrid'
 import { FixedSchedulePicker } from './FixedSchedulePicker'
+import { ProfileForm } from './ProfileForm'
 import { ProfileChat } from './ProfileChat'
 import { ExecutionView } from './ExecutionView'
 import { planCalendarEvents } from './api'
@@ -33,13 +34,14 @@ it('maps confirmed tasks once and omits breaks', () => {
 describe('conversational onboarding', () => {
   const state: ExecutionState = { revision: 0, profile: null, profileDraft: null, settings: { slots: [], view: 'timeline' }, plan: null, planDraft: null, llmAvailable: false, model: 'test' }
   const session = { id: 'chat-1', ready: false, answers: {}, messages: [{ id: 'msg-1', role: 'assistant', content: '어떤 생활인가요?' }], question: { field: 'roles', text: '어떤 생활인가요?', choices: [{ label: '학생', value: 'student' }, { label: '직장인', value: 'employee' }] } }
-  it('opens chat by default without a step survey or form switch', async () => {
+  it('opens a checkbox survey without chat or AI requests', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ revision: 0, session: null }) }))
     render(<ExecutionView state={state} onChange={vi.fn()} projects={[]} milestones={[]} events={[]}/>)
-    expect(screen.queryByText('생활의 리듬')).toBeNull()
+    expect(screen.getByText('생활의 리듬')).toBeTruthy()
     expect(screen.queryByText('설문 양식으로 입력·수정')).toBeNull()
-    expect(screen.getByRole('log')).toBeTruthy()
-    await waitFor(() => expect((screen.getByText('대화 시작') as HTMLButtonElement).disabled).toBe(false))
+    expect(screen.queryByRole('log')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+
   })
   it('resets profile only after confirmation and returns to a fresh chat', async () => {
     const fetcher = vi.fn().mockImplementation(async (url: string) => ({ok:true,json:async()=>url.endsWith('/profile/reset') ? {...state,revision:1} : {revision:0,session:null}}))
@@ -47,7 +49,7 @@ describe('conversational onboarding', () => {
     const confirm = vi.spyOn(window,'confirm').mockReturnValue(false)
     const changed = vi.fn()
     render(<ExecutionView state={state} onChange={changed} projects={[]} milestones={[]} events={[]}/>)
-    await waitFor(()=>expect((screen.getByText('대화 시작') as HTMLButtonElement).disabled).toBe(false))
+
     fireEvent.click(screen.getByText('프로필 초기화하기'))
     expect(fetcher.mock.calls.some(c=>c[0].endsWith('/profile/reset'))).toBe(false)
     confirm.mockReturnValue(true)
@@ -139,4 +141,23 @@ it('rejects invalid/overlapping fixed schedules and supports removal', () => {
   expect(screen.getByRole('alert').textContent).toContain('겹치는')
   fireEvent.click(screen.getByLabelText('월요일 09:00~18:00 삭제'))
   expect(screen.queryByText('고정 일정 보내기 (1)')).toBeNull()
+})
+
+it('submits checked survey answers without LLM interaction', async () => {
+  const submit = vi.fn().mockResolvedValue(undefined)
+  render(<ProfileForm busy={false} onGenerate={submit}/>)
+  fireEvent.click(screen.getByLabelText('학생'))
+  fireEvent.click(screen.getByLabelText('직장인'))
+  fireEvent.click(screen.getByLabelText('대체로 규칙적'))
+  fireEvent.click(screen.getByText('다음'))
+  fireEvent.click(screen.getByLabelText('시작이 어려움'))
+  fireEvent.click(screen.getByText('다음'))
+  fireEvent.click(screen.getByLabelText('25분'))
+  fireEvent.click(screen.getByLabelText('오전'))
+  fireEvent.click(screen.getByText('다음'))
+  fireEvent.click(screen.getByLabelText('할 일을 줄임'))
+  fireEvent.click(screen.getByLabelText('작업량 지정형 · 공부 1시간, 운동 30분'))
+  fireEvent.click(screen.getByText('프로필 생성'))
+  await waitFor(()=>expect(submit).toHaveBeenCalledWith(expect.objectContaining({roles:['student','employee'],focusMinutes:25,dailyMinutes:null,scheduleStyle:'flexible_queue'}),'demo',false))
+  expect(screen.queryByRole('textbox')).toBeNull()
 })

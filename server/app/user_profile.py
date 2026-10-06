@@ -155,6 +155,7 @@ def confirm_profile_draft(state):
     # Resurvey explicitly replaces learned settings; historical evidence remains in revisions.
     p = UserProfile.model_validate(p).model_dump()
     record_revision(state, p, "survey_confirmed", p["surveyResponseId"])
+    state["settings"]["view"] = "checklist" if p["planningPreferences"].get("scheduleStyle") == "flexible_queue" else "timeline"
     state.update(profile=p, profileDraft=None, planDraft=None)
 
 
