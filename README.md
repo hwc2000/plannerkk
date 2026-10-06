@@ -120,6 +120,8 @@ npm run dev
 
 따라서 지금 팀이 먼저 맞출 것은 **공용 관계형 DB 테이블이 아니라 공용 데이터 계약**입니다. `PlannerState`는 그래프 내부 형식입니다. 현재 A의 프로필은 converter로 연결하고, B의 실행 기록은 임시 필드 매핑을 쓰며 B의 공용 계약이 올라오면 경계에서 맞춥니다.
 
+계획 실행 중 기능의 공유 필드와 API 예시는 [계획 실행 중 데이터 계약](docs/planning/adaptive-planner-data-contract.md)에 정리했습니다.
+
 ### localStorage 키
 
 | 저장 데이터 | 키 | 타입 |

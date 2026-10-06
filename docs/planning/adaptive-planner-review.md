@@ -4,6 +4,7 @@ A의 사용자 컨텍스트와 B의 실행 결과를 받아 계획 생성·재�
 코드: `server/app/adaptive/`
 - `state.py` 그래프 실행 상태 · `graph.py` 그래프 · `context.py` 변환 경계 · `ports.py` 생성기·저장소 경계
 - `llm_generator.py` 실제 LLM 축소 생성기 · `local.py` 로컬 DB 어댑터 · `api.py` `/api/adaptive/*`
+공유 객체 형식: [adaptive-planner-data-contract.md](adaptive-planner-data-contract.md)
 할 일 목록: [roadmap.md](roadmap.md)
 
 > 팀 규칙: 공용 데이터 계약은 먼저 GitHub에 올린 쪽에 나중 사람이 맞추고, 추가 의견은 그때 조율한다. 여기서 말하는 데이터 계약은 객체 필드 형식이며 관계형 DB 테이블이나 `PlannerState`를 뜻하지 않는다.
