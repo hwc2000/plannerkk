@@ -2,11 +2,12 @@ import os
 from datetime import date, time, timedelta
 from typing import Literal
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .execution_store import ExecutionStore, ConflictError, empty_state
 from .execution_profile import generate_profile, validate_insights, SCHEMA
 from .execution_llm import ExecutionLLM
+from .execution_service import ExecutionRecordInput, ExecutionService, ProposalNotFoundError
 from .execution_scheduler import TASK_SCHEMA, availability_windows, validate_tasks, schedule
 from .planner import PlanGenerationError, ProjectContext, ExistingTask
 
@@ -83,8 +84,13 @@ class CheckTask(Mutation):
     completed: bool = Field(strict=True)
 
 
+class ExecutionRecordRequest(ExecutionRecordInput, Mutation):
+    pass
+
+
 def execution_router(store=None, llm=None):
     store = store or ExecutionStore()
+    service = ExecutionService(store)
     llm = llm or ExecutionLLM()
     router = APIRouter(prefix="/api/execution")
 
@@ -224,5 +230,21 @@ def execution_router(store=None, llm=None):
                 raise ValueError("작업을 찾을 수 없습니다.")
             task["completed"] = request.completed
         return change(request.revision, update)
+
+    @router.post("/records")
+    def record_execution(request: ExecutionRecordRequest):
+        return envelope(service.record_execution(request.revision, request.model_dump(exclude={"revision"})))
+
+    @router.get("/summary")
+    def execution_summary(days: int = Query(default=14, ge=1, le=365),
+                          planId: str | None = None, profileId: str | None = None):
+        return service.get_execution_summary(days=days, plan_id=planId, profile_id=profileId)
+
+    @router.post("/proposals/{proposal_id}/{decision}")
+    def decide_proposal(proposal_id: str, decision: Literal["approve", "reject"], request: Mutation):
+        try:
+            return envelope(service.decide_proposal(request.revision, proposal_id, decision))
+        except ProposalNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
 
     return router

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import './execution.css'
 import type { CalendarEvent, ExecutionPlan, ExecutionState, Milestone, Project } from '../../shared/types'
 import { dateKey } from '../../shared/constants'
+import { ExecutionLearning } from './ExecutionLearning'
 import { AvailabilityGrid } from './AvailabilityGrid'
 import { answerLabels, ProfileForm } from './ProfileForm'
 import { downloadJson, executionApi, projectContext } from './api'
@@ -106,8 +107,9 @@ export function ExecutionView({ state, onChange, projects, milestones, events }:
     </>}
     {state.planDraft && !editing && planCard(state.planDraft,true)}
     {state.plan && !editing && planCard(state.plan,false)}
+    <ExecutionLearning state={state} busy={busy} run={run}/>
     <details className="execution-card"><summary>저장 및 초기화</summary><p className="execution-help">프로필·가용 시간·주간 계획·완료 상태는 SQLite DB에 저장됩니다. 기존 프로젝트·수동 일정·기억은 기존 브라우저 저장 방식을 유지합니다.</p><button className="secondary-button" disabled={busy} onClick={()=>{
-      if(!window.confirm('실행 프로필·가용 시간·주간 계획을 모두 초기화할까요? 기존 프로젝트·수동 일정·기억은 유지됩니다.'))return
+      if(!window.confirm('실행 프로필·가용 시간·주간 계획·실행 기록·변경 후보를 모두 초기화할까요? 기존 프로젝트·수동 일정·기억은 유지됩니다.'))return
       void run(()=>executionApi('/reset',{revision:state.revision}),'실행 프로필과 계획을 초기화했습니다.').then(ok=>{if(ok){setSlots([]);setEditing(true);setGoal('');setConsent(false)}})
     }}>프로필부터 다시 시작</button></details>
   </section>

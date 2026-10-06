@@ -13,7 +13,7 @@ class ConflictError(ValueError):
 def empty_state():
     return {"revision": 0, "profile": None, "profileDraft": None,
             "settings": {"slots": [], "view": "timeline"}, "plan": None, "planDraft": None,
-            "recoveryDrafts": {}, "executionRecords": []}
+            "recoveryDrafts": {}, "executionRecords": [], "profileUpdateProposals": []}
 
 
 class ExecutionStore:
@@ -30,13 +30,13 @@ class ExecutionStore:
     def read(self):
         with closing(self.connect()) as db:
             row = db.execute("SELECT document FROM execution_state WHERE id=1").fetchone()
-            return json.loads(row[0]) if row else empty_state()
+            return {**empty_state(), **json.loads(row[0])} if row else empty_state()
 
     def change(self, revision, mutation):
         with closing(self.connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT document FROM execution_state WHERE id=1").fetchone()
-            state = json.loads(row[0]) if row else empty_state()
+            state = {**empty_state(), **json.loads(row[0])} if row else empty_state()
             if state["revision"] != revision:
                 raise ConflictError("다른 화면에서 데이터가 변경되었습니다. 새로 불러온 내용을 확인하고 다시 시도해 주세요.")
             mutation(state)

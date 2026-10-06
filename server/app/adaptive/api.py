@@ -38,8 +38,8 @@ from .state import ReasonCode, ReviewDecision, Strategy
 class CheckInBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     completed: bool = Field(strict=True)
-    actualMinutes: int | None = Field(default=None, ge=0, strict=True)
-    remainingMinutes: int | None = Field(default=None, ge=1, strict=True)  # work left; default: the whole task
+    actualMinutes: int | None = Field(default=None, ge=0, le=1440, strict=True)
+    remainingMinutes: int | None = Field(default=None, ge=1, le=1440, strict=True)  # work left; default: the whole task
     reasonCode: ReasonCode | None = None
     note: str = Field(default="", max_length=1500)
 
@@ -114,6 +114,8 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             "planning_context": {"goal": state["plan"]["goal"]},
             "current_task": current_task(state["plan"], task_id),
             "schedule_context": schedule_context(state, task_id, events, local_now()),
+            "profile_update_proposal": next((p for p in reversed(state.get("profileUpdateProposals", []))
+                                             if p["status"] == "pending" and p["profileId"] == state["profile"]["id"]), None),
         }
 
     def respond(saved: dict[str, Any], task_id: str, result: dict[str, Any], **extra: Any) -> dict[str, Any]:
@@ -122,6 +124,7 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             "recoveryDraft": drafts_for_plan(saved).get(task_id),
             **extra,
             "result": _public(result),
+            "profileUpdateProposals": [p for p in saved.get("profileUpdateProposals", []) if p["status"] == "pending"],
         }
 
     @router.post("/check-in")

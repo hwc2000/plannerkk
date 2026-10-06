@@ -1,0 +1,118 @@
+# 실행 결과와 개인화 학습 루프
+
+스키마만 확인하려면 [B 담당 스키마](execution-schema.md)를 참고하세요.
+
+현재 단일 로컬 사용자용 SQLite execution_state에 executionRecords와
+profileUpdateProposals 배열을 저장한다. 기존 DB는 누락 배열을 빈 배열로 읽는다.
+다중 사용자 인증과 별도 테이블 분리는 팀 통합 시 조정한다.
+
+## API
+
+모든 변경 요청에는 최신 revision이 필요하다. 응답은 전체 실행 상태다.
+조회: GET /api/execution (실행 기록과 후보 포함).
+
+POST /api/execution/records
+- planId, taskId: 현재 확정 계획의 작업
+- actualMinutes: 정수 0~1440 또는 null (미입력)
+- remainingMinutes: 정수 0~1440 또는 null. 사용자가 추정한 남은 작업량이며 시간 차이로 자동 계산하지 않는다.
+- result: completed / partial / not_started / incomplete
+- reasonCode: time_shortage / task_too_large / fatigue / interruption /
+  priority_changed / unclear_task / underestimated / other
+- note: 최대 2000자, difficulty: 선택값 1~5, recoveryAction: 최대 1000자
+- partial/not_started는 reasonCode 필수. incomplete는 상세 결과·이유를 아직 모르는 미완료 상태다. 미시작은 실제 시간 0분만 허용. 완료는 남은 시간 0 또는 null만 허용.
+- id, profileId, taskTitle, plannedMinutes, createdAt은 서버가 저장.
+- 직접 records API는 동일 작업 중복을 차단한다. C의 대화 후속 입력은 복구 미결정 기록을 보완하고, 결정 후 재시도는 새 기록을 만든다. 후보 근거로 사용한 기록은 수정하지 않는다.
+- 완료 체크박스는 현재 계획 상태만 변경하며 과거 체크인 결과는 유지한다.
+
+POST /api/execution/proposals/{id}/approve 또는 /reject
+- 요청: revision
+- 승인 시 프로필 변경과 결정 기록을 같은 트랜잭션으로 저장.
+- 프로필 교체·수정 중, 중복 처리, 오래된 revision은 충돌 처리.
+- 승인 시 새 프로필 ID를 부여하고 기존 계획 초안을 무효화.
+  확정된 계획은 유지하며 다음 생성 요청에서 변경값을 사용.
+
+## 첫 규칙: long-task-v1
+
+현재 프로필로 생성한 작업 중 최근 14일의 50분 이상 작업 마지막 3건이
+모두 미완료이고 2건 이상이 시간 부족 또는 작업 크기를 이유로 기록되면
+blockMinutes를 20분으로 줄이는 후보를 만든다. 현재 값이 20 이하이면
+생성하지 않는다. 같은 프로필에 대기 후보가 있거나 기존 후보와 근거가
+겹치면 생성하지 않는다. 승인·거절 여부와 무관하게 근거 중복을 막는다.
+거절 후 서로 다른 새 근거 3건이 쌓이면 다시 제안할 수 있다.
+
+후보에는 변경 전후 값, 이유, 근거 ID, 규칙 버전, 생성·결정 시각을 보존한다.
+실제 시간과 예정 시간 차이는 화면에서 표시하며, 그 자체를 실패로 판단하지 않는다.
+전체 초기화는 실행 기록과 후보도 삭제한다.
+
+## 검증
+
+.venv/bin/python -m unittest discover -s server/tests
+npm test
+npm run build
+
+## C의 실행 요약 연결
+
+GET /api/execution/summary?days=14&planId=...&profileId=...
+
+세 쿼리는 모두 선택값이다. days는 1~365, 기본 14일이다.
+planId와 profileId를 생략하면 해당 기간의 전체 기록을 집계한다.
+집계 기간은 체크인 createdAt 기준이며 미래 기록은 제외한다.
+응답은 전체 상태가 아닌 ExecutionSummary 객체이므로 기존 executionApi
+프론트 함수 대신 별도 조회를 사용해야 한다.
+
+- revision: 집계한 저장 상태의 revision
+- periodStart, periodEnd: 집계 범위의 UTC 시각 (양 끝 포함)
+- days, planId, profileId: 적용한 필터
+- recordCount: 기록 개수
+- resultCounts: completed, partial, not_started, incomplete 각각의 개수
+- completionRate: 기록 중 completed 비율, 0~100%, 소수 둘째 자리 반올림
+- plannedMinutes: 전체 기록의 예정 시간 합계
+- actualMinutes: 실제 시간이 입력된 기록의 시간 합계
+- minutesDifference: 실제 시간이 입력된 기록에 한해 실제 시간에서 예정 시간을 뺀 합계
+- actualMinutesRecordCount: 실제 시간이 입력된 기록 수
+- incompleteReasonCounts: 미완료 기록의 이유별 개수 (완료된 지연 작업은 제외)
+- evidenceRecordIds: 집계에 사용한 전체 기록 ID, 생성 시각 순
+
+기록이 없으면 완료율은 null, 개수와 합계는 0, 근거 ID는 빈 배열이다.
+미기록 작업은 분모에 포함하지 않는다. 이 요약은 관찰 결과이며 승인된
+개인화 선호가 아니다. C는 이 요약만으로 프로필을 자동 변경하면 안 된다.
+승인 후 이전 프로필의 기록도 필요하면 profileId 필터를 생략한다.
+
+## Python 서비스 연결
+
+server.app.execution_service.ExecutionService(store)
+
+- record_execution(revision, payload): 검증 후 저장, 패턴 탐지와 후보 생성
+- decide_proposal(revision, proposal_id, decision): approve 또는 reject
+- get_execution_summary(days=14, plan_id=None, profile_id=None): 읽기 전용 요약
+
+앞의 두 함수는 전체 상태를 반환하고 ExecutionStore.change 트랜잭션을 사용한다.
+입력 검증은 서비스에서도 적용되므로 C가 HTTP를 거치지 않고 호출할 수 있다.
+ConflictError는 오래된 revision·중복 기록·처리된 후보·프로필 충돌을 뜻한다.
+ProposalNotFoundError는 후보가 없다는 뜻이며 HTTP에서는 404로 변환한다.
+
+C가 이미 같은 revision의 상태를 로드했다면
+summarize_execution(state, days=14, plan_id=None, profile_id=None)를 사용해
+추가 DB 조회 없이 PlannerState.executionSummary를 구성할 수 있다.
+사용자 승인 확인은 호출자가 담당하며, GPT의 자의적인 approve 호출로
+사용자 승인을 대신해서는 안 된다. 현재 저장소는 단일 사용자 전용이다.
+
+## C 체크인·복구 연결
+
+adaptive/local.py의 record_check_in은 B의 save_execution_record를 호출한다.
+C의 completed=false는 부분 실행 여부를 임의 추론하지 않고 incomplete로 저장한다.
+actualMinutes와 remainingMinutes는 미입력 시 null을 보존한다.
+C의 복구 판단용 기본 남은 시간과 사용자가 실제 입력한 값은 구분한다.
+
+save_execution_record(state, payload, allow_follow_up=False)는 트랜잭션 내부 함수다.
+ExecutionService.record_execution은 직접 기록용 트랜잭션 래퍼다.
+C는 자신의 store.change 안에서 호출하여 기록과 복구 초안을 원자적으로 저장한다.
+
+set_recovery_action(state, record_id, action)은 같은 트랜잭션 안에서
+shrink/reschedule/keep_current_plan/plan_replaced 결정과 recoveryDecidedAt을 저장한다.
+C의 close_draft에서 호출하므로 복구안 승인 시 계획 변경과 기록 갱신이 함께 커밋된다.
+
+그래프 입력 profile_update_proposal에는 현재 프로필의 대기 후보를 전달한다.
+이번 체크인으로 새로 생성된 후보는 adaptive 응답의 profileUpdateProposals에 포함된다.
+프로필 변경 승인은 기존 B 승인 API를 사용하며 C의 계획 승인과 별개다.
+A의 프로필 버전·갱신 함수 연결은 아직 남아 있다.

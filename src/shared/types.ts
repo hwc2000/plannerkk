@@ -103,7 +103,32 @@ export type ExecutionPlan = {
   entries: ExecutionEntry[]; pendingTasks: Array<ExecutionTask & { reason: string }>
 }
 export type ExecutionState = {
+  executionRecords?: ExecutionRecord[]; profileUpdateProposals?: ProfileUpdateProposal[]
   revision: number; profile: ExecutionProfile | null; profileDraft: ExecutionProfile | null
   settings: PlannerSettings; plan: ExecutionPlan | null; planDraft: ExecutionPlan | null
   llmAvailable: boolean; model: string
+}
+
+export type ExecutionRecord = {
+  id: string; planId: string; taskId: string; profileId: string; taskTitle: string
+  plannedMinutes: number; actualMinutes: number | null; remainingMinutes?: number | null
+  result: 'completed' | 'partial' | 'not_started' | 'incomplete'
+  reasonCode: string | null; note: string; difficulty: number | null
+  recoveryAction: string | null; recoveryDecidedAt?: string; createdAt: string
+}
+export type ProfileUpdateProposal = {
+  id: string; profileId: string; appliedProfileId?: string
+  proposedChanges: { blockMinutes: { from: number; to: number } }
+  reason: string; evidenceRecordIds: string[]; ruleVersion: string
+  status: 'pending' | 'approved' | 'rejected'; createdAt: string; decidedAt: string | null
+}
+
+export type ExecutionSummary = {
+  revision: number; days: number; periodStart: string; periodEnd: string
+  planId: string | null; profileId: string | null; recordCount: number
+  resultCounts: Record<ExecutionRecord['result'], number>
+  completionRate: number | null
+  plannedMinutes: number; actualMinutes: number; minutesDifference: number
+  actualMinutesRecordCount: number
+  incompleteReasonCounts: Record<string, number>; evidenceRecordIds: string[]
 }
