@@ -2,11 +2,11 @@
 
 A의 사용자 컨텍스트와 B의 실행 결과를 받아 계획 생성·재계획·승인 흐름을 제어한다.
 코드: `server/app/adaptive/`
-- `state.py` 스키마 · `graph.py` 그래프 · `context.py` 변환 경계 · `ports.py` 생성기·저장소 경계
+- `state.py` 그래프 실행 상태 · `graph.py` 그래프 · `context.py` 변환 경계 · `ports.py` 생성기·저장소 경계
 - `llm_generator.py` 실제 LLM 축소 생성기 · `local.py` 로컬 DB 어댑터 · `api.py` `/api/adaptive/*`
 할 일 목록: [roadmap.md](roadmap.md)
 
-> 팀 규칙: 공용 스키마는 먼저 GitHub에 올린 쪽에 나중 사람이 맞추고, 추가 의견은 그때 조율한다.
+> 팀 규칙: 공용 데이터 계약은 먼저 GitHub에 올린 쪽에 나중 사람이 맞추고, 추가 의견은 그때 조율한다. 여기서 말하는 데이터 계약은 객체 필드 형식이며 관계형 DB 테이블이나 `PlannerState`를 뜻하지 않는다.
 
 ## 체크인 흐름 (API)
 
@@ -113,7 +113,7 @@ B의 이유 코드 8개를 그대로 쓴다.
 | priority_changed | replan |
 | other | 사용자에게 복구 방법 선택 요청 |
 
-## 다른 스키마와의 연결
+## 다른 팀 데이터 계약과의 연결
 
 **A → 그래프**
 - `get_planning_context(user, project)` → `planning_context`
@@ -138,6 +138,8 @@ B의 이유 코드 8개를 그대로 쓴다.
 - **채팅 내용이 UserProfile을 직접 바꾸지 않는다.** 프로필은 `ProfileUpdateProposal` → 사용자 승인을 거쳐서만 바뀐다.
 
 ## 직접 테스트하기
+
+> 이 브랜치는 로컬 실행 상태에 새 필드를 추가한다. 기존 테스트 데이터를 유지할 필요가 없으면 서버를 끄고 기본 경로 `data/replan.sqlite3`를 삭제한 뒤 실행한다. `REPLAN_DB_PATH`를 설정했다면 그 경로의 파일을 사용한다.
 
 1. 의존성 설치 후 앱 실행: `pip install -r requirements.txt` → `python run_local.py`
 2. 앱 화면에서 실행 프로필 → 가용 시간 → 주간 계획 생성·확정
