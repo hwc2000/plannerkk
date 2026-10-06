@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from server.app.main import create_app
 from server.app.execution_store import ExecutionStore
-from server.app.execution_api import Slot, BusyEvent
+from server.app.execution_api import SCHEDULE_STYLE_INSTRUCTIONS, Slot, BusyEvent
 from server.app.execution_scheduler import availability_windows, schedule
 from server.app.execution_profile import generate_profile
 
@@ -94,6 +94,35 @@ class ExecutionTests(unittest.TestCase):
         r=self.client.post('/api/execution/profile',json={'revision':self.state['revision'],'answers':{**ANSWERS,'focusMinutes':True}})
         self.assertEqual(r.status_code,400)
         self.assertEqual(self.store.read()['profile'],saved)
+
+    def test_plan_prompt_and_chunk_size_follow_schedule_style(self):
+        class RecordingLLM(FakeLLM):
+            def __init__(self):
+                self.calls = []
+
+            async def generate(self, **kwargs):
+                self.calls.append(kwargs)
+                return await super().generate(**kwargs)
+
+        self.client.close()
+        # 18~20시 window (120분), buffer 40% -> flexible chunk 72분; time_blocks keeps blockMinutes 30.
+        # scheduleStyle currently follows regularity (regular -> time_blocks).
+        for regularity, style, max_block in (('regular', 'time_blocks', 30), ('irregular', 'flexible_queue', 72)):
+            with self.subTest(style=style):
+                llm = RecordingLLM()
+                store = ExecutionStore(Path(self.temp.name)/f'{style}.sqlite3')
+                with TestClient(create_app(execution_store=store, execution_llm=llm)) as client:
+                    self.client, self.state = client, client.get('/api/execution').json()
+                    self.post('/profile', answers={**ANSWERS, 'regularity': regularity})
+                    self.post('/profile/confirm')
+                    self.assertEqual(self.state['profile']['planningPreferences']['scheduleStyle'], style)
+                    r = client.put('/api/execution/settings', json={'revision': self.state['revision'], 'settings': {'slots': [{'day': 0, 'hour': 18}, {'day': 0, 'hour': 19}], 'view': 'timeline'}})
+                    self.state = r.json()
+                    self.post('/plan', goal='공부', startDate='2030-01-07', consent=True)
+                call = llm.calls[-1]
+                self.assertEqual(call['context']['scheduleStyle'], style)
+                self.assertEqual(call['context']['maxBlockMinutes'], max_block)
+                self.assertIn(SCHEDULE_STYLE_INSTRUCTIONS[style], call['instructions'])
 
 class SchedulerTests(unittest.TestCase):
     def test_busy_events_past_time_and_deadlines(self):

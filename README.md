@@ -105,6 +105,23 @@ npm run dev
 
 지금 단계에서는 Supabase를 사용하지 않습니다. 각자 만든 기능을 합칠 수 있도록 **localStorage 키와 객체 필드 이름을 똑같이 사용합니다.**
 
+### 문서에서 쓰는 용어
+
+`스키마`라는 말이 여러 뜻으로 섞이지 않도록 아래처럼 구분합니다.
+
+| 용어 | 뜻 | 현재 기준 |
+| --- | --- | --- |
+| **공용 데이터 계약** | 팀 기능 사이에 주고받는 객체의 필드와 값 | 프론트는 `src/shared/types.ts`, API는 Pydantic 요청·응답 모델과 설계 문서 |
+| **공용 관계형 DB 스키마** | Supabase의 테이블·열·외래 키 관계 | 아직 없음. Supabase 도입 때 별도로 설계 |
+| **로컬 SQLite 구조** | 로컬 DB의 실제 테이블 구조 | `execution_state(id, document)` 한 테이블이며, `document` 열에 JSON을 저장 |
+| **실행 저장 상태** | 위 JSON 안에 저장하는 프로필·계획·기록 묶음 | `server/app/execution_store.py`의 `empty_state()` |
+| **PlannerState** | LangGraph를 한 번 실행하는 동안 노드 사이에서 전달하는 임시 상태 | `server/app/adaptive/state.py`. DB 구조가 아니며 실행이 끝나면 자체 저장되지 않음 |
+| **LLM 출력 스키마** | AI 응답 형식을 검사하는 JSON Schema | 각 LLM 생성기에서만 사용하며 DB 구조와 무관 |
+
+팀원 C가 소유하는 스키마는 그래프 내부의 **`PlannerState`**입니다. A의 프로필과 B의 실행 기록은 C가 확정하는 스키마가 아니며, 현재는 그래프를 시험하기 위한 임시 converter와 로컬 어댑터만 둡니다. A·B의 공용 계약이 올라오면 경계에서 맞춥니다.
+
+팀원 C의 State와 A·B 연동 경계는 [PlannerState와 연동 경계](docs/planning/adaptive-planner-state-contract.md)에 정리했습니다.
+
 ### localStorage 키
 
 | 저장 데이터 | 키 | 타입 |
@@ -135,7 +152,7 @@ npm run dev
 1. 위 이름을 그대로 사용하고 비슷한 이름의 키나 필드를 새로 만들지 않습니다.
 2. 필드 이름은 `camelCase`를 사용합니다. 예: `startDate`, `projectId`.
 3. 날짜는 `YYYY-MM-DD`, 시간은 `HH:mm`, `id`는 문자열로 저장합니다.
-4. 스키마 기준은 `src/shared/types.ts`입니다. 바꿔야 하면 먼저 팀에 알리고 이 파일부터 함께 수정합니다.
+4. 프론트 공용 데이터 계약의 기준은 `src/shared/types.ts`입니다. 바꿔야 하면 먼저 팀에 알리고 이 파일부터 함께 수정합니다.
 5. 작업 전 최신 `main`에서 새 브랜치를 만들고, 작업 후 테스트와 빌드를 확인해 Pull Request를 올립니다.
 
 > 현재 데이터는 각자의 브라우저에 따로 저장됩니다. 브라우저끼리 데이터를 공유하는 기능은 아직 없습니다.
