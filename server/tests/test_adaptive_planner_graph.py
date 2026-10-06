@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from server.app.adaptive_planner_graph import (
+from server.app.adaptive import (
     build_adaptive_planner_graph,
     to_execution_context,
 )
@@ -9,10 +9,10 @@ from server.app.adaptive_planner_graph import (
 
 def base_state():
     return {
+        "request": "recovery",
         "execution_context": {
+            "schedule_style": "time_blocks",
             "focus_minutes": 20,
-            "recovery_preference": "reduce",
-            "recent_failure_count": 1,
         },
         "current_task": {
             "id": "task-1",
@@ -26,6 +26,12 @@ def base_state():
             "reason_code": "task_too_large",
             "note": "한 번에 끝내기 어려웠다",
         },
+        "schedule_context": {
+            "now": "2030-01-07T09:00",
+            "free_windows": [["2030-01-07T18:00", "2030-01-07T21:00"]],
+            "deadline": None,
+            "deadline_within_plan": False,
+        },
     }
 
 
@@ -37,47 +43,33 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
 
         def converter(profile, records):
             seen.append((profile, records))
-            return {
-                "focus_minutes": 25,
-                "recovery_preference": "reduce",
-                "recent_failure_count": 2,
-            }
+            return {"schedule_style": "time_blocks", "focus_minutes": 25}
 
         context = to_execution_context(raw_profile, raw_records, converter=converter)
 
         self.assertEqual(seen, [(raw_profile, raw_records)])
-        self.assertEqual(context["focus_minutes"], 25)
-        self.assertEqual(context["recent_failure_count"], 2)
+        self.assertEqual(context, {"schedule_style": "time_blocks", "focus_minutes": 25, "break_minutes": None})
 
-    def test_converter_does_not_invent_failure_count(self):
-        context = to_execution_context(
-            object(),
-            [],
-            converter=lambda _profile, _records: {
-                "focus_minutes": 25,
-                "recovery_preference": "reduce",
-            },
-        )
+    def test_converter_does_not_invent_missing_values(self):
+        context = to_execution_context(object(), [], converter=lambda _profile, _records: {})
 
-        self.assertIsNone(context["recent_failure_count"])
+        self.assertEqual(context, {"schedule_style": None, "focus_minutes": None, "break_minutes": None})
 
-    def test_malformed_execution_context_integers_request_information(self):
-        invalid_values = ("20", True, 20.0)
-        for field in ("focus_minutes", "recent_failure_count"):
-            for value in invalid_values:
-                with self.subTest(field=field, value=value):
-                    state = base_state()
-                    state["execution_context"][field] = value
+    def test_malformed_focus_minutes_requests_information(self):
+        for value in ("20", True, 20.0, 0):
+            with self.subTest(value=value):
+                state = base_state()
+                state["execution_context"]["focus_minutes"] = value
 
-                    result = build_adaptive_planner_graph(
-                        lambda _state: self.fail("generator must not run")
-                    ).invoke(state)
+                result = build_adaptive_planner_graph(
+                    lambda _state: self.fail("generator must not run")
+                ).invoke(state)
 
-                    self.assertEqual(result["route"], "request_information")
-                    self.assertEqual(
-                        result["fallback"]["invalid_fields"],
-                        [f"execution_context.{field}"],
-                    )
+                self.assertEqual(result["route"], "request_information")
+                self.assertEqual(
+                    result["fallback"]["invalid_fields"],
+                    ["execution_context.focus_minutes"],
+                )
 
     def test_malformed_check_in_actual_minutes_requests_information(self):
         for value in ("20", True, 20.0):
@@ -104,6 +96,24 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
         self.assertEqual(result["route"], "request_information")
         self.assertEqual(result["fallback"]["missing_fields"], ["check_in.completed"])
 
+    def test_malformed_schedule_times_request_information(self):
+        cases = (
+            ("now", "not-a-date", "schedule_context.now"),
+            ("now", 1893456000, "schedule_context.now"),
+            ("free_windows", [["2030-01-07T18:00+09:00", "2030-01-07T19:00+09:00"]], "schedule_context.free_windows.0.0"),
+            ("free_windows", [["2030-01-07T19:00", "2030-01-07T18:00"]], "schedule_context"),
+            ("deadline", "2030/01/08", "schedule_context.deadline"),
+        )
+        for field, value, path in cases:
+            with self.subTest(field=field, value=value):
+                state = base_state()
+                state["schedule_context"][field] = value
+
+                result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
+
+                self.assertEqual(result["route"], "request_information")
+                self.assertIn(path, result["fallback"]["invalid_fields"])
+
     def test_invalid_current_task_reports_invalid_field(self):
         state = base_state()
         state["current_task"]["minutes"] = "sixty"
@@ -125,18 +135,19 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
 
     def test_not_yet_connected_route_keeps_current_plan_explicitly(self):
         state = base_state()
-        state["check_in"]["reason_code"] = "time_shortage"
+        state["check_in"]["reason_code"] = "priority_changed"
 
         result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
 
-        self.assertEqual(result["route"], "reschedule")
+        self.assertEqual(result["route"], "recovery")
+        self.assertEqual(result["strategy"], "replan")
         self.assertEqual(result["approval_status"], "fallback")
         self.assertEqual(result["fallback"]["action"], "keep_current_plan")
         self.assertEqual(result["fallback"]["source"], "route_not_connected")
 
     def test_large_task_uses_shrink_route_and_waits_for_approval(self):
         def generator(state):
-            self.assertEqual(state["route"], "shrink")
+            self.assertEqual(state["strategy"], "shrink")
             return {
                 "replaces_task_id": "task-1",
                 "tasks": [
@@ -148,11 +159,12 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
 
         result = build_adaptive_planner_graph(generator).invoke(base_state())
 
-        self.assertEqual(result["route"], "shrink")
+        self.assertEqual(result["route"], "recovery")
+        self.assertEqual(result["strategy"], "shrink")
         self.assertEqual(result["approval_status"], "waiting")
         self.assertEqual(result["retry_count"], 0)
         self.assertEqual(result["validation_errors"], [])
-        self.assertEqual(len(result["recovery_draft"]["tasks"]), 2)
+        self.assertEqual(len(result["draft"]["tasks"]), 2)
 
     def test_generator_exception_is_sanitized_in_graph_state(self):
         secret = "provider-token-and-internal-details"
@@ -187,7 +199,7 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
                 )
 
                 self.assertEqual(result["approval_status"], "fallback")
-                self.assertIsNone(result["recovery_draft"])
+                self.assertIsNone(result["draft"])
 
     def test_validated_draft_is_stored_as_canonical_model_dump(self):
         generated_draft = {
@@ -204,23 +216,26 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
 
         self.assertEqual(result["approval_status"], "waiting")
         self.assertEqual(
-            result["recovery_draft"],
+            result["draft"],
             {
+                "kind": "shrink",
                 "replaces_task_id": "task-1",
                 "tasks": [
-                    {"title": "작은 작업", "minutes": 10, "done_when": "완료"}
+                    {"title": "작은 작업", "minutes": 10, "done_when": "완료",
+                     "start": "2030-01-07T18:00", "end": "2030-01-07T18:10"}
                 ],
                 "applied_reasons": ["작업 축소"],
+                "dropped_scope": [],
+                "carry_over_minutes": 0,
             },
         )
-        self.assertIsInstance(result["recovery_draft"]["tasks"], list)
+        self.assertIsInstance(result["draft"]["tasks"], list)
 
     def test_max_retries_requires_bounded_strict_integer(self):
         invalid_values = (-1, 6, True, False, "2", 2.0, math.nan, math.inf, -math.inf)
         for value in invalid_values:
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError):
-                    build_adaptive_planner_graph(lambda _state: {}, max_retries=value)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                build_adaptive_planner_graph(lambda _state: {}, max_retries=value)
 
         for value in (0, 5):
             with self.subTest(valid=value):
@@ -265,7 +280,7 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
         self.assertEqual(result["fallback"]["action"], "keep_current_plan")
         self.assertEqual(result["fallback"]["source"], "validation_policy")
         self.assertNotIn("used_value", result["fallback"])
-        self.assertIsNone(result["recovery_draft"])
+        self.assertIsNone(result["draft"])
 
     def test_missing_focus_minutes_requests_input_instead_of_guessing(self):
         state = base_state()
@@ -279,6 +294,247 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
         self.assertEqual(result["fallback"]["missing_fields"], ["execution_context.focus_minutes"])
         self.assertNotIn("used_value", result["fallback"])
 
+    def test_shrink_rejects_task_as_long_as_original(self):
+        state = base_state()
+        state["current_task"]["minutes"] = 20
+
+        def unchanged_generator(_state):
+            return {
+                "replaces_task_id": "task-1",
+                "tasks": [{"title": "발표 자료 초안 작성", "minutes": 20, "done_when": "완료"}],
+                "applied_reasons": ["그대로 둠"],
+            }
+
+        result = build_adaptive_planner_graph(unchanged_generator, max_retries=0).invoke(state)
+
+        self.assertEqual(result["approval_status"], "fallback")
+        self.assertTrue(
+            any(e.startswith("tasks.0.minutes:") for e in result["fallback"]["validation_errors"])
+        )
+
+    def test_whitespace_only_text_fails_validation(self):
+        for field, value in (("title", " "), ("done_when", "\t"), ("applied_reasons", [" "])):
+            with self.subTest(field=field):
+                draft = {
+                    "replaces_task_id": "task-1",
+                    "tasks": [{"title": "작은 작업", "minutes": 10, "done_when": "완료"}],
+                    "applied_reasons": ["작업 축소"],
+                }
+                if field == "applied_reasons":
+                    draft["applied_reasons"] = value
+                else:
+                    draft["tasks"][0][field] = value
+
+                result = build_adaptive_planner_graph(
+                    lambda _state, d=draft: d, max_retries=0
+                ).invoke(base_state())
+
+                self.assertEqual(result["approval_status"], "fallback")
+
+    def test_whitespace_only_current_task_requests_information(self):
+        state = base_state()
+        state["current_task"]["title"] = "   "
+
+        result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
+
+        self.assertEqual(result["fallback"]["invalid_fields"], ["current_task.title"])
+
+    def test_retry_feedback_names_the_failing_field(self):
+        seen = []
+
+        def generator(state):
+            seen.append(list(state["validation_errors"]))
+            return {
+                "replaces_task_id": "task-1",
+                "tasks": [{"title": "작은 작업", "minutes": 10, "done_when": " "}],
+                "applied_reasons": [],
+            }
+
+        build_adaptive_planner_graph(generator, max_retries=1).invoke(base_state())
+
+        feedback = seen[1]
+        self.assertTrue(any(e.startswith("tasks.0.done_when:") for e in feedback))
+        self.assertTrue(any(e.startswith("applied_reasons:") for e in feedback))
+
+    def test_missing_or_unknown_request_asks_for_it(self):
+        for value, key in ((None, "missing_fields"), ("chat", "invalid_fields")):
+            with self.subTest(value=value):
+                state = base_state()
+                if value is None:
+                    del state["request"]
+                else:
+                    state["request"] = value
+
+                result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
+
+                self.assertEqual(result["route"], "request_information")
+                self.assertEqual(result["fallback"][key], ["request"])
+
+    def test_new_plan_without_planning_context_is_not_generated(self):
+        state = {"request": "new_plan", "user_id": "user-1", "project_id": "project-a"}
+
+        result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
+
+        self.assertEqual(result["route"], "request_information")
+        self.assertEqual(result["fallback"]["missing_fields"], ["planning_context"])
+
+    def test_new_plan_does_not_require_check_in(self):
+        state = {
+            "request": "new_plan",
+            "user_id": "user-1",
+            "project_id": "project-a",
+            "planning_context": {"project": {"title": "졸업작품"}},
+        }
+
+        result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
+
+        self.assertEqual(result["route"], "new_plan")
+        self.assertEqual(result["fallback"]["source"], "route_not_connected")
+
+    def test_every_reason_code_maps_to_a_strategy_except_other(self):
+        expected = {
+            "task_too_large": "shrink",
+            "unclear_task": "shrink",
+            "fatigue": "shrink",
+            "time_shortage": "reschedule",
+            "interruption": "reschedule",
+            "underestimated": "reschedule",
+            "priority_changed": "replan",
+        }
+        for reason, strategy in expected.items():
+            with self.subTest(reason=reason):
+                state = base_state()
+                state["check_in"]["reason_code"] = reason
+
+                result = build_adaptive_planner_graph(
+                    lambda _state: {
+                        "replaces_task_id": "task-1",
+                        "tasks": [{"title": "작은 작업", "minutes": 10, "done_when": "완료"}],
+                        "applied_reasons": ["작업 축소"],
+                    }
+                ).invoke(state)
+
+                self.assertEqual(result["strategy"], strategy)
+
+    def test_other_reason_asks_user_to_pick_strategy(self):
+        state = base_state()
+        state["check_in"]["reason_code"] = "other"
+
+        result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
+
+        self.assertEqual(result["route"], "request_information")
+        self.assertEqual(result["fallback"]["missing_fields"], ["strategy"])
+
+    def test_user_chosen_strategy_overrides_reason(self):
+        state = base_state()
+        state["check_in"]["reason_code"] = "time_shortage"
+        state["strategy"] = "shrink"
+
+        result = build_adaptive_planner_graph(
+            lambda _state: {
+                "replaces_task_id": "task-1",
+                "tasks": [{"title": "작은 작업", "minutes": 10, "done_when": "완료"}],
+                "applied_reasons": ["사용자가 축소를 선택함"],
+            }
+        ).invoke(state)
+
+        self.assertEqual(result["strategy"], "shrink")
+        self.assertEqual(result["approval_status"], "waiting")
+
+    def test_invalid_top_level_fields_request_information(self):
+        for field, value in (("base_revision", -1), ("base_revision", "3"), ("user_id", " "), ("strategy", "skip")):
+            with self.subTest(field=field, value=value):
+                state = base_state()
+                state[field] = value
+
+                result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
+
+                self.assertEqual(result["fallback"]["invalid_fields"], [field])
+
+    def test_profile_update_proposal_is_output_only(self):
+        state = base_state()
+        state["profile_update_proposal"] = {"proposedChanges": {"blockMinutes": 20}}
+
+        result = build_adaptive_planner_graph(
+            lambda _state: {
+                "replaces_task_id": "task-1",
+                "tasks": [{"title": "작은 작업", "minutes": 10, "done_when": "완료"}],
+                "applied_reasons": ["작업 축소"],
+            }
+        ).invoke(state)
+
+        self.assertIsNone(result["profile_update_proposal"])
+
+    def test_shrink_without_schedule_style_asks_for_it(self):
+        state = base_state()
+        del state["execution_context"]["schedule_style"]
+
+        result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
+
+        self.assertEqual(result["route"], "request_information")
+        self.assertEqual(result["fallback"]["missing_fields"], ["execution_context.schedule_style"])
+
+    def test_flexible_queue_shrink_needs_no_focus_minutes(self):
+        state = base_state()
+        state["execution_context"]["schedule_style"] = "flexible_queue"
+        state["execution_context"]["focus_minutes"] = None
+
+        # One 40-minute chunk with a smaller scope: too long for a 20-minute
+        # focus session, but fine for a chunk planner.
+        result = build_adaptive_planner_graph(
+            lambda _state: {
+                "replaces_task_id": "task-1",
+                "tasks": [{"title": "슬라이드 목차와 핵심 문장만", "minutes": 40, "done_when": "목차와 문장 초안 완성"}],
+                "applied_reasons": ["범위를 목차와 핵심 문장으로 줄임"],
+            }
+        ).invoke(state)
+
+        self.assertEqual(result["approval_status"], "waiting")
+
+    def test_shrink_total_must_be_shorter_than_original(self):
+        # Seen with a real LLM: pieces that add up to exactly the original minutes.
+        result = build_adaptive_planner_graph(
+            lambda _state: {
+                "replaces_task_id": "task-1",
+                "tasks": [
+                    {"title": f"조각 {i}", "minutes": 20, "done_when": "완료"} for i in range(3)
+                ],
+                "applied_reasons": ["축소"],
+            },
+            max_retries=0,
+        ).invoke(base_state())
+
+        self.assertEqual(result["approval_status"], "fallback")
+        self.assertTrue(any(e.startswith("tasks: 축소 계획의 총 작업 시간") for e in result["fallback"]["validation_errors"]))
+
+    def test_flexible_queue_still_requires_less_time_than_original(self):
+        state = base_state()
+        state["execution_context"]["schedule_style"] = "flexible_queue"
+
+        result = build_adaptive_planner_graph(
+            lambda _state: {
+                "replaces_task_id": "task-1",
+                "tasks": [{"title": "그대로", "minutes": 60, "done_when": "완료"}],
+                "applied_reasons": ["그대로 둠"],
+            },
+            max_retries=0,
+        ).invoke(state)
+
+        self.assertEqual(result["approval_status"], "fallback")
+
+    def test_time_blocks_rejects_piece_longer_than_focus(self):
+        result = build_adaptive_planner_graph(
+            lambda _state: {
+                "replaces_task_id": "task-1",
+                "tasks": [{"title": "긴 조각", "minutes": 40, "done_when": "완료"}],
+                "applied_reasons": ["축소"],
+            },
+            max_retries=0,
+        ).invoke(base_state())
+
+        self.assertEqual(result["approval_status"], "fallback")
+        self.assertTrue(any("집중 가능 시간" in e for e in result["fallback"]["validation_errors"]))
+
     def test_completed_task_continues_without_recovery_generation(self):
         state = base_state()
         state["check_in"]["completed"] = True
@@ -287,7 +543,7 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
 
         self.assertEqual(result["route"], "continue")
         self.assertEqual(result["approval_status"], "not_required")
-        self.assertIsNone(result["recovery_draft"])
+        self.assertIsNone(result["draft"])
 
 
 if __name__ == "__main__":

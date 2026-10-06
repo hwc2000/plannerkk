@@ -7,8 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from .adaptive.api import adaptive_router
 from .execution_api import execution_router
-from .execution_store import ConflictError
+from .execution_store import ConflictError, ExecutionStore
 
 from .planner import (
     PlanDraft,
@@ -25,7 +26,9 @@ class PlanGenerator(Protocol):
 
 def create_app(generator: PlanGenerator | None = None, execution_store=None, execution_llm=None) -> FastAPI:
     app = FastAPI(title="PlannerKK API")
-    app.include_router(execution_router(execution_store, execution_llm))
+    store = execution_store or ExecutionStore()
+    app.include_router(execution_router(store, execution_llm))
+    app.include_router(adaptive_router(store, execution_llm))
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

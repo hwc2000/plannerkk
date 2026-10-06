@@ -12,7 +12,8 @@ class ConflictError(ValueError):
 
 def empty_state():
     return {"revision": 0, "profile": None, "profileDraft": None,
-            "settings": {"slots": [], "view": "timeline"}, "plan": None, "planDraft": None}
+            "settings": {"slots": [], "view": "timeline"}, "plan": None, "planDraft": None,
+            "recoveryDrafts": {}, "executionRecords": []}
 
 
 class ExecutionStore:
