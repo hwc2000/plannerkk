@@ -39,6 +39,11 @@ export type Memory = {
   content: string
   category: MemoryCategory
   source: 'user' | 'ai_approved'
+  updatedAt?: string
+  expiresAt?: string | null
+  sensitive?: boolean
+  useForPlanning?: boolean
+  projectId?: string | null
   createdAt: string
 }
 
@@ -53,7 +58,10 @@ export type Editor = {
 
 export type Entity = Project | Milestone | CalendarEvent | Memory
 
+export type ScheduleStyle = 'time_blocks' | 'flexible_queue'
+
 export type ExecutionAnswers = {
+  scheduleStyle?: ScheduleStyle | 'unknown'
   roles: string[]
   regularity: string
   barriers: string[]
@@ -66,6 +74,13 @@ export type ExecutionAnswers = {
 }
 
 export type ExecutionProfile = {
+  userId?: string
+  version?: number
+  declaredFacts?: ExecutionAnswers
+  learnedPatterns?: LearnedPattern[]
+  updatedAt?: string
+  confirmedAt?: string | null
+  surveyResponseId?: string | null
   id: string
   schemaVersion: string
   createdAt: string
@@ -77,7 +92,8 @@ export type ExecutionProfile = {
     breakMinutes: number
     bufferPercent: number
     dailyPlannedMinutes: number | null
-    scheduleStyle: string
+    scheduleStyle: ScheduleStyle
+    scheduleStyleSource?: "user" | "rule" | "legacy"
     recoveryPreference: string
     starterMinutes: number | null
     status: string
@@ -96,6 +112,8 @@ export type ExecutionEntry = ExecutionTask & {
   id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean
 }
 export type ExecutionPlan = {
+  profileVersion?: number
+  scheduleStyle?: ScheduleStyle
   id: string; profileId: string; projectId: string | null
   project: Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'> | null
   goal: string; startDate: string; endDate: string; timezone: string
@@ -131,4 +149,26 @@ export type ExecutionSummary = {
   plannedMinutes: number; actualMinutes: number; minutesDifference: number
   actualMinutesRecordCount: number
   incompleteReasonCounts: Record<string, number>; evidenceRecordIds: string[]
+}
+
+export type LearnedPattern = {
+  id: string; observation: string; proposedChanges: Record<string, { from: number; to: number }>
+  evidenceRecordIds: string[]; approvedProposalId: string; projectId: string | null
+  status: 'active' | 'revoked' | 'superseded'; approvedAt: string; expiresAt: string | null
+}
+export type UserProfile = ExecutionProfile & {
+  userId: string; version: number; schemaVersion: '2.0'; declaredFacts: ExecutionAnswers
+  learnedPatterns: LearnedPattern[]; updatedAt: string; confirmedAt: string | null
+  surveyResponseId: string | null
+}
+export type SurveyResponse = {
+  id: string; userId: string; surveyVersion: string; answers: ExecutionAnswers
+  submittedAt: string; conversationId?: string
+}
+export type PlanningContext = {
+  schemaVersion: '1.0'; userId: string; profileId: string; profileVersion: number; generatedAt: string
+  userProfile: { declaredFacts: Omit<ExecutionAnswers, 'constraints' | 'context'>;
+    planningPreferences: ExecutionProfile['planningPreferences']; learnedPatterns: LearnedPattern[] }
+  projectContext: Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'> | null
+  availability: { timezone: string; slots: AvailabilitySlot[] }; memories: Memory[]; warnings: string[]
 }

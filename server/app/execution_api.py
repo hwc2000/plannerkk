@@ -8,6 +8,9 @@ from .execution_store import ExecutionStore, ConflictError, empty_state
 from .execution_profile import generate_profile, validate_insights, SCHEMA
 from .execution_llm import ExecutionLLM
 from .execution_service import ExecutionRecordInput, ExecutionService, ProposalNotFoundError
+from .user_profile import save_profile_draft, confirm_profile_draft
+from .planning_context import get_planning_context, MemoryInput
+from .profile_chat import profile_chat_router
 from .execution_scheduler import TASK_SCHEMA, availability_windows, validate_tasks, schedule
 from .planner import PlanGenerationError, ProjectContext, ExistingTask
 
@@ -45,6 +48,7 @@ class SettingsRequest(Mutation):
 
 
 class ProfileRequest(Mutation):
+    sourceSurveyResponseId: str | None = None
     answers: dict
     mode: Literal["demo", "llm"] = "demo"
     consent: bool = False
@@ -64,6 +68,7 @@ class BusyEvent(BaseModel):
 
 
 class WeeklyRequest(Mutation):
+    memories: list[MemoryInput] = Field(default_factory=list, max_length=200)
     goal: str = Field(min_length=1, max_length=2000)
     startDate: date
     consent: bool = False
@@ -135,16 +140,45 @@ def execution_router(store=None, llm=None):
             value["insights"] = validate_insights(result)
             value["source"] = "llm"
         value["id"] = str(uuid4())
-        return change(request.revision, lambda state: state.update(profileDraft=value))
+        def save(state):
+            source = next((r for r in state["surveyResponses"] if r["id"] == request.sourceSurveyResponseId), None)
+            if request.sourceSurveyResponseId and source is None:
+                raise ValueError("원본 설문을 찾을 수 없습니다.")
+            save_profile_draft(state, value, request.answers, store.user_id)
+            if source and source.get("conversationId"):
+                state["surveyResponses"][-1]["conversationId"] = source["conversationId"]
+                state["surveyResponses"][-1]["extractionEvidence"] = {
+                    k: v for k, v in source.get("extractionEvidence", {}).items()
+                    if source["answers"].get(k) == request.answers.get(k)}
+        return change(request.revision, save)
 
     @router.post("/profile/confirm")
     def confirm_profile(request: Mutation):
+        return change(request.revision, confirm_profile_draft)
+
+    @router.get("/survey-responses")
+    def survey_responses():
+        return {"items": store.read()["surveyResponses"]}
+
+    @router.get("/profile/revisions")
+    def profile_revisions():
+        return {"items": store.read()["profileRevisions"]}
+
+    @router.get("/profile")
+    def saved_profile():
+        return {"profile": store.read()["profile"]}
+
+    @router.post("/planning-context")
+    def planning_context(request: WeeklyRequest):
+        state = snapshot(request.revision)
+        return get_planning_context(store.user_id, request.project, state=state,
+                                    memories=[m.model_dump() for m in request.memories])
+
+    @router.post("/profile/reset")
+    def reset_profile(request: Mutation):
         def update(state):
-            value = state["profileDraft"]
-            if not value:
-                raise ValueError("확정할 프로필 초안이 없습니다.")
-            value["status"] = "confirmed"
-            state.update(profile=value, profileDraft=None, planDraft=None)
+            state.update(profile=None, profileDraft=None, profileConversations=[],
+                         surveyResponses=[], profileRevisions=[], profileUpdateProposals=[], planDraft=None)
         return change(request.revision, update)
 
     @router.post("/reset")
@@ -163,7 +197,9 @@ def execution_router(store=None, llm=None):
         windows = availability_windows(request.startDate, settings.slots, request.events, request.project)
         if not windows:
             raise ValueError("선택한 주에 사용 가능한 시간이 없습니다. 가용 시간, 기존 일정, 프로젝트 기간을 확인해 주세요.")
-        prefs = profile["planningPreferences"]
+        planning = get_planning_context(store.user_id, request.project, state=state,
+                                        memories=[m.model_dump() for m in request.memories])
+        prefs = planning["userProfile"]["planningPreferences"]
         free_minutes = sum(int((b-a).total_seconds()//60) for a, b in windows)
         budget = int(free_minutes*(100-prefs["bufferPercent"])/100)
         style = prefs.get("scheduleStyle")
@@ -174,7 +210,7 @@ def execution_router(store=None, llm=None):
         block = min(chunk if style == "flexible_queue" else prefs["blockMinutes"], longest, budget)
         if block < 1:
             raise ValueError("작업을 배치할 여유 시간이 부족합니다.")
-        context = {"goal": request.goal, "profile": profile["facts"], "scheduleStyle": style, "maxBlockMinutes": block,
+        context = {"goal": request.goal, "profile": planning["userProfile"]["declaredFacts"], "planningContext": planning, "scheduleStyle": style, "maxBlockMinutes": block,
                    "budgetMinutes": budget, "startDate": request.startDate.isoformat(),
                    "endDate": (request.startDate+timedelta(days=6)).isoformat(),
                    "availableWindows": [[a.isoformat(timespec="minutes"), b.isoformat(timespec="minutes")] for a,b in windows],
@@ -189,7 +225,7 @@ def execution_router(store=None, llm=None):
         ), context=context)
         tasks = validate_tasks(payload, block)
         entries, pending = schedule(tasks, windows, prefs["bufferPercent"])
-        value = {"id": str(uuid4()), "profileId": profile["id"], "projectId": request.project.id if request.project else None,
+        value = {"id": str(uuid4()), "profileId": profile["id"], "profileVersion": profile["version"], "scheduleStyle": style, "projectId": request.project.id if request.project else None,
                  "project": context["project"], "goal": request.goal, "startDate": context["startDate"], "endDate": context["endDate"],
                  "slots": state["settings"]["slots"], "entries": entries, "pendingTasks": pending, "status": "draft", "timezone": "Asia/Seoul"}
         return change(request.revision, lambda state: state.update(planDraft=value))

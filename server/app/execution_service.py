@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .execution_learning import REASON_CODES, propose_update
 from .execution_store import ConflictError
+from .user_profile import apply_profile_proposal
 
 
 class ExecutionRecordInput(BaseModel):
@@ -88,15 +89,8 @@ class ExecutionService:
                 profile = state['profile']
                 if not profile or profile['id'] != proposal['profileId'] or state['profileDraft']:
                     raise ConflictError('프로필이 변경되었거나 수정 중입니다. 후보를 거절하고 새 기록을 모아 주세요.')
-                prefs = profile['planningPreferences']
-                for key, value in proposal['proposedChanges'].items():
-                    if prefs[key] != value['from']:
-                        raise ConflictError('제안 이후 프로필 값이 변경되었습니다.')
-                for key, value in proposal['proposedChanges'].items():
-                    prefs[key] = value['to']
-                profile['id'] = str(uuid4())
-                proposal['appliedProfileId'] = profile['id']
-                state['planDraft'] = None
+                apply_profile_proposal(state, proposal_id, expected_version=profile['version'])
+                return
             proposal['status'] = 'approved' if decision == 'approve' else 'rejected'
             proposal['decidedAt'] = datetime.now(timezone.utc).isoformat()
 

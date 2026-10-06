@@ -1,4 +1,4 @@
-import type { Milestone, Project } from '../../shared/types'
+import type { Milestone, Project, Memory } from '../../shared/types'
 
 export type AiPlanTask = {
   title: string
@@ -90,6 +90,7 @@ export function draftTasksToMilestones(
 }
 
 export async function requestPlanDraft(input: {
+  memories?: Memory[]
   goal: string
   project: { id: string; title: string; goal: string; startDate: string; dueDate: string }
   existingTasks: Array<Pick<Milestone, 'title' | 'startDate' | 'dueDate' | 'estimatedHours' | 'status'>>
@@ -99,6 +100,7 @@ export async function requestPlanDraft(input: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       goal: input.goal,
+      memories: input.memories ?? [],
       project: {
         id: input.project.id, title: input.project.title, goal: input.project.goal,
         startDate: input.project.startDate, dueDate: input.project.dueDate,

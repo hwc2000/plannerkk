@@ -2,9 +2,9 @@
 
 스키마만 확인하려면 [B 담당 스키마](execution-schema.md)를 참고하세요.
 
-현재 단일 로컬 사용자용 SQLite execution_state에 executionRecords와
-profileUpdateProposals 배열을 저장한다. 기존 DB는 누락 배열을 빈 배열로 읽는다.
-다중 사용자 인증과 별도 테이블 분리는 팀 통합 시 조정한다.
+기본 로컬 사용자는 SQLite execution_state에 executionRecords와
+profileUpdateProposals 배열을 저장한다. A의 ExecutionStore(user_id=...) 저장 경계를
+사용하며 기존 DB는 누락 항목을 보완한다. HTTP 인증·사용자 식별 연결은 별도 범위다.
 
 ## API
 
@@ -115,4 +115,27 @@ C의 close_draft에서 호출하므로 복구안 승인 시 계획 변경과 기
 그래프 입력 profile_update_proposal에는 현재 프로필의 대기 후보를 전달한다.
 이번 체크인으로 새로 생성된 후보는 adaptive 응답의 profileUpdateProposals에 포함된다.
 프로필 변경 승인은 기존 B 승인 API를 사용하며 C의 계획 승인과 별개다.
-A의 프로필 버전·갱신 함수 연결은 아직 남아 있다.
+A의 apply_profile_proposal 호출을 통해 프로필 버전·학습 패턴·변경 이력을 연결했다.
+
+## A 프로필 승인 연동
+
+B의 decide_proposal은 승인 시 동일한 store.change 트랜잭션 안에서
+A의 apply_profile_proposal(state, proposal_id, expected_version=profile['version'])을 호출한다.
+B에서 planningPreferences를 직접 수정하지 않는다. 거절은 프로필을 유지한다.
+
+A의 함수가 프로필 ID·버전·변경 전 값·근거 기록을 검증하고 다음을 함께 저장한다.
+
+- planningPreferences.blockMinutes 변경과 starterMinutes 상한 보정
+- 프로필 ID 갱신 및 version 증가
+- 승인된 learnedPatterns와 profileRevisions 스냅샷
+- 후보의 approved 상태, decidedAt, appliedProfileId
+- 오래된 planDraft 무효화
+
+다음 계획 생성은 A의 get_planning_context를 통해 승인된 선호와 패턴을 읽는다.
+C도 같은 컨텍스트를 converter에 전달한다. 설문 원본 declaredFacts는 유지한다.
+시간 플래너는 blockMinutes를 작업 길이 상한으로 사용한다. A의 할 일 플래너는
+집중 구간을 개별 작업 길이 상한으로 강제하지 않고 승인값을 컨텍스트로 전달한다.
+
+검증: 실제 B API를 통한 후보 생성·승인·거절, 승인 전 컨텍스트 제외,
+승인 후 버전/근거/이력 저장, C converter와 다음 계획에 변경값 전달,
+오래된 후보 및 잘못된 근거 거절과 트랜잭션 롤백을 임시 DB에서 확인했다.

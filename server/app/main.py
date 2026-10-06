@@ -10,6 +10,9 @@ from fastapi.staticfiles import StaticFiles
 from .adaptive.api import adaptive_router
 from .execution_api import execution_router
 from .execution_store import ConflictError, ExecutionStore
+from .profile_chat import profile_chat_router
+from .execution_llm import ExecutionLLM
+from .planning_context import get_planning_context
 
 from .planner import (
     PlanDraft,
@@ -28,6 +31,7 @@ def create_app(generator: PlanGenerator | None = None, execution_store=None, exe
     app = FastAPI(title="PlannerKK API")
     store = execution_store or ExecutionStore()
     app.include_router(execution_router(store, execution_llm))
+    app.include_router(profile_chat_router(store, execution_llm or ExecutionLLM()))
     app.include_router(adaptive_router(store, execution_llm))
 
     @app.exception_handler(RequestValidationError)
@@ -75,6 +79,11 @@ def create_app(generator: PlanGenerator | None = None, execution_store=None, exe
     async def create_plan_draft(
         request: PlanDraftRequest
     ):
+        # Server overwrites this private field; never trust a client profile.
+        state = store.read()
+        if state.get("profile"):
+            request.planning_context = get_planning_context(store.user_id, request.project, state=state,
+                memories=[m.model_dump() for m in request.memories])
         active_generator = generator
         owns_generator = active_generator is None
 

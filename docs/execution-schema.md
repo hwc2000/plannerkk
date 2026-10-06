@@ -2,7 +2,8 @@
 
 현재 구현 기준 공유용 규격입니다. 시간 단위는 분, 날짜는 UTC ISO 8601 문자열입니다.
 `null`은 미입력 또는 미결정, `?`는 필드가 생략될 수 있음을 뜻합니다.
-현재 단일 사용자 구조이며 A의 프로필 규격과 사용자 구분은 통합 시 조정합니다.
+A의 UserProfile 2.0 및 프로필 승인 함수와 연결되어 있습니다.
+사용자 구분은 A의 ExecutionStore 경계를 따르며 HTTP 인증 연결은 별도입니다.
 
 ## 1. ExecutionRecord — 실행 기록
 
@@ -109,7 +110,9 @@ type ProfileUpdateProposal = {
 | `decidedAt` | 승인·거절 시각. 대기 중이면 null |
 | `appliedProfileId` | 승인 후 적용된 프로필 ID. 승인 시에만 생성 |
 
-후보 생성만으로 프로필을 변경하지 않습니다. 사용자 승인 후에만 적용합니다.
+후보 생성만으로 프로필을 변경하지 않습니다. 사용자 승인 후 A의
+apply_profile_proposal을 호출하여 프로필 version 증가, learnedPatterns와
+profileRevisions 저장, appliedProfileId 갱신을 같은 트랜잭션에서 처리합니다.
 
 ## 3. ExecutionSummary — 실행 요약
 

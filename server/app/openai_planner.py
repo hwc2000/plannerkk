@@ -31,6 +31,7 @@ class OpenAIPlanGenerator:
     async def generate(self, request: PlanDraftRequest) -> dict[str, Any]:
         prompt = build_plan_prompt(
             goal=request.goal,
+            planning_context=request.planning_context,
             project=request.project.model_dump(by_alias=True, mode="json"),
             existing_tasks=[
                 task.model_dump(by_alias=True, mode="json") for task in request.existingTasks

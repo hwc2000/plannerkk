@@ -1,0 +1,418 @@
+{
+  "$defs": {
+    "LearnedPattern": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "observation": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Observation",
+          "type": "string"
+        },
+        "proposedChanges": {
+          "additionalProperties": true,
+          "title": "Proposedchanges",
+          "type": "object"
+        },
+        "evidenceRecordIds": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidencerecordids",
+          "type": "array"
+        },
+        "approvedProposalId": {
+          "title": "Approvedproposalid",
+          "type": "string"
+        },
+        "projectId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Projectid"
+        },
+        "status": {
+          "default": "active",
+          "enum": [
+            "active",
+            "revoked",
+            "superseded"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "approvedAt": {
+          "title": "Approvedat",
+          "type": "string"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expiresat"
+        }
+      },
+      "required": [
+        "id",
+        "observation",
+        "proposedChanges",
+        "evidenceRecordIds",
+        "approvedProposalId",
+        "approvedAt"
+      ],
+      "title": "LearnedPattern",
+      "type": "object"
+    },
+    "PlanningPreferences": {
+      "additionalProperties": false,
+      "properties": {
+        "blockMinutes": {
+          "maximum": 180,
+          "minimum": 1,
+          "title": "Blockminutes",
+          "type": "integer"
+        },
+        "breakMinutes": {
+          "maximum": 60,
+          "minimum": 0,
+          "title": "Breakminutes",
+          "type": "integer"
+        },
+        "bufferPercent": {
+          "maximum": 90,
+          "minimum": 0,
+          "title": "Bufferpercent",
+          "type": "integer"
+        },
+        "dailyPlannedMinutes": {
+          "anyOf": [
+            {
+              "maximum": 720,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dailyplannedminutes"
+        },
+        "scheduleStyle": {
+          "enum": [
+            "time_blocks",
+            "flexible_queue"
+          ],
+          "title": "Schedulestyle",
+          "type": "string"
+        },
+        "scheduleStyleSource": {
+          "default": "legacy",
+          "enum": [
+            "user",
+            "rule",
+            "legacy"
+          ],
+          "title": "Schedulestylesource",
+          "type": "string"
+        },
+        "recoveryPreference": {
+          "enum": [
+            "replan",
+            "reduce",
+            "continue",
+            "abandon",
+            "unknown"
+          ],
+          "title": "Recoverypreference",
+          "type": "string"
+        },
+        "starterMinutes": {
+          "anyOf": [
+            {
+              "maximum": 180,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starterminutes"
+        },
+        "status": {
+          "enum": [
+            "provisional",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "blockMinutes",
+        "breakMinutes",
+        "bufferPercent",
+        "scheduleStyle",
+        "recoveryPreference",
+        "status"
+      ],
+      "title": "PlanningPreferences",
+      "type": "object"
+    },
+    "SurveyAnswers": {
+      "additionalProperties": false,
+      "properties": {
+        "roles": {
+          "items": {
+            "enum": [
+              "student",
+              "employee",
+              "job_seeker",
+              "freelancer",
+              "other"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Roles",
+          "type": "array"
+        },
+        "regularity": {
+          "enum": [
+            "regular",
+            "mixed",
+            "irregular",
+            "unknown"
+          ],
+          "title": "Regularity",
+          "type": "string"
+        },
+        "barriers": {
+          "items": {
+            "enum": [
+              "starting",
+              "overplanning",
+              "distraction",
+              "fatigue",
+              "interruptions",
+              "unclear",
+              "none",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Barriers",
+          "type": "array"
+        },
+        "focusMinutes": {
+          "anyOf": [
+            {
+              "maximum": 180,
+              "minimum": 5,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Focusminutes"
+        },
+        "dailyMinutes": {
+          "anyOf": [
+            {
+              "maximum": 720,
+              "minimum": 5,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Dailyminutes"
+        },
+        "energy": {
+          "enum": [
+            "morning",
+            "afternoon",
+            "evening",
+            "variable",
+            "unknown"
+          ],
+          "title": "Energy",
+          "type": "string"
+        },
+        "recovery": {
+          "enum": [
+            "replan",
+            "reduce",
+            "continue",
+            "abandon",
+            "unknown"
+          ],
+          "title": "Recovery",
+          "type": "string"
+        },
+        "constraints": {
+          "maxLength": 1500,
+          "title": "Constraints",
+          "type": "string"
+        },
+        "context": {
+          "maxLength": 1500,
+          "title": "Context",
+          "type": "string"
+        },
+        "scheduleStyle": {
+          "default": "unknown",
+          "enum": [
+            "time_blocks",
+            "flexible_queue",
+            "unknown"
+          ],
+          "title": "Schedulestyle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "roles",
+        "regularity",
+        "barriers",
+        "focusMinutes",
+        "dailyMinutes",
+        "energy",
+        "recovery",
+        "constraints",
+        "context"
+      ],
+      "title": "SurveyAnswers",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "userId": {
+      "title": "Userid",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": "2.0",
+      "default": "2.0",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "confirmed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "demo",
+        "llm"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "declaredFacts": {
+      "$ref": "#/$defs/SurveyAnswers"
+    },
+    "facts": {
+      "$ref": "#/$defs/SurveyAnswers",
+      "deprecated": true
+    },
+    "planningPreferences": {
+      "$ref": "#/$defs/PlanningPreferences"
+    },
+    "insights": {
+      "additionalProperties": true,
+      "title": "Insights",
+      "type": "object"
+    },
+    "learnedPatterns": {
+      "items": {
+        "$ref": "#/$defs/LearnedPattern"
+      },
+      "title": "Learnedpatterns",
+      "type": "array"
+    },
+    "surveyResponseId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Surveyresponseid"
+    },
+    "createdAt": {
+      "title": "Createdat",
+      "type": "string"
+    },
+    "updatedAt": {
+      "title": "Updatedat",
+      "type": "string"
+    },
+    "confirmedAt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Confirmedat"
+    }
+  },
+  "required": [
+    "id",
+    "userId",
+    "version",
+    "status",
+    "source",
+    "declaredFacts",
+    "facts",
+    "planningPreferences",
+    "insights",
+    "createdAt",
+    "updatedAt"
+  ],
+  "title": "UserProfile",
+  "type": "object"
+}
