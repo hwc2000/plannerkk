@@ -4,7 +4,9 @@ import unittest
 from server.app.adaptive import (
     build_adaptive_planner_graph,
     to_execution_context,
+    to_profile_change_context,
 )
+from server.app.adaptive.local import profile_change_context_from_proposal
 
 
 def base_state():
@@ -36,6 +38,96 @@ def base_state():
 
 
 class AdaptivePlannerGraphTests(unittest.TestCase):
+    def test_approved_profile_proposal_is_normalized_at_boundary(self):
+        proposal = {
+            "id": "proposal-1", "profileId": "profile-old", "appliedProfileId": "profile-new",
+            "proposedChanges": {"blockMinutes": {"from": 30, "to": 20}},
+            "reason": "긴 작업이 반복해서 미완료됨", "evidenceRecordIds": ["record-1", "record-2"],
+            "status": "approved",
+        }
+        context = to_profile_change_context(proposal, converter=profile_change_context_from_proposal)
+        self.assertEqual(context, {
+            "before": {"block_minutes": 30}, "after": {"block_minutes": 20},
+            "changed_fields": ["block_minutes"], "reason": "긴 작업이 반복해서 미완료됨",
+            "evidence_record_ids": ["record-1", "record-2"],
+            "source_profile_id": "profile-old", "applied_profile_id": "profile-new",
+        })
+
+    def test_profile_change_context_rejects_mismatched_fields(self):
+        with self.assertRaises(ValueError):
+            to_profile_change_context(object(), converter=lambda _proposal: {
+                "before": {"block_minutes": 30}, "after": {"block_minutes": 20},
+                "changed_fields": ["break_minutes"], "reason": "reason",
+                "evidence_record_ids": ["record-1"], "source_profile_id": "old",
+                "applied_profile_id": "new",
+            })
+
+    def test_new_plan_preserves_profile_change_context_and_uses_full_plan_generator(self):
+        context = {
+            "before": {"block_minutes": 30}, "after": {"block_minutes": 20},
+            "changed_fields": ["block_minutes"], "reason": "긴 작업 미완료",
+            "evidence_record_ids": ["record-1"], "source_profile_id": "old",
+            "applied_profile_id": "new",
+        }
+        seen = []
+        expected = {"id": "draft-1", "profileId": "new", "entries": []}
+        def full_plan_generator(state):
+            seen.append(state["profile_change_context"])
+            return expected
+        result = build_adaptive_planner_graph(
+            lambda _state: self.fail("recovery generator must not run"),
+            full_plan_generator=full_plan_generator,
+        ).invoke({"request": "new_plan", "planning_context": {"goal": "공부"},
+                  "profile_change_context": context})
+        self.assertEqual(seen, [context])
+        self.assertEqual(result["plan_draft"], expected)
+        self.assertIsNone(result["draft"])
+        self.assertEqual(result["approval_status"], "waiting")
+
+    def test_replan_strategy_uses_full_plan_generator(self):
+        state = base_state()
+        state["planning_context"] = {"goal": "시험 준비"}
+        state["check_in"]["reason_code"] = "priority_changed"
+        expected = {"id": "draft-2", "profileId": "profile-1", "entries": []}
+        result = build_adaptive_planner_graph(
+            lambda _state: self.fail("recovery generator must not run"),
+            full_plan_generator=lambda _state: expected,
+        ).invoke(state)
+        self.assertEqual(result["strategy"], "replan")
+        self.assertEqual(result["plan_draft"], expected)
+        self.assertEqual(result["approval_status"], "waiting")
+
+    def test_recovery_replan_requests_planning_context_before_generation(self):
+        state = base_state()
+        state["check_in"]["reason_code"] = "priority_changed"
+        result = build_adaptive_planner_graph(
+            lambda _state: self.fail("recovery generator must not run"),
+            full_plan_generator=lambda _state: self.fail("full generator must not run"),
+        ).invoke(state)
+        self.assertEqual(result["approval_status"], "needs_input")
+        self.assertEqual(result["fallback"]["missing_fields"], ["planning_context"])
+
+    def test_malformed_full_plan_draft_falls_back(self):
+        result = build_adaptive_planner_graph(
+            lambda _state: self.fail("recovery generator must not run"),
+            full_plan_generator=lambda _state: {"id": "draft-without-contract"},
+        ).invoke({"request": "new_plan", "planning_context": {"goal": "시험 준비"}})
+        self.assertEqual(result["approval_status"], "fallback")
+        self.assertEqual(result["error"], "invalid_plan_draft")
+        self.assertIsNone(result["plan_draft"])
+
+    def test_full_plan_generation_failure_is_sanitized_and_keeps_current_plan(self):
+        secret = "provider-secret"
+        def fail(_state):
+            raise RuntimeError(secret)
+        result = build_adaptive_planner_graph(
+            lambda _state: {}, full_plan_generator=fail,
+        ).invoke({"request": "new_plan", "planning_context": {"goal": "공부"}})
+        self.assertEqual(result["error"], "plan_generation_failed")
+        self.assertEqual(result["fallback"]["action"], "keep_current_plan")
+        self.assertIsNone(result["plan_draft"])
+        self.assertNotIn(secret, repr(result))
+
     def test_shared_schemas_are_converted_at_one_boundary(self):
         raw_profile = object()
         raw_records = [object()]
@@ -133,8 +225,9 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
         self.assertEqual(result["fallback"]["invalid_fields"], ["check_in.reason_code"])
         self.assertNotIn("missing_fields", result["fallback"])
 
-    def test_not_yet_connected_route_keeps_current_plan_explicitly(self):
+    def test_unconfigured_full_plan_generator_keeps_current_plan_explicitly(self):
         state = base_state()
+        state["planning_context"] = {"goal": "시험 준비"}
         state["check_in"]["reason_code"] = "priority_changed"
 
         result = build_adaptive_planner_graph(lambda _state: self.fail("generator must not run")).invoke(state)
@@ -405,6 +498,8 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 state = base_state()
                 state["check_in"]["reason_code"] = reason
+                if strategy == "replan":
+                    state["planning_context"] = {"goal": "시험 준비"}
 
                 result = build_adaptive_planner_graph(
                     lambda _state: {
@@ -451,9 +546,14 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
 
                 self.assertEqual(result["fallback"]["invalid_fields"], [field])
 
-    def test_profile_update_proposal_is_output_only(self):
+    def test_profile_change_context_is_preserved(self):
         state = base_state()
-        state["profile_update_proposal"] = {"proposedChanges": {"blockMinutes": 20}}
+        state["profile_change_context"] = {
+            "before": {"block_minutes": 30}, "after": {"block_minutes": 20},
+            "changed_fields": ["block_minutes"], "reason": "반복 미완료",
+            "evidence_record_ids": ["record-1"], "source_profile_id": "old",
+            "applied_profile_id": "new",
+        }
 
         result = build_adaptive_planner_graph(
             lambda _state: {
@@ -463,7 +563,7 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
             }
         ).invoke(state)
 
-        self.assertIsNone(result["profile_update_proposal"])
+        self.assertEqual(result["profile_change_context"], state["profile_change_context"])
 
     def test_shrink_without_schedule_style_asks_for_it(self):
         state = base_state()

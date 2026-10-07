@@ -22,11 +22,12 @@
 
 | 필드 | 의미 | 소유/출처 |
 |---|---|---|
-| `request` | `new_plan`, `recovery`, `review` 요청 | C |
+| `request` | `new_plan`, `replan`, `recovery`, `review` 요청 | C |
 | `user_id` | 사용자 식별자 | 호출부 |
 | `project_id` | 프로젝트 식별자 | 호출부 |
 | `planning_context` | 사용자·프로젝트 계획 컨텍스트. 읽기 전용 | A |
 | `execution_context` | 그래프가 판단에 필요한 값으로 정규화한 컨텍스트 | C converter |
+| `profile_change_context` | 승인된 프로필 변경의 전후 값과 근거를 정규화한 재계획 입력 | B → C converter |
 | `current_task` | 복구 대상 작업 | 현재 계획 |
 | `check_in` | B의 실행 결과에서 변환한 이번 체크인 신호 | B → C converter |
 | `schedule_context` | 현재 시각, 빈 시간, 마감 | 일정 시스템 |
@@ -47,7 +48,8 @@
 | 필드 | 의미 |
 |---|---|
 | `route` | 선택된 그래프 경로 |
-| `draft` | 생성·배치된 계획 또는 복구 초안 |
+| `draft` | 작업 단위 복구 초안 |
+| `plan_draft` | 전체 신규 계획·재계획 초안 |
 | `validation_errors` | 코드 검증에서 발견한 오류 |
 | `retry_count`, `retry_limit` | 제한된 재생성 횟수 |
 | `min_task_minutes` | 시스템 최소 작업 길이 |
@@ -59,7 +61,6 @@
 |---|---|
 | `approval_status` | `not_required`, `needs_input`, `waiting`, `approved`, `rejected`, `fallback` |
 | `fallback` | 자동 처리하지 못했을 때 사용자에게 요청할 다음 선택 |
-| `profile_update_proposal` | B가 만든 제안을 전달하기 위한 자리. C 그래프는 생성·적용하지 않음 |
 | `error` | 처리 실패 정보 |
 
 코드 기준은 `server/app/adaptive/state.py`의 `PlannerState`다.
@@ -99,7 +100,23 @@ ExecutionRecord
 - 완료 여부와 실제/남은 시간
 - 지연·실패 이유
 - 승인된 복구 전략을 `recoveryAction`으로 돌려줄 방법
-- B가 만든 `ProfileUpdateProposal`을 전달받을 방법
+- 승인된 `ProfileUpdateProposal`을 전달받을 방법
+
+```text
+ProfileUpdateProposal (camelCase, B 소유)
+    → profile_change_context (snake_case, C 소유)
+        before
+        after
+        changed_fields
+        reason
+        evidence_record_ids
+        source_profile_id
+        applied_profile_id
+```
+
+외부 제안 객체를 `PlannerState`에 그대로 넣지 않는다. 현재 로컬 변환기는
+`adaptive/local.py::profile_change_context_from_proposal`이고, 공용 검증 경계는
+`adaptive/context.py::to_profile_change_context`다.
 
 ## C가 생성하는 RecoveryDraft
 
@@ -132,11 +149,27 @@ POST /api/adaptive/review
 - `/api/adaptive/review`의 계획 초안 검토·반영 부분은 C 범위다.
 - B 구현이 합쳐지면 실행 기록은 B 저장 경계를 호출하고, C는 변환된 입력을 받아 그래프를 실행한다.
 
+## 전체 재계획과 승인
+
+프로필 변경 제안 승인은 프로필만 먼저 원자적으로 갱신한다. 확정 계획은 즉시
+교체하지 않는다. 계획이 있으면 화면이 승인 응답의 새 revision으로
+`POST /api/execution/plan`을 다시 호출하고 `profileChangeProposalId`를 전달한다.
+
+그래프의 `replan` 경로는 정규화한 `profile_change_context`와 `planning_context`를
+full-plan generator에 전달하고, 결과를 `plan_draft`로 반환한다. 저장 어댑터는 이를
+기존 `planDraft`에 저장한다. 사용자는 기존 `/plan/confirm` 또는 `/plan/discard`로
+검토하며, 확정 전에는 기존 계획이 유지된다. 완료된 작업은 재계획 초안에도 그대로
+보존하고 그 시간은 새 작업 배치에서 제외한다.
+
+`profileId`는 사용자 ID가 아니라 계획 생성에 사용한 프로필 **버전 ID**다.
+`user_id`는 소유자, `project_id`는 업무 범위다. 현재 로컬 저장소는 아직 단일 사용자
+구조이며 다중 사용자 격리나 인증을 구현한 것으로 해석하지 않는다.
+
 ## 현재 연결 상태
 
-- 연결됨: `recovery`의 `shrink`, `reschedule`, 승인·거절·수정, 승인 시 재검증
-- 자리만 있음: B의 `profile_update_proposal` 전달 필드
-- 미연결: 일반 `new_plan`, 전체 `replan`, A·B 최종 공용 계약, 화면
+- 연결됨: `new_plan`, 승인된 프로필 변경의 전체 `replan`, `recovery`의 `shrink`·`reschedule`, 승인·거절·수정, 승인 시 재검증
+- 변환 경계: B `ProfileUpdateProposal` → C `profile_change_context`
+- 미연결: 인증 기반 `user_id`, A·B 최종 공용 저장 계약
 
 ## 로컬 저장소
 

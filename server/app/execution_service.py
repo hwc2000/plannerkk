@@ -108,6 +108,8 @@ def save_execution_record(state, payload, *, allow_follow_up=False):
     task = next((e for e in plan['entries'] if e['id'] == request.taskId and e['kind'] == 'task'), None)
     if task is None:
         raise ValueError('작업을 찾을 수 없습니다.')
+    if task.get('completed'):
+        raise ConflictError('이미 완료한 작업입니다.')
     matches = [r for r in state['executionRecords'] if r['planId'] == plan['id'] and r['taskId'] == task['id']]
     pending = next((r for r in reversed(matches) if r['result'] != 'completed' and not r.get('recoveryAction')), None)
     if matches and not allow_follow_up:

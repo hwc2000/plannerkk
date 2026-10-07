@@ -119,8 +119,6 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             "planning_context": {**planning, "goal": state["plan"]["goal"]},
             "current_task": current_task(state["plan"], task_id),
             "schedule_context": schedule_context(state, task_id, events, local_now()),
-            "profile_update_proposal": next((p for p in reversed(state.get("profileUpdateProposals", []))
-                                             if p["status"] == "pending" and p["profileId"] == state["profile"]["id"]), None),
         }
 
     def respond(saved: dict[str, Any], task_id: str, result: dict[str, Any], **extra: Any) -> dict[str, Any]:
