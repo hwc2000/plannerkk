@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..execution_api import BusyEvent, Slot
+from ..execution_service import save_execution_record, set_recovery_action
 from ..execution_scheduler import availability_windows
 from ..execution_store import ConflictError, ExecutionStore
 from .ports import PlanConflictError
@@ -45,6 +46,36 @@ def execution_context_from_profile(profile: Mapping[str, Any] | None, _records: 
     }
 
 
+def _snake_key(value: str) -> str:
+    return "".join(("_" + char.lower()) if char.isupper() else char for char in value)
+
+
+def profile_change_context_from_proposal(proposal: object) -> dict[str, Any]:
+    """Local B ProfileUpdateProposal (camelCase) -> C profile change context."""
+    if not isinstance(proposal, Mapping):
+        raise ValueError("profile proposal must be a mapping")
+    if proposal.get("status") != "approved" or not proposal.get("appliedProfileId"):
+        raise ValueError("profile proposal must be approved and applied")
+    changes = proposal.get("proposedChanges")
+    if not isinstance(changes, Mapping) or not changes:
+        raise ValueError("profile proposal has no changes")
+    before: dict[str, Any] = {}
+    after: dict[str, Any] = {}
+    for external_name, change in changes.items():
+        if not isinstance(external_name, str) or not isinstance(change, Mapping) or set(change) != {"from", "to"}:
+            raise ValueError("profile proposal change is malformed")
+        name = _snake_key(external_name)
+        before[name] = change["from"]
+        after[name] = change["to"]
+    return {
+        "before": before, "after": after, "changed_fields": list(before),
+        "reason": proposal.get("reason"),
+        "evidence_record_ids": proposal.get("evidenceRecordIds"),
+        "source_profile_id": proposal.get("profileId"),
+        "applied_profile_id": proposal.get("appliedProfileId"),
+    }
+
+
 def find_open_task(plan: Mapping[str, Any], task_id: str) -> dict[str, Any] | None:
     return next(
         (e for e in plan["entries"] if e["id"] == task_id and e["kind"] == "task" and not e["completed"]),
@@ -62,52 +93,15 @@ def current_task(plan: Mapping[str, Any], task_id: str) -> RecoveryTask:
     }
 
 
-def new_execution_record(plan: Mapping[str, Any], task: RecoveryTask, check_in: Mapping[str, Any]) -> dict[str, Any]:
-    """B's ExecutionRecord draft; the task is copied because approved shrinks replace it."""
-    return {
-        "id": str(uuid4()),
-        "planId": plan["id"],
-        "taskId": task["id"],
-        "taskTitle": task["title"],
-        "plannedMinutes": task["minutes"],
-        "actualMinutes": check_in.get("actualMinutes"),
-        "remainingMinutes": check_in.get("remainingMinutes"),
-        "result": "completed" if check_in["completed"] else "incomplete",
-        "reasonCode": check_in.get("reasonCode"),
-        "note": check_in.get("note", ""),
-        "recoveryAction": None,  # set when the user approves or rejects a recovery draft
-        "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
-
-
 def record_check_in(state: dict[str, Any], task: RecoveryTask, check_in: Mapping[str, Any]) -> str:
-    """Store the check-in and return its record id; a completed task is marked done.
-
-    Repeated incomplete check-ins on the same task before the user resolves the
-    draft (approve/reject) update one record, so a single failure is not counted
-    twice when the user only answers a follow-up question.
-    """
-    plan = state["plan"]
-    records = state.setdefault("executionRecords", [])
-    if check_in["completed"]:
-        find_open_task(plan, task["id"])["completed"] = True
-    else:
-        open_record = next((
-            r for r in reversed(records)
-            if r["planId"] == plan["id"] and r["taskId"] == task["id"]
-            and r["result"] == "incomplete" and r["recoveryAction"] is None
-        ), None)
-        if open_record is not None:
-            open_record.update(
-                actualMinutes=check_in.get("actualMinutes"),
-                remainingMinutes=check_in.get("remainingMinutes"),
-                reasonCode=check_in.get("reasonCode"),
-                note=check_in.get("note", ""),
-            )
-            return open_record["id"]
-    record = new_execution_record(plan, task, check_in)
-    records.append(record)
-    return record["id"]
+    return save_execution_record(state, {
+        'planId': state['plan']['id'], 'taskId': task['id'],
+        'actualMinutes': check_in.get('actualMinutes'),
+        'remainingMinutes': check_in.get('remainingMinutes'),
+        'result': 'completed' if check_in['completed'] else 'incomplete',
+        'reasonCode': check_in.get('reasonCode'), 'note': check_in.get('note', ''),
+        'difficulty': check_in.get('difficulty'),
+    }, allow_follow_up=True)
 
 
 def schedule_context(
@@ -172,7 +166,7 @@ def close_draft(state: dict[str, Any], task_id: str, recovery_action: str) -> No
         return
     record = next((r for r in state.get("executionRecords", []) if r["id"] == draft["recordId"]), None)
     if record is not None:
-        record["recoveryAction"] = recovery_action
+        set_recovery_action(state, record["id"], recovery_action)
 
 
 def close_all_drafts(state: dict[str, Any], recovery_action: str) -> None:

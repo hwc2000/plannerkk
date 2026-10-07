@@ -2,10 +2,11 @@ import { useState } from 'react'
 import './execution.css'
 import type { CalendarEvent, ExecutionPlan, ExecutionState, Milestone, Project, Memory } from '../../shared/types'
 import { dateKey } from '../../shared/constants'
+import { ExecutionLearning } from './ExecutionLearning'
 import { ProfileForm } from './ProfileForm'
 import { AvailabilityGrid } from './AvailabilityGrid'
 import { answerLabels, formatAnswer } from './profileLabels'
-import { downloadJson, executionApi, projectContext } from './api'
+import { approveProposalAndReplan, downloadJson, executionApi, projectContext } from './api'
 
 export function ExecutionView({ state, onChange, projects, milestones, events, memories = [] }: {
   state: ExecutionState; onChange: (state: ExecutionState) => void
@@ -15,8 +16,8 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
   const [editing, setEditing] = useState(!state.profile && !state.profileDraft)
   const [slots, setSlots] = useState(state.settings.slots)
   const [goal, setGoal] = useState(state.planDraft?.goal ?? state.plan?.goal ?? '')
-  const [startDate, setStartDate] = useState(dateKey(new Date()))
-  const [projectId, setProjectId] = useState('')
+  const [startDate, setStartDate] = useState(state.planDraft?.startDate ?? state.plan?.startDate ?? dateKey(new Date()))
+  const [projectId, setProjectId] = useState(state.planDraft?.projectId ?? state.plan?.projectId ?? '')
   const [consent, setConsent] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -47,6 +48,21 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
         existingTasks: milestones.filter(m => m.projectId === projectId).map(({ title, startDate, dueDate, estimatedHours, status }) => ({ title, startDate, dueDate, estimatedHours, status })),
       })
     }, '주간 계획 초안을 만들었습니다. 검토 후 확정하면 캘린더에도 표시됩니다.')
+  }
+
+  async function approveProposal(proposalId: string, replanConsent: boolean) {
+    const plan = state.plan
+    return run(() => approveProposalAndReplan(state, proposalId, {
+      goal: plan?.goal ?? goal,
+      startDate: plan?.startDate ?? startDate,
+      consent: replanConsent,
+      memories,
+      project: plan?.project ?? null,
+      events: busyEvents,
+      existingTasks: milestones.filter(m => m.projectId === plan?.projectId).map(
+        ({ title, startDate, dueDate, estimatedHours, status }) => ({ title, startDate, dueDate, estimatedHours, status }),
+      ),
+    }), plan ? '프로필 변경을 적용하고 재계획 초안을 만들었습니다. 검토 후 확정해 주세요.' : '프로필 변경을 승인했습니다.')
   }
 
   function planCard(plan: ExecutionPlan, draft: boolean) {
@@ -117,8 +133,9 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
     </>}
     {state.planDraft && !editing && planCard(state.planDraft,true)}
     {state.plan && !editing && planCard(state.plan,false)}
+    <ExecutionLearning state={state} busy={busy} run={run} approveProposal={approveProposal} events={busyEvents} memories={memories}/>
     <details className="execution-card"><summary>저장 및 초기화</summary><p className="execution-help">프로필·가용 시간·주간 계획·완료 상태는 SQLite DB에 저장됩니다. 기존 프로젝트·수동 일정·기억은 기존 브라우저 저장 방식을 유지합니다.</p><button className="secondary-button" disabled={busy} onClick={()=>{
-      if(!window.confirm('실행 프로필·가용 시간·주간 계획을 모두 초기화할까요? 기존 프로젝트·수동 일정·기억은 유지됩니다.'))return
+      if(!window.confirm('실행 프로필·가용 시간·주간 계획·실행 기록·변경 후보를 모두 초기화할까요? 기존 프로젝트·수동 일정·기억은 유지됩니다.'))return
       void run(()=>executionApi('/reset',{revision:state.revision}),'실행 프로필과 계획을 초기화했습니다.').then(ok=>{if(ok){setSlots([]);setEditing(true);setGoal('');setConsent(false)}})
     }}>프로필부터 다시 시작</button></details>
   </section>
