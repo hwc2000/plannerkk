@@ -140,12 +140,12 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
         context = to_execution_context(raw_profile, raw_records, converter=converter)
 
         self.assertEqual(seen, [(raw_profile, raw_records)])
-        self.assertEqual(context, {"schedule_style": "time_blocks", "focus_minutes": 25, "break_minutes": None})
+        self.assertEqual(context, {"schedule_style": "time_blocks", "focus_minutes": 25, "break_minutes": None, "recovery_preference": None})
 
     def test_converter_does_not_invent_missing_values(self):
         context = to_execution_context(object(), [], converter=lambda _profile, _records: {})
 
-        self.assertEqual(context, {"schedule_style": None, "focus_minutes": None, "break_minutes": None})
+        self.assertEqual(context, {"schedule_style": None, "focus_minutes": None, "break_minutes": None, "recovery_preference": None})
 
     def test_malformed_focus_minutes_requests_information(self):
         for value in ("20", True, 20.0, 0):

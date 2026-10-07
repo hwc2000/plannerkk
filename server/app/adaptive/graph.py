@@ -7,6 +7,7 @@ its output is validated before anyone can approve it.
 
 Connected today:
 - new_plan / replan: full-plan generator creates a reviewable plan_draft
+  (generate → validate → bounded retry)
 - recovery / shrink: LLM splits the task, code places the pieces in free time
   (generate → validate → bounded retry)
 - recovery / reschedule: code moves the remaining work into free time; when it
@@ -27,10 +28,9 @@ from typing import Any
 from langgraph.graph import END, StateGraph
 from pydantic import ValidationError
 
-from .ports import GenerationUnavailableError, PlanConflictError, PlanWriter
+from .ports import GenerationUnavailableError, PlanConflictError, PlanValidationError, PlanWriter
 from .scheduling import fill, longest_window, parse_windows
 from .state import (
-    REASON_STRATEGY,
     CheckInSignalModel,
     CurrentTaskModel,
     ExecutionContextModel,
@@ -38,6 +38,7 @@ from .state import (
     ProfileChangeContextModel,
     RequestModel,
     ScheduleContextModel,
+    default_strategy,
 )
 from .validation import (
     draft_errors,
@@ -54,6 +55,7 @@ RecoveryGenerator = Callable[[PlannerState], Mapping[str, Any]]
 FullPlanGenerator = Callable[[PlannerState], Mapping[str, Any]]
 
 GENERATION_UNAVAILABLE = "generation_unavailable"
+PLAN_VALIDATION_FAILED = "plan_validation_failed"
 
 
 @dataclass(frozen=True)
@@ -301,8 +303,10 @@ def _analyze_execution(policy: RecoveryPolicy):
         if check_in.completed:
             return {"route": "continue", "approval_status": "not_required"}
 
-        # A strategy the user picked wins over the one derived from the reason.
-        strategy = state.get("strategy") or REASON_STRATEGY.get(check_in.reason_code or "")
+        # A strategy the user picked wins over the one derived from the reason
+        # and the user's stated recovery preference.
+        preference = (state.get("execution_context") or {}).get("recovery_preference")
+        strategy = state.get("strategy") or default_strategy(check_in.reason_code, preference)
         if strategy is None:
             field = "check_in.reason_code" if check_in.reason_code is None else "strategy"
             return _request_input(missing_fields=[field])
@@ -338,6 +342,8 @@ def _generate_full_plan(generator: FullPlanGenerator | None):
                              reason="전체 계획 생성 경로가 연결되지 않았습니다.")
         try:
             plan_draft = dict(generator(state))
+        except PlanValidationError as exc:
+            return {"plan_draft": None, "error": PLAN_VALIDATION_FAILED, "validation_errors": exc.errors}
         except GenerationUnavailableError:
             return {
                 "plan_draft": None, "error": GENERATION_UNAVAILABLE,
@@ -363,9 +369,31 @@ def _generate_full_plan(generator: FullPlanGenerator | None):
                 **_fallback(state, source="invalid_plan_draft",
                             reason="생성된 계획 초안의 형식이 올바르지 않습니다."),
             }
-        return {"plan_draft": plan_draft, "approval_status": "waiting", "error": None}
+        return {"plan_draft": plan_draft, "approval_status": "waiting", "error": None, "validation_errors": []}
 
     return node
+
+
+def _after_full_plan(state: PlannerState) -> str:
+    if state["error"] != PLAN_VALIDATION_FAILED:
+        return "finish"
+    if state["retry_count"] < state["retry_limit"]:
+        return "prepare_plan_retry"
+    return "plan_fallback"
+
+
+def _prepare_plan_retry(state: PlannerState) -> dict[str, Any]:
+    # The generator sees validation_errors from the failed attempt.
+    return {"retry_count": state["retry_count"] + 1, "error": None}
+
+
+def _plan_fallback(state: PlannerState) -> dict[str, Any]:
+    return _fallback(
+        state,
+        source="validation_policy",
+        reason="계획 초안이 검증을 통과하지 못했습니다. 다시 생성해 주세요.",
+        validation_errors=state["validation_errors"],
+    )
 
 
 def _format(start: Any) -> str:
@@ -620,6 +648,8 @@ def build_adaptive_planner_graph(
     graph.add_node("initialize", _initialize(policy))
     graph.add_node("analyze_execution", _analyze_execution(policy))
     graph.add_node("generate_full_plan", _generate_full_plan(full_plan_generator))
+    graph.add_node("prepare_plan_retry", _prepare_plan_retry)
+    graph.add_node("plan_fallback", _plan_fallback)
     graph.add_node("generate_recovery", _generate_recovery(recovery_generator))
     graph.add_node("plan_reschedule", _plan_reschedule(policy))
     graph.add_node("revise_not_supported", _revise_not_supported)
@@ -657,7 +687,12 @@ def build_adaptive_planner_graph(
             "finish": END,
         },
     )
-    graph.add_edge("generate_full_plan", END)
+    graph.add_conditional_edges(
+        "generate_full_plan",
+        _after_full_plan,
+        {"prepare_plan_retry": "prepare_plan_retry", "plan_fallback": "plan_fallback", "finish": END},
+    )
+    graph.add_edge("prepare_plan_retry", "generate_full_plan")
     graph.add_edge("generate_recovery", "validate_recovery")
     graph.add_conditional_edges(
         "validate_recovery",
@@ -674,6 +709,7 @@ def build_adaptive_planner_graph(
         _after_approval_check,
         {"apply_approved": "apply_approved", "finish": END},
     )
-    for node in ("await_approval", "safe_fallback", "unsupported_route", "reject_draft", "revise_not_supported", "apply_approved"):
+    for node in ("await_approval", "safe_fallback", "plan_fallback", "unsupported_route", "reject_draft",
+                 "revise_not_supported", "apply_approved"):
         graph.add_edge(node, END)
     return graph.compile()

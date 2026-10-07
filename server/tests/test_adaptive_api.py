@@ -13,6 +13,11 @@ from server.app.execution_store import ExecutionStore
 from server.app.main import create_app
 from server.tests.test_execution import ANSWERS
 
+# Recovery-loop tests use a profile without a daily cap, starter or recovery
+# preference, so the reason code alone picks the strategy and every entry is a
+# plain task. Personalization has its own tests (test_personalization.py).
+PLAIN_ANSWERS = {**ANSWERS, "barriers": ["overplanning"], "dailyMinutes": None, "recovery": "unknown"}
+
 SHRINK = {
     "tasks": [
         {"title": "문제 1~2번만 풀기", "minutes": 8, "doneWhen": "두 문제 풀이 기록"},
@@ -37,7 +42,8 @@ class FakeLLM:
             return generate_profile(ANSWERS)["insights"]
         if kwargs["name"] == "execution_tasks":
             self.plan_calls.append(kwargs)
-            return {"tasks": [{"title": f"연습문제 {i} 풀기", "minutes": self.plan_minutes, "doneWhen": "풀이 기록", "dueDate": self.plan_due} for i in range(4)]}
+            count = min(4, max(1, kwargs["context"]["budgetMinutes"] // self.plan_minutes))  # stays within the budget
+            return {"tasks": [{"title": f"연습문제 {i} 풀기", "minutes": self.plan_minutes, "doneWhen": "풀이 기록", "dueDate": self.plan_due} for i in range(count)]}
         self.shrink_calls.append(kwargs)
         reply = self.shrink_replies.pop(0) if self.shrink_replies else SHRINK
         if isinstance(reply, Exception):
@@ -66,10 +72,10 @@ class AdaptiveApiTests(unittest.TestCase):
             self.revision = data["revision"]
         return data
 
-    def setup_plan(self, answers=ANSWERS):
+    def setup_plan(self, answers=PLAIN_ANSWERS):
         return next(e for e in self.setup_plan_entries(answers) if e["kind"] == "task")
 
-    def setup_plan_entries(self, answers=ANSWERS):
+    def setup_plan_entries(self, answers=PLAIN_ANSWERS):
         self.call("/api/execution/profile", answers=answers)
         self.call("/api/execution/profile/confirm")
         settings = {"slots": [{"day": 0, "hour": 18}, {"day": 0, "hour": 19}], "view": "timeline"}
@@ -343,7 +349,7 @@ class AdaptiveApiTests(unittest.TestCase):
     def test_profile_change_blocks_recovery_but_not_completion(self):
         task, other = [e for e in self.setup_plan_entries() if e["kind"] == "task"][:2]
         draft_id = self.check_in(task)["recoveryDraft"]["id"]
-        self.call("/api/execution/profile", answers={**ANSWERS, "focusMinutes": 50})
+        self.call("/api/execution/profile", answers={**PLAIN_ANSWERS, "focusMinutes": 50})
         self.call("/api/execution/profile/confirm")
 
         self.check_in(other, 400)
@@ -455,7 +461,7 @@ class AdaptiveApiTests(unittest.TestCase):
 
     def test_unknown_focus_is_asked_not_defaulted(self):
         self.llm.plan_minutes = 15  # the profile's default block when focus is unknown
-        task = self.setup_plan({**ANSWERS, "regularity": "regular", "focusMinutes": None})
+        task = self.setup_plan({**PLAIN_ANSWERS, "regularity": "regular", "focusMinutes": None})
 
         data = self.check_in(task)
 

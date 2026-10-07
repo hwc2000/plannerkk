@@ -165,9 +165,43 @@ full-plan generator에 전달하고, 결과를 `plan_draft`로 반환한다. 저
 `user_id`는 소유자, `project_id`는 업무 범위다. 현재 로컬 저장소는 아직 단일 사용자
 구조이며 다중 사용자 격리나 인증을 구현한 것으로 해석하지 않는다.
 
+## 사용자별 개인화와 근거
+
+계획은 사용자 본인의 확정 프로필(설문 답변 `declaredFacts`, `planningPreferences`,
+승인된 `learnedPatterns`)로만 정한다. 특정 사용자 예시를 코드에 넣지 않으므로
+사용자가 몇 명이든 같은 규칙이 각자의 값으로 적용된다. 규칙은
+`server/app/adaptive/personalization.py`에 있고, LLM은 작업 내용만 만든다.
+
+| 프로필 값 | 계획에 적용 (코드) |
+|---|---|
+| `blockMinutes` | 작업 길이 상한. 시간 지정형·작업량 지정형 모두 적용한다(작업량 지정형도 집중 시간을 넘는 작업을 만들지 않는다). |
+| `dailyPlannedMinutes` | 하루 작업 합계 상한. 하루 예산 = min(가용 시간 × (1 − 여유분), 하루 계획량). LLM에는 하루치 작업 길이 예시(`dayTaskMinutes`, 예: 90분·50분 상한 → [50, 40])를 준다. |
+| `bufferPercent` | 가용 시간 중 비워 둘 비율 |
+| `starterMinutes` | 매일 첫 작업 앞에 그 길이의 시작 행동을 둔다(`entries[].starter = true`). 문장은 LLM이 작업별로 쓰고, 없으면 코드가 기본 문장을 쓴다. |
+| `declaredFacts.energy` | 오전/오후/저녁이면 그 시간대에 먼저 배치한다. 그 시간대만으로 덜 들어가면 전체 시간을 쓰고 근거에 그렇게 적는다. |
+| `recoveryPreference` | 시간 부족·피로·방해·과소 추정·기타 이유의 복구 전략을 정한다(`reduce` → 축소, `replan` → 재배치). 작업이 크거나 모호하면 항상 축소, 우선순위 변경은 항상 재계획이다. 사용자가 고른 전략이 우선한다. |
+
+계획 초안과 확정 계획에는 `personalization` 목록이 붙는다. 코드가 실제로 적용한 값으로
+만들기 때문에 계획과 어긋나지 않는다. 설문의 자유 서술(`constraints`, `context`)은 넣지 않는다.
+
+```json
+{"key": "taskLength", "applied": "작업은 한 번에 20분 이하로 나눴습니다.",
+ "because": "확정한 집중 가능 시간 20분에 맞췄습니다.", "source": "declared", "fields": ["focusMinutes"]}
+```
+
+`source`는 출처다. `declared`(설문 답으로 정해진 값), `default`(모른다고 답해 쓰는 시작값),
+`learned`(실행 기록으로 승인한 변경), `profile`(설문 규칙과 다른 값을 사용자가 확정함),
+`memory`(승인된 기억을 참고 자료로 전달함).
+
+전체 계획 생성도 검증에 실패하면 오류를 LLM에 데이터(`previousErrors`)로 넘겨
+`max_retries`(기본 2)번까지 다시 만들고, 그래도 실패하면 기존 계획을 유지한다.
+작업이 가용 시간에 다 들어가지 않는 것은 약한 위반이라 재시도는 하되, 마지막 시도에서는
+넘친 작업을 `pendingTasks`로 남기고 초안을 만든다.
+
 ## 현재 연결 상태
 
 - 연결됨: `new_plan`, 승인된 프로필 변경의 전체 `replan`, `recovery`의 `shrink`·`reschedule`, 승인·거절·수정, 승인 시 재검증
+- 연결됨: 사용자별 개인화(작업 길이·하루 계획량·시작 행동·선호 시간대·복구 선호)와 계획의 `personalization` 근거, 전체 계획 검증 재시도
 - 연결됨: `reasonCode=priority_changed` 체크인은 `/api/adaptive/check-in`에서 항상 전체 `replan`으로 처리한다. 다른 전략을 함께 보내면 400이다. 초안은 `planDraft`에만 저장되고 확정 전까지 기존 계획을 유지한다. LLM에는 전체 계획 컨텍스트와 함께 재계획을 일으킨 `currentTask`·`checkIn`을 데이터로 전달한다.
 - 초안과 B 기록: 체크인으로 만든 `planDraft`는 원인 실행 기록 ID를 서버 내부 키(`_planDraftRecordId`, 응답에서 제외)로 기억한다. `/plan/confirm`은 그 기록의 `recoveryAction`을 `plan_replaced`로, `/plan/discard`·새 초안으로 교체·가용 시간 변경·프로필 확정/초기화·프로필 변경 승인은 `keep_current_plan`으로 남긴다.
 - 변환 경계: B `ProfileUpdateProposal` → C `profile_change_context`
