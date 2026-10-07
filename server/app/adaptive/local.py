@@ -100,6 +100,7 @@ def record_check_in(state: dict[str, Any], task: RecoveryTask, check_in: Mapping
         'remainingMinutes': check_in.get('remainingMinutes'),
         'result': 'completed' if check_in['completed'] else 'incomplete',
         'reasonCode': check_in.get('reasonCode'), 'note': check_in.get('note', ''),
+        'difficulty': check_in.get('difficulty'),
     }, allow_follow_up=True)
 
 

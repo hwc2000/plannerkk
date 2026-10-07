@@ -168,6 +168,8 @@ full-plan generator에 전달하고, 결과를 `plan_draft`로 반환한다. 저
 ## 현재 연결 상태
 
 - 연결됨: `new_plan`, 승인된 프로필 변경의 전체 `replan`, `recovery`의 `shrink`·`reschedule`, 승인·거절·수정, 승인 시 재검증
+- 연결됨: `reasonCode=priority_changed` 체크인은 `/api/adaptive/check-in`에서 항상 전체 `replan`으로 처리한다. 다른 전략을 함께 보내면 400이다. 초안은 `planDraft`에만 저장되고 확정 전까지 기존 계획을 유지한다. LLM에는 전체 계획 컨텍스트와 함께 재계획을 일으킨 `currentTask`·`checkIn`을 데이터로 전달한다.
+- 초안과 B 기록: 체크인으로 만든 `planDraft`는 원인 실행 기록 ID를 서버 내부 키(`_planDraftRecordId`, 응답에서 제외)로 기억한다. `/plan/confirm`은 그 기록의 `recoveryAction`을 `plan_replaced`로, `/plan/discard`·새 초안으로 교체·가용 시간 변경·프로필 확정/초기화·프로필 변경 승인은 `keep_current_plan`으로 남긴다.
 - 변환 경계: B `ProfileUpdateProposal` → C `profile_change_context`
 - 미연결: 인증 기반 `user_id`, A·B 최종 공용 저장 계약
 

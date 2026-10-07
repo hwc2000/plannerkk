@@ -28,6 +28,7 @@ class FakeLLM:
     def __init__(self):
         self.plan_minutes = 20
         self.plan_due = None
+        self.plan_calls = []
         self.shrink_replies = []
         self.shrink_calls = []
 
@@ -35,6 +36,7 @@ class FakeLLM:
         if kwargs["name"] == "execution_profile":
             return generate_profile(ANSWERS)["insights"]
         if kwargs["name"] == "execution_tasks":
+            self.plan_calls.append(kwargs)
             return {"tasks": [{"title": f"연습문제 {i} 풀기", "minutes": self.plan_minutes, "doneWhen": "풀이 기록", "dueDate": self.plan_due} for i in range(4)]}
         self.shrink_calls.append(kwargs)
         reply = self.shrink_replies.pop(0) if self.shrink_replies else SHRINK
@@ -90,9 +92,11 @@ class AdaptiveApiTests(unittest.TestCase):
     def test_failed_check_in_stores_record_and_waiting_draft(self):
         task = self.setup_plan()
 
-        data = self.check_in(task)
+        data = self.check_in(task, difficulty=4)
 
         self.assertEqual(data["result"]["approvalStatus"], "waiting")
+        self.assertIn("settings", data)
+        self.assertNotIn("_planDraftRecordId", data)
         self.assertEqual(data["recoveryDraft"]["draft"]["replacesTaskId"], task["id"])
         self.assertEqual(data["recoveryDraft"]["recordId"], data["recordId"])
         self.assertEqual(self.state()["recoveryDrafts"], {task["id"]: data["recoveryDraft"]})
@@ -102,6 +106,7 @@ class AdaptiveApiTests(unittest.TestCase):
             {"taskId": task["id"], "taskTitle": task["title"], "plannedMinutes": 20, "actualMinutes": 10,
              "result": "incomplete", "reasonCode": "task_too_large", "recoveryAction": None},
         )
+        self.assertEqual(record["difficulty"], 4)
         context = self.llm.shrink_calls[0]["context"]
         self.assertEqual(context["originalTask"], {"title": task["title"], "minutes": 20, "doneWhen": task["doneWhen"]})
         self.assertEqual(context["scheduleStyle"], "flexible_queue")
@@ -123,6 +128,98 @@ class AdaptiveApiTests(unittest.TestCase):
         [record] = self.records()
         self.assertEqual((record["result"], record["actualMinutes"], record["plannedMinutes"]), ("completed", 25, 20))
         self.assertEqual(self.llm.shrink_calls, [])
+
+    def test_priority_change_creates_full_plan_draft_without_replacing_current_plan(self):
+        task = self.setup_plan()
+        current_plan = self.state()["plan"]
+
+        data = self.check_in(
+            task,
+            reasonCode="priority_changed",
+            remainingMinutes=15,
+            note="시험 범위가 바뀌어서 이 작업의 우선순위가 낮아졌다",
+        )
+
+        self.assertEqual(data["result"]["approvalStatus"], "waiting")
+        self.assertIsNotNone(data["result"]["planDraft"])
+        self.assertEqual(data["result"]["planDraft"], data["planDraft"])
+        self.assertIsNone(data["recoveryDraft"])
+        state = self.state()
+        self.assertEqual(state["plan"], current_plan)
+        self.assertEqual(state["planDraft"], data["planDraft"])
+        self.assertEqual(len(self.llm.plan_calls), 2)
+        replan_context = self.llm.plan_calls[-1]["context"]
+        self.assertEqual(replan_context["goal"], current_plan["goal"])
+        self.assertEqual(
+            replan_context["currentPlan"],
+            [
+                {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate", "completed")}
+                for entry in current_plan["entries"] if entry["kind"] == "task"
+            ],
+        )
+        self.assertEqual(replan_context["currentTask"]["id"], task["id"])
+        self.assertEqual(replan_context["checkIn"], {
+            "completed": False,
+            "actualMinutes": 10,
+            "remainingMinutes": 15,
+            "reasonCode": "priority_changed",
+            "note": "시험 범위가 바뀌어서 이 작업의 우선순위가 낮아졌다",
+            "difficulty": None,
+        })
+
+        self.call("/api/execution/plan/confirm", planId=data["planDraft"]["id"])
+        [record] = self.records()
+        self.assertEqual(record["recoveryAction"], "plan_replaced")
+        self.assertIsNotNone(record["recoveryDecidedAt"])
+        self.assertEqual(self.state()["plan"]["id"], data["planDraft"]["id"])
+
+    def test_priority_change_rejects_a_conflicting_recovery_strategy(self):
+        task = self.setup_plan()
+        before = self.state()
+
+        data = self.call(
+            "/api/adaptive/check-in",
+            400,
+            taskId=task["id"],
+            checkIn={"completed": False, "reasonCode": "priority_changed"},
+            strategy="reschedule",
+            consent=True,
+        )
+
+        self.assertIn("우선순위 변경", data["detail"])
+        self.assertEqual(self.state()["revision"], before["revision"])
+        self.assertEqual(len(self.llm.plan_calls), 1)
+        self.assertEqual(self.records(), [])
+
+    def test_full_replan_requires_consent_for_every_transmitted_category(self):
+        task = self.setup_plan()
+
+        data = self.call(
+            "/api/adaptive/check-in",
+            400,
+            taskId=task["id"],
+            checkIn={"completed": False, "reasonCode": "priority_changed"},
+            consent=False,
+        )
+
+        for category in ("목표", "프로필", "기억", "가용 시간", "프로젝트", "현재 계획", "작업", "체크인"):
+            self.assertIn(category, data["detail"])
+        self.assertEqual(len(self.llm.plan_calls), 1)
+        self.assertEqual(self.records(), [])
+
+    def test_discarding_full_replan_records_keep_current_plan(self):
+        task = self.setup_plan()
+        current_plan = self.state()["plan"]
+        draft = self.check_in(task, reasonCode="priority_changed")["planDraft"]
+
+        self.call("/api/execution/plan/discard")
+
+        state = self.state()
+        self.assertIsNone(state["planDraft"])
+        self.assertEqual(state["plan"], current_plan)
+        [record] = self.records()
+        self.assertEqual(record["recoveryAction"], "keep_current_plan")
+        self.assertIsNotNone(record["recoveryDecidedAt"])
 
     def test_approve_replaces_task_and_records_action(self):
         task = self.setup_plan()

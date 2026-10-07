@@ -10,14 +10,22 @@ type ReplanInput = {
   events: Array<{ date: string; startTime: string; endTime: string }>
 }
 
-export async function executionApi(path = '', body?: unknown, method = 'POST'): Promise<ExecutionState> {
-  const response = await fetch(`/api/execution${path}`, body === undefined ? undefined : {
+async function requestState(url: string, body?: unknown, method = 'POST'): Promise<ExecutionState> {
+  const response = await fetch(url, body === undefined ? undefined : {
     method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '입력값 또는 서버 연결을 확인해 주세요.')
   if (!Number.isInteger(data.revision) || !data.settings) throw new Error('서버 응답 형식이 올바르지 않습니다.')
   return data
+}
+
+export async function executionApi(path = '', body?: unknown, method = 'POST'): Promise<ExecutionState> {
+  return requestState(`/api/execution${path}`, body, method)
+}
+
+export async function adaptiveApi(path: string, body: unknown): Promise<ExecutionState> {
+  return requestState(`/api/adaptive${path}`, body)
 }
 
 export async function approveProposalAndReplan(

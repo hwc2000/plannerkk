@@ -89,6 +89,7 @@ class ExecutionService:
                 profile = state['profile']
                 if not profile or profile['id'] != proposal['profileId'] or state['profileDraft']:
                     raise ConflictError('프로필이 변경되었거나 수정 중입니다. 후보를 거절하고 새 기록을 모아 주세요.')
+                resolve_plan_draft(state, 'keep_current_plan')
                 apply_profile_proposal(state, proposal_id, expected_version=profile['version'])
                 return
             proposal['status'] = 'approved' if decision == 'approve' else 'rejected'
@@ -139,3 +140,24 @@ def set_recovery_action(state, record_id, action):
         raise ConflictError('이미 복구 결정이 반영된 기록입니다.')
     record['recoveryAction'] = action
     record['recoveryDecidedAt'] = datetime.now(timezone.utc).isoformat()
+
+
+_PLAN_DRAFT_RECORD_KEY = '_planDraftRecordId'
+
+
+def replace_plan_draft(state, draft, *, source_record_id=None):
+    """Replace a reviewable full-plan draft while resolving its previous source record."""
+    previous = state.get(_PLAN_DRAFT_RECORD_KEY)
+    if previous and previous != source_record_id:
+        set_recovery_action(state, previous, 'keep_current_plan')
+    state['planDraft'] = draft
+    state[_PLAN_DRAFT_RECORD_KEY] = source_record_id
+
+
+def resolve_plan_draft(state, action):
+    """Resolve the B record that triggered the current full-plan draft, then clear it."""
+    record_id = state.get(_PLAN_DRAFT_RECORD_KEY)
+    if record_id:
+        set_recovery_action(state, record_id, action)
+    state['planDraft'] = None
+    state[_PLAN_DRAFT_RECORD_KEY] = None

@@ -120,6 +120,11 @@ C의 close_draft에서 호출하므로 복구안 승인 시 계획 변경과 기
 대기 중인 B 제안 객체는 그래프 입력에 직접 넣지 않는다. 승인된 제안만 C의
 `profile_change_context`로 변환해 전체 재계획 근거로 전달한다. 이번 체크인으로
 새로 생성된 후보는 adaptive 응답의 profileUpdateProposals에 포함된다.
+adaptive 응답은 `/api/execution`과 같은 전체 상태(llmAvailable·model 포함)에
+recoveryDraft·result·recordId를 더한 형태다. 화면은 응답을 그대로 상태로 교체한다.
+실행 결과 화면에서 이유가 priority_changed이면 `/records` 대신 C의
+`/api/adaptive/check-in`(strategy=replan, 명시적 LLM 전송 동의)으로 보내고,
+결과 기록(result=incomplete)과 전체 재계획 초안을 함께 저장한다.
 프로필 변경 승인과 계획 초안 확정은 별도 사용자 결정이다. 프로필 변경 후에도
 기존 계획의 완료 기록과 복구안 거절은 가능하지만, 새 프로필 값으로 기존 계획의
 일부만 복구하는 것은 새 계획 확정 전까지 차단한다.

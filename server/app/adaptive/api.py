@@ -6,18 +6,23 @@ store, never trusted from the client.
 """
 from __future__ import annotations
 
+import os
 import re
+from datetime import date
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..execution_api import BusyEvent
+from ..execution_api import BusyEvent, build_full_plan_context
 from ..execution_llm import ExecutionLLM
 from ..execution_store import ConflictError, ExecutionStore
+from ..execution_service import replace_plan_draft
+from ..planner import ProjectContext
 from .context import to_execution_context
-from ..planning_context import get_planning_context, MemoryInput
+from .full_plan_generator import LLMFullPlanGenerator
+from ..planning_context import MemoryInput, get_planning_context
 from .graph import build_adaptive_planner_graph
 from .llm_generator import LLMRecoveryGenerator
 from .local import (
@@ -43,6 +48,7 @@ class CheckInBody(BaseModel):
     remainingMinutes: int | None = Field(default=None, ge=1, le=1440, strict=True)  # work left; default: the whole task
     reasonCode: ReasonCode | None = None
     note: str = Field(default="", max_length=1500)
+    difficulty: int | None = Field(default=None, ge=1, le=5, strict=True)
 
 
 class CheckInRequest(BaseModel):
@@ -86,7 +92,7 @@ def to_snake(value: Any) -> Any:
 
 
 def _public(result: dict[str, Any]) -> dict[str, Any]:
-    keys = ("route", "strategy", "approval_status", "draft", "fallback",
+    keys = ("route", "strategy", "approval_status", "draft", "plan_draft", "fallback",
             "validation_errors", "retry_count", "revision_count", "error")
     return to_camel({k: result.get(k) for k in keys})
 
@@ -96,6 +102,7 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
     graph = build_adaptive_planner_graph(
         LLMRecoveryGenerator(llm),
         plan_writer=LocalPlanWriter(store),
+        full_plan_generator=LLMFullPlanGenerator(llm),
     )
     router = APIRouter(prefix="/api/adaptive", tags=["adaptive planner"])
 
@@ -110,24 +117,45 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             raise ValueError("계획을 만든 뒤 실행 프로필이 바뀌었습니다. 새 프로필로 주간 계획을 다시 생성해 주세요.")
         return state
 
-    def graph_input(state: dict[str, Any], task_id: str, events: list[BusyEvent], memories=None) -> dict[str, Any]:
-        planning = get_planning_context(store.user_id, state["plan"].get("project"), state=state, memories=memories)
+    def graph_input(
+        state: dict[str, Any], task_id: str, events: list[BusyEvent], memories=None, *, needs_full_plan: bool = False,
+    ) -> dict[str, Any]:
+        plan = state["plan"]
+        project = ProjectContext.model_validate(plan["project"]) if plan.get("project") else None
+        if needs_full_plan:
+            planning_context = build_full_plan_context(
+                state=state,
+                user_id=store.user_id,
+                goal=plan["goal"],
+                start_date=date.fromisoformat(plan["startDate"]),
+                project=project,
+                current_plan=plan,
+                events=events,
+                memories=memories,
+                now=local_now(),
+            )
+            planning = planning_context["source_planning_context"]
+        else:
+            planning = get_planning_context(store.user_id, project, state=state, memories=memories)
+            planning_context = {**planning, "goal": plan["goal"]}
         return {
             "user_id": store.user_id,
-            "project_id": state["plan"].get("projectId"),
+            "project_id": plan.get("projectId"),
             "execution_context": to_execution_context(planning["userProfile"], [], converter=execution_context_from_profile),
-            "planning_context": {**planning, "goal": state["plan"]["goal"]},
-            "current_task": current_task(state["plan"], task_id),
+            "planning_context": planning_context,
+            "current_task": current_task(plan, task_id),
             "schedule_context": schedule_context(state, task_id, events, local_now()),
         }
 
     def respond(saved: dict[str, Any], task_id: str, result: dict[str, Any], **extra: Any) -> dict[str, Any]:
+        public_state = {key: value for key, value in saved.items() if not key.startswith("_")}
         return {
-            "revision": saved["revision"],
+            **public_state,
+            "llmAvailable": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+            "model": os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini"),
             "recoveryDraft": drafts_for_plan(saved).get(task_id),
             **extra,
             "result": _public(result),
-            "profileUpdateProposals": [p for p in saved.get("profileUpdateProposals", []) if p["status"] == "pending"],
         }
 
     @router.post("/check-in")
@@ -139,16 +167,33 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
         leave a waiting draft for that task.
         """
         completed = request.checkIn.completed
+        priority_replan = request.checkIn.reasonCode == "priority_changed"
+        if priority_replan and request.strategy not in (None, "replan"):
+            raise HTTPException(400, "우선순위 변경 체크인은 전체 재계획만 선택할 수 있습니다.")
+        effective_strategy = "replan" if priority_replan else request.strategy
+        full_replan = effective_strategy == "replan"
         if not completed and not request.consent:
+            if full_replan:
+                raise HTTPException(
+                    400,
+                    "목표·프로필·기억·가용 시간·프로젝트·현재 계획·작업·체크인 정보를 "
+                    "LLM에 전송해 재계획 초안을 만드는 데 동의해 주세요.",
+                )
             raise HTTPException(400, "작업·체크인 정보의 LLM 전송에 동의해 주세요.")
         state = load(request.revision, needs_current_profile=not completed)
-        task_input = graph_input(state, request.taskId, request.events, [m.model_dump() for m in request.memories])
+        task_input = graph_input(
+            state,
+            request.taskId,
+            request.events,
+            [memory.model_dump() for memory in request.memories],
+            needs_full_plan=full_replan,
+        )
         check_in = request.checkIn.model_dump()
         result = graph.invoke({
             "request": "recovery",
             **task_input,
             "check_in": to_snake(check_in),
-            "strategy": request.strategy,
+            "strategy": effective_strategy,
         })
         record_ids: list[str] = []
 
@@ -156,13 +201,16 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             record_id = record_check_in(doc, task_input["current_task"], check_in)
             record_ids.append(record_id)
             draft = None
-            if result["approval_status"] == "waiting":
+            plan_draft = result.get("plan_draft")
+            if result["approval_status"] == "waiting" and result.get("draft") is not None:
                 draft = {
                     "id": str(uuid4()), "planId": doc["plan"]["id"], "taskId": request.taskId,
                     "recordId": record_id, "strategy": result["strategy"], "checkIn": check_in,
                     "draft": to_camel(result["draft"]), "revisionCount": 0,
                 }
             put_draft(doc, request.taskId, draft)
+            if result["approval_status"] == "waiting" and plan_draft is not None:
+                replace_plan_draft(doc, plan_draft, source_record_id=record_id)
 
         saved = store.change(request.revision, save)
         return respond(saved, request.taskId, result, recordId=record_ids[0])
@@ -190,7 +238,13 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             raise ValueError("승인할 때는 복구 방법을 바꿀 수 없습니다. 다른 방법은 수정(revise)으로 요청해 주세요.")
         result = graph.invoke({
             "request": "review",
-            **graph_input(state, task_id, request.events, [m.model_dump() for m in request.memories]),
+            **graph_input(
+                state,
+                task_id,
+                request.events,
+                [memory.model_dump() for memory in request.memories],
+                needs_full_plan=(request.strategy == "replan"),
+            ),
             "check_in": to_snake(stored["checkIn"]),
             "decision": request.decision,
             "strategy": request.strategy or stored["strategy"],
@@ -200,11 +254,17 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             "base_revision": request.revision,
         })
         if request.decision == "revise" and result["approval_status"] == "waiting":
-            updated = {**stored, "revisionCount": result.get("revision_count", stored["revisionCount"])}
-            if result["fallback"] is None:  # a new draft was generated and validated
-                updated.update(draft=to_camel(result["draft"]), strategy=result["strategy"])
-            if updated != stored:
-                state = store.change(request.revision, lambda doc: put_draft(doc, task_id, updated))
+            if result.get("plan_draft") is not None:
+                def save_full_plan(doc: dict[str, Any]) -> None:
+                    put_draft(doc, task_id, None)
+                    replace_plan_draft(doc, result["plan_draft"], source_record_id=stored["recordId"])
+                state = store.change(request.revision, save_full_plan)
+            else:
+                updated = {**stored, "revisionCount": result.get("revision_count", stored["revisionCount"])}
+                if result["fallback"] is None:  # a new draft was generated and validated
+                    updated.update(draft=to_camel(result["draft"]), strategy=result["strategy"])
+                if updated != stored:
+                    state = store.change(request.revision, lambda doc: put_draft(doc, task_id, updated))
         elif result["approval_status"] == "approved":
             state = store.read()  # LocalPlanWriter replaced the task and closed the draft
         return respond(state, task_id, result)

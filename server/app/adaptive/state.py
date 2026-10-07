@@ -93,6 +93,7 @@ class CheckInSignal(TypedDict, total=False):
     remaining_minutes: int | None  # user's estimate of work left; None = the whole task
     reason_code: ReasonCode | None
     note: str
+    difficulty: int | None
 
 
 class ScheduleContext(TypedDict):
@@ -238,6 +239,7 @@ class CheckInSignalModel(BaseModel):
     remaining_minutes: int | None = Field(default=None, ge=1, strict=True)
     reason_code: ReasonCode | None = None
     note: str = Field(default="", max_length=1500)
+    difficulty: int | None = Field(default=None, ge=1, le=5, strict=True)
 
 
 class ScheduleContextModel(BaseModel):

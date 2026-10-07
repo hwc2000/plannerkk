@@ -7,6 +7,7 @@ import { FixedSchedulePicker } from './FixedSchedulePicker'
 import { ProfileForm } from './ProfileForm'
 import { ProfileChat } from './ProfileChat'
 import { ExecutionView } from './ExecutionView'
+import { ExecutionLearning } from './ExecutionLearning'
 import { approveProposalAndReplan, planCalendarEvents } from './api'
 import type { AvailabilitySlot, ExecutionPlan, ExecutionState } from '../../shared/types'
 
@@ -180,6 +181,60 @@ it('submits checked survey answers without LLM interaction', async () => {
   fireEvent.click(screen.getByText('프로필 생성'))
   await waitFor(()=>expect(submit).toHaveBeenCalledWith(expect.objectContaining({roles:['student','employee'],focusMinutes:25,dailyMinutes:null,scheduleStyle:'flexible_queue'}),'demo',false))
   expect(screen.queryByRole('textbox')).toBeNull()
+})
+
+it('sends priority-change check-ins through adaptive full replanning with explicit consent', async () => {
+  const settings = { slots: [{ day: 0, hour: 18 }], view: 'timeline' as const }
+  const plan = {
+    id: 'week1', profileId: 'profile1', projectId: null, project: null, goal: '시험 공부',
+    startDate: '2030-01-07', endDate: '2030-01-13', timezone: 'Asia/Seoul', status: 'confirmed',
+    slots: settings.slots, pendingTasks: [], entries: [{
+      id: 'task1', kind: 'task', title: '문제 풀기', minutes: 30, doneWhen: '10문제 풀이', dueDate: null,
+      start: '2030-01-07T18:00', end: '2030-01-07T18:30', completed: false,
+    }],
+  } as ExecutionPlan
+  const state = {
+    revision: 4, profile: null, profileDraft: null, settings, plan, planDraft: null,
+    llmAvailable: true, model: 'test', executionRecords: [], profileUpdateProposals: [],
+  } as ExecutionState
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 5 }) })
+  vi.stubGlobal('fetch', fetchMock)
+  const run = vi.fn(async (action: () => Promise<ExecutionState>) => { await action(); return true })
+  const memories = [{ id: 'memory1', content: '저녁 집중', category: 'preference', source: 'user', createdAt: '2030-01-01' }] as const
+  render(<ExecutionLearning
+    state={state} busy={false} run={run}
+    events={[{ date: '2030-01-08', startTime: '19:00', endTime: '20:00' }]}
+    memories={[...memories]}
+  />)
+
+  fireEvent.change(screen.getByLabelText('작업'), { target: { value: 'task1' } })
+  fireEvent.change(screen.getByLabelText('실행 결과'), { target: { value: 'partial' } })
+  fireEvent.change(screen.getByLabelText('실제 시간(분)'), { target: { value: '15' } })
+  fireEvent.change(screen.getByLabelText('남은 작업 예상 시간(분)'), { target: { value: '20' } })
+  fireEvent.change(screen.getByLabelText('미완료·지연 이유'), { target: { value: 'priority_changed' } })
+
+  const submit = screen.getByText('재계획 초안 만들기') as HTMLButtonElement
+  expect(submit.disabled).toBe(true)
+  fireEvent.click(screen.getByLabelText(/현재 계획·작업·체크인 정보를 LLM에 전송/))
+  expect(submit.disabled).toBe(false)
+  fireEvent.click(submit)
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/adaptive/check-in')
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+    revision: 4,
+    taskId: 'task1',
+    strategy: 'replan',
+    consent: true,
+    events: [{ date: '2030-01-08', startTime: '19:00', endTime: '20:00' }],
+    memories: [{ id: 'memory1', content: '저녁 집중' }],
+    checkIn: {
+      completed: false,
+      actualMinutes: 15,
+      remainingMinutes: 20,
+      reasonCode: 'priority_changed',
+    },
+  })
 })
 
 describe('profile proposal replan flow', () => {

@@ -14,6 +14,7 @@ class ConflictError(ValueError):
 def empty_state():
     return {"revision": 0, "profile": None, "profileDraft": None,
             "settings": {"slots": [], "view": "timeline"}, "plan": None, "planDraft": None,
+            "_planDraftRecordId": None,
             "recoveryDrafts": {}, "executionRecords": [], "profileUpdateProposals": [],
             "surveyResponses": [], "profileRevisions": [], "memories": [], "profileConversations": []}
 

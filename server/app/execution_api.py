@@ -11,7 +11,13 @@ from .adaptive.graph import build_adaptive_planner_graph
 from .execution_store import ExecutionStore, ConflictError, empty_state
 from .execution_profile import generate_profile, validate_insights, SCHEMA
 from .execution_llm import ExecutionLLM
-from .execution_service import ExecutionRecordInput, ExecutionService, ProposalNotFoundError
+from .execution_service import (
+    ExecutionRecordInput,
+    ExecutionService,
+    ProposalNotFoundError,
+    replace_plan_draft,
+    resolve_plan_draft,
+)
 from .user_profile import save_profile_draft, confirm_profile_draft
 from .planning_context import get_planning_context, MemoryInput
 from .execution_scheduler import availability_windows
@@ -64,6 +70,76 @@ class BusyEvent(BaseModel):
         return self
 
 
+def build_full_plan_context(
+    *,
+    state: dict,
+    user_id: str,
+    goal: str,
+    start_date: date,
+    project: ProjectContext | None,
+    current_plan: dict | None,
+    events: list[BusyEvent],
+    existing_tasks: list[ExistingTask] | None = None,
+    memories: list[dict] | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Build C's full-plan input from the persisted A/B execution state."""
+    settings = PlannerSettings.model_validate(state["settings"])
+    completed_entries = [
+        dict(entry) for entry in (current_plan or {}).get("entries", [])
+        if entry.get("kind") == "task" and entry.get("completed")
+    ]
+    held_events = list(events)
+    for entry in completed_entries:
+        start, end = datetime.fromisoformat(entry["start"]), datetime.fromisoformat(entry["end"])
+        held_events.append(BusyEvent(date=start.date(), startTime=start.time(), endTime=end.time()))
+    windows = availability_windows(start_date, settings.slots, held_events, project, now=now)
+    if not windows:
+        raise ValueError("선택한 주에 사용 가능한 시간이 없습니다. 가용 시간, 기존 일정, 프로젝트 기간을 확인해 주세요.")
+    planning = get_planning_context(user_id, project, state=state, memories=memories or [])
+    prefs = planning["userProfile"]["planningPreferences"]
+    free_minutes = sum(int((end - start).total_seconds() // 60) for start, end in windows)
+    budget = int(free_minutes * (100 - prefs["bufferPercent"]) / 100)
+    style = prefs.get("scheduleStyle")
+    longest = max(int((end - start).total_seconds() // 60) for start, end in windows)
+    chunk = int(longest * (100 - prefs["bufferPercent"]) / 100)
+    block = min(chunk if style == "flexible_queue" else prefs["blockMinutes"], longest, budget)
+    if block < 1:
+        raise ValueError("작업을 배치할 여유 시간이 부족합니다.")
+    serialized_project = project.model_dump(mode="json") if project else None
+    return {
+        "goal": goal,
+        "profile": planning["userProfile"]["declaredFacts"],
+        "schedule_style": style,
+        "max_block_minutes": block,
+        "budget_minutes": budget,
+        "buffer_percent": prefs["bufferPercent"],
+        "start_date": start_date.isoformat(),
+        "end_date": (start_date + timedelta(days=6)).isoformat(),
+        "available_windows": [
+            [start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")]
+            for start, end in windows
+        ],
+        "project": serialized_project,
+        "project_id": project.id if project else None,
+        "existing_tasks": [task.model_dump(mode="json") for task in (existing_tasks or [])],
+        "current_plan": [
+            {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate", "completed")}
+            for entry in (current_plan or {}).get("entries", []) if entry.get("kind") == "task"
+        ],
+        "completed_tasks": [
+            {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate")}
+            for entry in completed_entries
+        ],
+        "completed_entries": completed_entries,
+        "pending_tasks": list((current_plan or {}).get("pendingTasks", [])),
+        "profile_id": planning["profileId"],
+        "profile_version": planning["profileVersion"],
+        "slots": state["settings"]["slots"],
+        "source_planning_context": planning,
+    }
+
+
 class WeeklyRequest(Mutation):
     memories: list[MemoryInput] = Field(default_factory=list, max_length=200)
     goal: str = Field(min_length=1, max_length=2000)
@@ -102,7 +178,8 @@ def execution_router(store=None, llm=None):
     router = APIRouter(prefix="/api/execution")
 
     def envelope(state):
-        return {**state, "llmAvailable": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        public = {key: value for key, value in state.items() if not key.startswith("_")}
+        return {**public, "llmAvailable": bool(os.getenv("OPENAI_API_KEY", "").strip()),
                 "model": os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini")}
 
     def snapshot(revision):
@@ -123,7 +200,7 @@ def execution_router(store=None, llm=None):
         def update(state):
             value = request.settings.model_dump()
             if state["settings"]["slots"] != value["slots"]:
-                state["planDraft"] = None
+                resolve_plan_draft(state, "keep_current_plan")
             state["settings"] = value
         return change(request.revision, update)
 
@@ -156,7 +233,10 @@ def execution_router(store=None, llm=None):
 
     @router.post("/profile/confirm")
     def confirm_profile(request: Mutation):
-        return change(request.revision, confirm_profile_draft)
+        def update(state):
+            resolve_plan_draft(state, "keep_current_plan")
+            confirm_profile_draft(state)
+        return change(request.revision, update)
 
     @router.get("/survey-responses")
     def survey_responses():
@@ -179,8 +259,9 @@ def execution_router(store=None, llm=None):
     @router.post("/profile/reset")
     def reset_profile(request: Mutation):
         def update(state):
+            resolve_plan_draft(state, "keep_current_plan")
             state.update(profile=None, profileDraft=None, profileConversations=[],
-                         surveyResponses=[], profileRevisions=[], profileUpdateProposals=[], planDraft=None)
+                         surveyResponses=[], profileRevisions=[], profileUpdateProposals=[])
         return change(request.revision, update)
 
     @router.post("/reset")
@@ -221,7 +302,6 @@ def execution_router(store=None, llm=None):
             if profile_change_context["source_profile_id"] != current_plan["profileId"]:
                 raise ValueError("현재 계획을 만든 프로필에 대한 변경 제안이 아닙니다.")
 
-        settings = PlannerSettings.model_validate(state["settings"])
         effective_goal = current_plan["goal"] if current_plan else request.goal
         effective_start_date = date.fromisoformat(current_plan["startDate"]) if current_plan else request.startDate
         effective_project = (
@@ -229,60 +309,17 @@ def execution_router(store=None, llm=None):
             if current_plan and current_plan.get("project")
             else (None if current_plan else request.project)
         )
-        completed_entries = [
-            dict(entry) for entry in (current_plan or {}).get("entries", [])
-            if entry.get("kind") == "task" and entry.get("completed")
-        ]
-        held_events = list(request.events)
-        for entry in completed_entries:
-            start, end = datetime.fromisoformat(entry["start"]), datetime.fromisoformat(entry["end"])
-            held_events.append(BusyEvent(date=start.date(), startTime=start.time(), endTime=end.time()))
-        windows = availability_windows(effective_start_date, settings.slots, held_events, effective_project)
-        if not windows:
-            raise ValueError("선택한 주에 사용 가능한 시간이 없습니다. 가용 시간, 기존 일정, 프로젝트 기간을 확인해 주세요.")
-        planning = get_planning_context(store.user_id, effective_project, state=state,
-                                        memories=[m.model_dump() for m in request.memories])
-        prefs = planning["userProfile"]["planningPreferences"]
-        free_minutes = sum(int((end - start).total_seconds() // 60) for start, end in windows)
-        budget = int(free_minutes * (100 - prefs["bufferPercent"]) / 100)
-        style = prefs.get("scheduleStyle")
-        longest = max(int((end - start).total_seconds() // 60) for start, end in windows)
-        chunk = int(longest * (100 - prefs["bufferPercent"]) / 100)
-        block = min(chunk if style == "flexible_queue" else prefs["blockMinutes"], longest, budget)
-        if block < 1:
-            raise ValueError("작업을 배치할 여유 시간이 부족합니다.")
-        project = effective_project.model_dump(mode="json") if effective_project else None
-        planning_context = {
-            "goal": effective_goal,
-            "profile": planning["userProfile"]["declaredFacts"],
-            "schedule_style": style,
-            "max_block_minutes": block,
-            "budget_minutes": budget,
-            "buffer_percent": prefs["bufferPercent"],
-            "start_date": effective_start_date.isoformat(),
-            "end_date": (effective_start_date + timedelta(days=6)).isoformat(),
-            "available_windows": [
-                [start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")]
-                for start, end in windows
-            ],
-            "project": project,
-            "project_id": effective_project.id if effective_project else None,
-            "existing_tasks": [task.model_dump(mode="json") for task in request.existingTasks],
-            "current_plan": [
-                {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate", "completed")}
-                for entry in (current_plan or {}).get("entries", []) if entry.get("kind") == "task"
-            ],
-            "completed_tasks": [
-                {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate")}
-                for entry in completed_entries
-            ],
-            "completed_entries": completed_entries,
-            "pending_tasks": list((current_plan or {}).get("pendingTasks", [])),
-            "profile_id": planning["profileId"],
-            "profile_version": planning["profileVersion"],
-            "slots": state["settings"]["slots"],
-            "source_planning_context": planning,
-        }
+        planning_context = build_full_plan_context(
+            state=state,
+            user_id=store.user_id,
+            goal=effective_goal,
+            start_date=effective_start_date,
+            project=effective_project,
+            current_plan=current_plan,
+            events=request.events,
+            existing_tasks=request.existingTasks,
+            memories=[memory.model_dump() for memory in request.memories],
+        )
         result = await asyncio.to_thread(planning_graph.invoke, {
             "request": "replan" if replan else "new_plan",
             "user_id": store.user_id,
@@ -293,7 +330,10 @@ def execution_router(store=None, llm=None):
         if result["approval_status"] != "waiting" or not result.get("plan_draft"):
             reason = (result.get("fallback") or {}).get("reason") or "계획 초안 생성에 실패했습니다."
             raise ValueError(reason)
-        return change(request.revision, lambda doc: doc.update(planDraft=result["plan_draft"]))
+        return change(
+            request.revision,
+            lambda doc: replace_plan_draft(doc, result["plan_draft"]),
+        )
 
     @router.post("/plan/confirm")
     def confirm_plan(request: ConfirmPlan):
@@ -314,13 +354,14 @@ def execution_router(store=None, llm=None):
                         raise ValueError("초안 생성 후 추가된 일정과 겹칩니다. 계획을 다시 생성해 주세요.")
             value["status"] = "confirmed"
             from .adaptive.local import PLAN_REPLACED, close_all_drafts  # adaptive.local imports this module
+            resolve_plan_draft(state, PLAN_REPLACED)
             close_all_drafts(state, PLAN_REPLACED)
-            state.update(plan=value, planDraft=None)
+            state.update(plan=value)
         return change(request.revision, update)
 
     @router.post("/plan/discard")
     def discard(request: Mutation):
-        return change(request.revision, lambda state: state.update(planDraft=None))
+        return change(request.revision, lambda state: resolve_plan_draft(state, "keep_current_plan"))
 
     @router.post("/task")
     def check_task(request: CheckTask):
