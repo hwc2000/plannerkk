@@ -18,6 +18,14 @@ class GenerationUnavailableError(Exception):
     """The generator cannot run at all (missing key, auth, quota); do not retry."""
 
 
+class PlanValidationError(ValueError):
+    """The generated plan broke a rule; another attempt with these errors may pass."""
+
+    def __init__(self, errors: list[str]):
+        super().__init__("; ".join(errors))
+        self.errors = errors
+
+
 class PlanWriter(Protocol):
     def apply_recovery(
         self,

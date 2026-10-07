@@ -8,6 +8,7 @@ import { ProfileForm } from './ProfileForm'
 import { ProfileChat } from './ProfileChat'
 import { ExecutionView } from './ExecutionView'
 import { ExecutionLearning } from './ExecutionLearning'
+import { PlanReasons } from './PlanReasons'
 import { approveProposalAndReplan, planCalendarEvents } from './api'
 import type { AvailabilitySlot, ExecutionPlan, ExecutionState } from '../../shared/types'
 
@@ -301,4 +302,22 @@ describe('profile proposal replan flow', () => {
     })).rejects.toThrow('동의')
     expect(fetchMock).not.toHaveBeenCalled()
   })
+})
+
+it('shows why the plan fits this user, with where each value came from', () => {
+  render(<PlanReasons open reasons={[
+    { key: 'taskLength', applied: '작업은 한 번에 20분 이하로 나눴습니다.', because: '확정한 집중 가능 시간 20분에 맞췄습니다.', source: 'declared', fields: ['focusMinutes'] },
+    { key: 'buffer', applied: '선택한 가용 시간의 40% 이상을 여유분으로 비워 두었습니다.', because: '일정이 불규칙하다고 답했습니다.', source: 'declared', fields: ['regularity'] },
+    { key: 'taskLength2', applied: '작업은 한 번에 20분 이하로 나눴습니다.', because: '최근 실행 기록 3건을 근거로 승인한 변경(50분 → 20분)을 따랐습니다.', source: 'learned', fields: ['learnedPatterns'] },
+  ]}/>)
+  expect(screen.getByText('이 계획에 반영한 나의 특성 3가지')).toBeTruthy()
+  expect(screen.getByText('확정한 집중 가능 시간 20분에 맞췄습니다.')).toBeTruthy()
+  expect(screen.getByText('설문 답변 · 한 번의 집중 시간')).toBeTruthy()
+  expect(screen.getByText('설문 답변 · 생활 규칙성')).toBeTruthy()
+  expect(screen.getByText('실행 기록으로 학습')).toBeTruthy()
+})
+
+it('renders nothing for plans made before reasons existed', () => {
+  const { container } = render(<PlanReasons open reasons={[]}/>)
+  expect(container.innerHTML).toBe('')
 })

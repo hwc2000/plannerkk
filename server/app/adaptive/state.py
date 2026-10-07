@@ -57,6 +57,20 @@ REASON_STRATEGY: dict[str, Strategy] = {
     "underestimated": "reschedule",
     "priority_changed": "replan",
 }
+RecoveryPreference = Literal["replan", "reduce", "continue", "abandon", "unknown"]
+# The survey's "계획이 틀어지면 어떻게 하는 편이야?" answer, where it names a strategy.
+PREFERENCE_STRATEGY: dict[str, Strategy] = {"reduce": "shrink", "replan": "reschedule"}
+# Reasons about the circumstance rather than the task itself; here the user's
+# stated preference picks the strategy. A task that was too large or unclear is
+# always shrunk, and a priority change always replans.
+CIRCUMSTANCE_REASONS = frozenset({"time_shortage", "fatigue", "interruption", "underestimated", "other"})
+
+
+def default_strategy(reason_code: str | None, recovery_preference: str | None) -> Strategy | None:
+    preferred = PREFERENCE_STRATEGY.get(recovery_preference or "")
+    if preferred and reason_code in CIRCUMSTANCE_REASONS:
+        return preferred
+    return REASON_STRATEGY.get(reason_code or "")
 
 
 class ExecutionContext(TypedDict):
@@ -65,6 +79,7 @@ class ExecutionContext(TypedDict):
     schedule_style: ScheduleStyle | None
     focus_minutes: int | None  # required only for time_blocks
     break_minutes: int | None  # gap between pieces in one window for time_blocks; None = no gap
+    recovery_preference: RecoveryPreference | None  # picks the strategy for circumstance reasons
 
 
 class ProfileChangeContext(TypedDict):
@@ -193,6 +208,7 @@ class ExecutionContextModel(BaseModel):
     schedule_style: ScheduleStyle | None = None
     focus_minutes: int | None = Field(default=None, ge=1, strict=True)
     break_minutes: int | None = Field(default=None, ge=0, strict=True)
+    recovery_preference: RecoveryPreference | None = None
 
 
 class ProfileChangeContextModel(BaseModel):

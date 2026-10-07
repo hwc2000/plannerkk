@@ -43,6 +43,7 @@ def execution_context_from_profile(profile: Mapping[str, Any] | None, _records: 
         "schedule_style": prefs.get("scheduleStyle"),
         "focus_minutes": prefs["blockMinutes"] if (known_focus or profile.get("learnedPatterns")) else None,
         "break_minutes": prefs.get("breakMinutes"),
+        "recovery_preference": prefs.get("recoveryPreference"),
     }
 
 
