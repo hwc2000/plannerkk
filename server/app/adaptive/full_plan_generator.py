@@ -147,10 +147,14 @@ class LLMFullPlanGenerator:
                     "reason": previous.get("reason", "이전 계획에서 배치되지 않음"),
                 })
         completed = [dict(entry) for entry in context.get("completed_entries", [])]
+        project_profile = planning.get("projectProfile") or {}
         return {
             "id": str(uuid4()),
             "profileId": context["profile_id"],
             "profileVersion": context["profile_version"],
+            # The project's own settings this plan used; a newer version makes the plan stale.
+            "projectProfileId": project_profile.get("id"),
+            "projectProfileVersion": project_profile.get("version"),
             "scheduleStyle": context["schedule_style"],
             "projectId": context.get("project_id"),
             "project": context.get("project"),

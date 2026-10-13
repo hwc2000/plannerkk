@@ -65,6 +65,64 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(self.state['settings']['slots'],[])
         self.assertGreater(self.state['revision'],old_revision)
 
+    def test_checkbox_completion_is_an_execution_record_with_project_and_profile_version(self):
+        self.setup_profile()
+        project = {'id': 'project-1', 'title': '토익', 'goal': '800점', 'startDate': '2030-01-01', 'dueDate': '2030-03-31'}
+        self.post('/plan', goal='연습문제 공부', startDate='2030-01-07', consent=True, project=project)
+        self.post('/plan/confirm', planId=self.state['planDraft']['id'], project=project)
+        plan = self.state['plan']
+        first, second = [e for e in plan['entries'] if e['kind'] == 'task'][:2]
+
+        self.post('/task', planId=plan['id'], taskId=first['id'], completed=True)
+        [record] = self.state['executionRecords']
+        self.assertEqual(
+            {k: record[k] for k in ('planId', 'taskId', 'result', 'actualMinutes', 'plannedMinutes', 'projectId', 'profileVersion')},
+            {'planId': plan['id'], 'taskId': first['id'], 'result': 'completed', 'actualMinutes': None,
+             'plannedMinutes': first['minutes'], 'projectId': 'project-1', 'profileVersion': self.state['profile']['version']},
+        )
+        self.post('/task', planId=plan['id'], taskId=first['id'], completed=True)
+        self.assertEqual(len(self.state['executionRecords']), 1)
+
+        self.post('/task', planId=plan['id'], taskId=first['id'], completed=False)
+        self.assertEqual(self.state['executionRecords'], [])
+        self.assertFalse(next(e for e in self.state['plan']['entries'] if e['id'] == first['id'])['completed'])
+
+        # Unchecking undoes only the completion; the earlier failure stays for learning.
+        self.post('/records', planId=plan['id'], taskId=second['id'],
+                  actualMinutes=10, remainingMinutes=10, result='partial', reasonCode='time_shortage')
+        partial = self.state['executionRecords'][-1]
+        self.assertEqual((partial['projectId'], partial['profileVersion']), ('project-1', self.state['profile']['version']))
+        self.post('/task', planId=plan['id'], taskId=second['id'], completed=True)
+        self.assertEqual([r['result'] for r in self.state['executionRecords']], ['partial', 'completed'])
+        self.post('/task', planId=plan['id'], taskId=second['id'], completed=False)
+        self.assertEqual(self.state['executionRecords'], [partial])
+
+    def test_unchecking_keeps_a_completion_used_as_proposal_evidence(self):
+        self.setup_profile()
+        self.post('/plan', goal='연습문제 공부', startDate='2030-01-07', consent=True)
+        self.post('/plan/confirm', planId=self.state['planDraft']['id'])
+        plan = self.state['plan']
+        task = next(e for e in plan['entries'] if e['kind'] == 'task')
+        self.post('/task', planId=plan['id'], taskId=task['id'], completed=True)
+        record_id = self.state['executionRecords'][0]['id']
+        self.assertIsNone(self.state['executionRecords'][0]['projectId'])
+        proposal = {
+            'id': 'proposal-1', 'profileId': self.state['profile']['id'],
+            'proposedChanges': {'blockMinutes': {'from': 30, 'to': 20}}, 'reason': 'reason',
+            'evidenceRecordIds': [record_id], 'ruleVersion': 'test', 'status': 'pending',
+            'createdAt': '2030-01-01T00:00:00+00:00', 'decidedAt': None,
+        }
+        self.store.change(self.state['revision'], lambda doc: doc['profileUpdateProposals'].append(proposal))
+        self.state = self.client.get('/api/execution').json()
+
+        response = self.client.post('/api/execution/task', json={
+            'revision': self.state['revision'], 'planId': plan['id'], 'taskId': task['id'], 'completed': False})
+
+        self.assertEqual(response.status_code, 409, response.text)
+        reloaded = ExecutionStore(self.store.path).read()
+        self.assertEqual([r['id'] for r in reloaded['executionRecords']], [record_id])
+        self.assertTrue(next(e for e in reloaded['plan']['entries'] if e['id'] == task['id'])['completed'])
+
     def test_rejects_stale_requests_and_requires_consent(self):
         self.setup_profile()
         r=self.client.post('/api/execution/profile/confirm',json={'revision':0})
