@@ -5,6 +5,7 @@ import { dateKey } from '../../shared/constants'
 import { ExecutionLearning } from './ExecutionLearning'
 import { ProfileForm } from './ProfileForm'
 import { AvailabilityGrid } from './AvailabilityGrid'
+import { PlanReasons } from './PlanReasons'
 import { answerLabels, formatAnswer } from './profileLabels'
 import { approveProposalAndReplan, downloadJson, executionApi, projectContext } from './api'
 
@@ -74,9 +75,10 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
       <p className="section-kicker">{draft?'REVIEW DRAFT':'MY WEEK'}</p><h2>{draft?'주간 계획 초안':'확정한 주간 계획'}</h2>
       <p>{plan.goal}</p><p className="execution-help">{plan.startDate} ~ {plan.endDate} · 한국 시간{!draft && ` · ${completed}개 완료`}</p>
       {!draft && state.profile?.id!==plan.profileId && <p className="execution-help">이 계획은 이전 프로필로 만들었습니다. 새 프로필로 적용하려면 다시 생성해 주세요.</p>}
+      <PlanReasons reasons={plan.personalization ?? []} open={draft}/>
       {dates.map(day => <div key={day}><h3>{day} · {new Intl.DateTimeFormat('ko-KR',{ weekday:'long' }).format(new Date(`${day}T12:00:00`))}</h3>
         {entries.filter(e => e.start.startsWith(day)).map(e => e.kind==='break'?<div className="execution-break" key={e.id}>{e.start.slice(11)} ~ {e.end.slice(11)} · 휴식</div>:
-          <label className={`execution-task ${e.completed?'done':''}`} key={e.id}>
+          <label className={`execution-task ${e.completed?'done':''} ${e.starter?'starter':''}`} key={e.id}>
             <input aria-label={`${e.title} 완료`} type="checkbox" checked={e.completed} disabled={draft||busy} onChange={event => { void run(() => executionApi('/task',{ revision:state.revision,planId:plan.id,taskId:e.id,completed:event.target.checked }),'완료 상태를 저장했습니다.') }} />
             <span>{timed && <b className="execution-task-time">{e.start.slice(11)} ~ {e.end.slice(11)}</b>}<strong>{e.title}</strong><small>{e.doneWhen} · {e.minutes}분</small></span>
           </label>)}

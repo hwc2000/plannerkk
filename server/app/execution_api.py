@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .adaptive.context import to_profile_change_context
 from .adaptive.full_plan_generator import LLMFullPlanGenerator, SCHEDULE_STYLE_INSTRUCTIONS
 from .adaptive.graph import build_adaptive_planner_graph
+from .adaptive.personalization import plan_policy
 from .execution_store import ExecutionStore, ConflictError, empty_state
 from .execution_profile import generate_profile, validate_insights, SCHEMA
 from .execution_llm import ExecutionLLM
@@ -20,7 +21,7 @@ from .execution_service import (
 )
 from .user_profile import save_profile_draft, confirm_profile_draft
 from .planning_context import get_planning_context, MemoryInput
-from .execution_scheduler import availability_windows
+from .execution_scheduler import availability_windows, daily_budgets
 from .planner import ProjectContext, ExistingTask
 
 class Mutation(BaseModel):
@@ -98,12 +99,15 @@ def build_full_plan_context(
         raise ValueError("선택한 주에 사용 가능한 시간이 없습니다. 가용 시간, 기존 일정, 프로젝트 기간을 확인해 주세요.")
     planning = get_planning_context(user_id, project, state=state, memories=memories or [])
     prefs = planning["userProfile"]["planningPreferences"]
-    free_minutes = sum(int((end - start).total_seconds() // 60) for start, end in windows)
-    budget = int(free_minutes * (100 - prefs["bufferPercent"]) / 100)
+    policy = plan_policy(planning["userProfile"])
     style = prefs.get("scheduleStyle")
+    # Each day's first task carries the starter, so only the rest goes to tasks.
+    starter = policy.starter_minutes or 0
+    budgets = daily_budgets(windows, policy.buffer_percent, policy.daily_cap_minutes)
+    budget = sum(max(0, minutes - starter) for minutes in budgets.values())
     longest = max(int((end - start).total_seconds() // 60) for start, end in windows)
-    chunk = int(longest * (100 - prefs["bufferPercent"]) / 100)
-    block = min(chunk if style == "flexible_queue" else prefs["blockMinutes"], longest, budget)
+    # Both schedule styles cap a task at the user's focus block.
+    block = min(policy.block_minutes, longest - starter, max(budgets.values()) - starter)
     if block < 1:
         raise ValueError("작업을 배치할 여유 시간이 부족합니다.")
     serialized_project = project.model_dump(mode="json") if project else None

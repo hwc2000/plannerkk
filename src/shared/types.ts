@@ -109,7 +109,12 @@ export type AvailabilitySlot = { day: number; hour: number }
 export type PlannerSettings = { slots: AvailabilitySlot[]; view: 'timeline' | 'checklist' }
 export type ExecutionTask = { title: string; minutes: number; doneWhen: string; dueDate: string | null }
 export type ExecutionEntry = ExecutionTask & {
-  id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean
+  id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean; starter?: boolean
+}
+/** Why the plan looks the way it does for this user; built by code from the values it applied. */
+export type PlanReason = {
+  key: string; applied: string; because: string
+  source: 'declared' | 'learned' | 'default' | 'profile' | 'memory'; fields: string[]
 }
 export type ExecutionPlan = {
   profileVersion?: number
@@ -119,6 +124,7 @@ export type ExecutionPlan = {
   goal: string; startDate: string; endDate: string; timezone: string
   status: 'draft' | 'confirmed'; slots: AvailabilitySlot[]
   entries: ExecutionEntry[]; pendingTasks: Array<ExecutionTask & { reason: string }>
+  personalization?: PlanReason[]
 }
 export type ExecutionState = {
   executionRecords?: ExecutionRecord[]; profileUpdateProposals?: ProfileUpdateProposal[]

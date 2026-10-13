@@ -105,9 +105,9 @@ class ExecutionTests(unittest.TestCase):
                 return await super().generate(**kwargs)
 
         self.client.close()
-        # 18~20시 window (120분), buffer 40% -> flexible chunk 72분; time_blocks keeps blockMinutes 30.
+        # Both styles cap a task at the user's focus block (30분); the style only changes the prompt.
         # scheduleStyle currently follows regularity (regular -> time_blocks).
-        for regularity, style, max_block in (('regular', 'time_blocks', 30), ('irregular', 'flexible_queue', 72)):
+        for regularity, style, max_block in (('regular', 'time_blocks', 30), ('irregular', 'flexible_queue', 30)):
             with self.subTest(style=style):
                 llm = RecordingLLM()
                 store = ExecutionStore(Path(self.temp.name)/f'{style}.sqlite3')
