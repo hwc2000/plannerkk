@@ -271,6 +271,32 @@ class OverflowLLM(PlanLLM):
         return reply
 
 
+class DeadlineLLM(PlanLLM):
+    """Puts a task due on the first day last, until a retry names its deadline."""
+
+    async def generate(self, **kwargs):
+        reply = await super().generate(**kwargs)
+        if kwargs["name"] == "execution_tasks":
+            due = {"title": "발표 연습", "minutes": 40, "doneWhen": "처음부터 끝까지 한 번", "dueDate": "2030-01-07"}
+            others = [{"title": f"자료 {i}장", "minutes": 40, "doneWhen": "초안 완성", "dueDate": None} for i in range(3)]
+            told = any("'발표 연습'(마감 2030-01-07)" in e for e in kwargs["context"].get("previousErrors", []))
+            reply["tasks"] = [due, *others] if told else [*others, due]
+        return reply
+
+
+class TooLongLLM(PlanLLM):
+    """Copies a 2-hour existing task as one 120-minute task until the retry names it."""
+
+    async def generate(self, **kwargs):
+        reply = await super().generate(**kwargs)
+        if kwargs["name"] == "execution_tasks":
+            errors = kwargs["context"].get("previousErrors", [])
+            told = any("'화면 흐름 검토' 120분은 작업당 최대 50분을 넘습니다" in e for e in errors)
+            reply["tasks"] = ([{"title": f"화면 흐름 검토 {i}", "minutes": 40, "doneWhen": "절반 검토", "dueDate": None} for i in (1, 2)]
+                              if told else [{"title": "화면 흐름 검토", "minutes": 120, "doneWhen": "검토 완료", "dueDate": None}])
+        return reply
+
+
 class TwoUsersApiTests(unittest.TestCase):
     """Same goal, same free time, different users -> different plans and reasons."""
 
@@ -304,6 +330,23 @@ class TwoUsersApiTests(unittest.TestCase):
         self.assertEqual(draft["pendingTasks"], [])
         self.assertIn("하루 최대 72분", last["context"]["previousErrors"][0])
         self.assertNotIn("previousErrors", llm.calls[0]["context"])
+
+    def test_a_task_over_the_focus_block_is_named_in_the_retry(self):
+        llm = TooLongLLM()
+        draft, last = self.plan_for(USER_A, llm)
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(last["context"]["previousErrors"],
+                         ["'화면 흐름 검토' 120분은 작업당 최대 50분을 넘습니다. 50분 이하 작업 여러 개로 나누세요."])
+        self.assertEqual([e["minutes"] for e in draft["entries"] if e["kind"] == "task"], [40, 40])
+
+    def test_a_deadline_task_left_out_is_named_in_the_retry(self):
+        llm = DeadlineLLM()
+        draft, last = self.plan_for(USER_A, llm)
+        self.assertEqual(len(llm.calls), 2)
+        self.assertIn("'발표 연습'(마감 2030-01-07)은 마감 전에 들어갈 자리가 없었습니다", last["context"]["previousErrors"][1])
+        self.assertEqual(draft["pendingTasks"], [])
+        placed = next(e for e in draft["entries"] if e["title"] == "발표 연습")
+        self.assertEqual(placed["start"][:10], "2030-01-07")
 
     def test_overflow_on_the_last_attempt_keeps_the_plan_with_pending_tasks(self):
         llm = OverflowLLM(overflows=10)

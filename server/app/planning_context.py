@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
+from .project_profile import effective_preferences, load_project_profile
 from .user_profile import UserProfile
 
 
@@ -59,9 +60,12 @@ def get_planning_context(user, project=None, *, state, memories=None, now=None):
             selected.append({k: memory[k] for k in ("id", "content", "category", "source", "createdAt")})
         except (ValueError, TypeError):
             warnings.append("INVALID_MEMORY_EXCLUDED")
+    # The project's own settings sit on top of the user's; other projects never see them.
+    project_profile = load_project_profile(state, user, project_id)
+    prefs, overrides = effective_preferences(profile, project_profile)
     patterns = []
     approved = {p["id"] for p in state.get("profileUpdateProposals", []) if p.get("status") == "approved"}
-    for pattern in profile["learnedPatterns"]:
+    for pattern in [*profile["learnedPatterns"], *((project_profile or {}).get("learnedPatterns") or [])]:
         try:
             if (pattern["status"] == "active" and pattern["approvedProposalId"] in approved
                 and pattern["projectId"] in (None, project_id)
@@ -74,7 +78,9 @@ def get_planning_context(user, project=None, *, state, memories=None, now=None):
     facts = {k: v for k, v in profile["declaredFacts"].items() if k not in ("constraints", "context")}
     return deepcopy({"schemaVersion": "1.0", "userId": user, "profileId": profile["id"],
         "profileVersion": profile["version"], "generatedAt": now.isoformat(),
-        "userProfile": {"declaredFacts": facts, "planningPreferences": profile["planningPreferences"],
-                        "learnedPatterns": patterns},
+        "userProfile": {"declaredFacts": facts, "planningPreferences": prefs,
+                        "learnedPatterns": patterns, "projectOverrides": overrides},
+        "projectProfile": ({"id": project_profile["id"], "version": project_profile["version"],
+                            "projectId": project_id} if project_profile else None),
         "projectContext": project, "availability": {"timezone": "Asia/Seoul", "slots": state["settings"]["slots"]},
         "memories": selected, "warnings": sorted(set(warnings))})

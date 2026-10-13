@@ -1,7 +1,7 @@
 import asyncio
 import os
 from datetime import date, datetime, time, timedelta
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,7 +18,9 @@ from .execution_service import (
     ProposalNotFoundError,
     replace_plan_draft,
     resolve_plan_draft,
+    set_task_completion,
 )
+from .project_profile import current_project_profile_id, set_declared_overrides
 from .user_profile import save_profile_draft, confirm_profile_draft
 from .planning_context import get_planning_context, MemoryInput
 from .execution_scheduler import availability_windows, daily_budgets
@@ -171,6 +173,11 @@ class ExecutionRecordRequest(ExecutionRecordInput, Mutation):
     pass
 
 
+class ProjectProfileRequest(Mutation):
+    # Raw values: ProjectPreferenceValues validates them strictly (no 1 from true).
+    overrides: dict[str, Any] = Field(default_factory=dict, max_length=10)
+
+
 def execution_router(store=None, llm=None):
     store = store or ExecutionStore()
     service = ExecutionService(store)
@@ -254,6 +261,12 @@ def execution_router(store=None, llm=None):
     def saved_profile():
         return {"profile": store.read()["profile"]}
 
+    @router.put("/projects/{project_id}/profile")
+    def project_profile(project_id: str, request: ProjectProfileRequest):
+        """Set the values that differ for this project; left-out keys follow the user profile."""
+        return change(request.revision, lambda state: set_declared_overrides(
+            state, store.user_id, project_id, request.overrides))
+
     @router.post("/planning-context")
     def planning_context(request: WeeklyRequest):
         state = snapshot(request.revision)
@@ -265,7 +278,8 @@ def execution_router(store=None, llm=None):
         def update(state):
             resolve_plan_draft(state, "keep_current_plan")
             state.update(profile=None, profileDraft=None, profileConversations=[],
-                         surveyResponses=[], profileRevisions=[], profileUpdateProposals=[])
+                         surveyResponses=[], profileRevisions=[], profileUpdateProposals=[],
+                         projectProfiles={}, projectProfileRevisions=[])
         return change(request.revision, update)
 
     @router.post("/reset")
@@ -305,6 +319,15 @@ def execution_router(store=None, llm=None):
                 raise ValueError("현재 프로필에 적용된 변경 제안이 아닙니다.")
             if profile_change_context["source_profile_id"] != current_plan["profileId"]:
                 raise ValueError("현재 계획을 만든 프로필에 대한 변경 제안이 아닙니다.")
+            if profile_change_context["scope"] == "project":
+                # A project's change replans that project's plan; other plans keep theirs.
+                plan_project_id = current_plan.get("projectId")
+                if profile_change_context["project_id"] != plan_project_id:
+                    raise ValueError("이 변경은 다른 프로젝트에 적용됩니다. 그 프로젝트의 다음 계획부터 반영됩니다.")
+                if profile_change_context["applied_project_profile_id"] != current_project_profile_id(state, plan_project_id):
+                    raise ValueError("현재 프로젝트 설정에 적용된 변경 제안이 아닙니다.")
+                if profile_change_context["source_project_profile_id"] != current_plan.get("projectProfileId"):
+                    raise ValueError("현재 계획을 만든 프로젝트 설정에 대한 변경 제안이 아닙니다.")
 
         effective_goal = current_plan["goal"] if current_plan else request.goal
         effective_start_date = date.fromisoformat(current_plan["startDate"]) if current_plan else request.startDate
@@ -347,6 +370,8 @@ def execution_router(store=None, llm=None):
                 raise ValueError("초안이 변경되었습니다. 다시 생성해 주세요.")
             if not state.get("profile") or value["profileId"] != state["profile"]["id"]:
                 raise ValueError("초안 생성 후 프로필이 변경되었습니다. 계획을 다시 생성해 주세요.")
+            if value.get("projectProfileId") != current_project_profile_id(state, value.get("projectId")):
+                raise ValueError("초안 생성 후 이 프로젝트 설정이 바뀌었습니다. 계획을 다시 생성해 주세요.")
             current_project = request.project.model_dump(mode="json") if request.project else None
             if current_project != value["project"]:
                 raise ValueError("프로젝트가 변경되었습니다. 다시 생성해 주세요.")
@@ -369,15 +394,8 @@ def execution_router(store=None, llm=None):
 
     @router.post("/task")
     def check_task(request: CheckTask):
-        def update(state):
-            plan = state["plan"]
-            if not plan or plan["id"] != request.planId:
-                raise ValueError("계획이 변경되었습니다. 다시 불러와 주세요.")
-            task = next((e for e in plan["entries"] if e["id"] == request.taskId and e["kind"] == "task"), None)
-            if task is None:
-                raise ValueError("작업을 찾을 수 없습니다.")
-            task["completed"] = request.completed
-        return change(request.revision, update)
+        return change(request.revision, lambda state: set_task_completion(
+            state, request.planId, request.taskId, request.completed))
 
     @router.post("/records")
     def record_execution(request: ExecutionRecordRequest):

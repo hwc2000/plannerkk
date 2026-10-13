@@ -16,7 +16,8 @@ def empty_state():
             "settings": {"slots": [], "view": "timeline"}, "plan": None, "planDraft": None,
             "_planDraftRecordId": None,
             "recoveryDrafts": {}, "executionRecords": [], "profileUpdateProposals": [],
-            "surveyResponses": [], "profileRevisions": [], "memories": [], "profileConversations": []}
+            "surveyResponses": [], "profileRevisions": [], "memories": [], "profileConversations": [],
+            "projectProfiles": {}, "projectProfileRevisions": []}
 
 
 class ExecutionStore:

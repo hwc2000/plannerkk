@@ -114,12 +114,14 @@ export type ExecutionEntry = ExecutionTask & {
 /** Why the plan looks the way it does for this user; built by code from the values it applied. */
 export type PlanReason = {
   key: string; applied: string; because: string
-  source: 'declared' | 'learned' | 'default' | 'profile' | 'memory'; fields: string[]
+  source: 'declared' | 'learned' | 'default' | 'profile' | 'memory' | 'project'; fields: string[]
 }
 export type ExecutionPlan = {
   profileVersion?: number
   scheduleStyle?: ScheduleStyle
   id: string; profileId: string; projectId: string | null
+  // The project's own settings version used for this plan; absent on older plans.
+  projectProfileId?: string | null; projectProfileVersion?: number | null
   project: Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'> | null
   goal: string; startDate: string; endDate: string; timezone: string
   status: 'draft' | 'confirmed'; slots: AvailabilitySlot[]
@@ -130,11 +132,21 @@ export type ExecutionState = {
   executionRecords?: ExecutionRecord[]; profileUpdateProposals?: ProfileUpdateProposal[]
   revision: number; profile: ExecutionProfile | null; profileDraft: ExecutionProfile | null
   settings: PlannerSettings; plan: ExecutionPlan | null; planDraft: ExecutionPlan | null
+  projectProfiles?: Record<string, ProjectProfile>
   llmAvailable: boolean; model: string
+}
+
+/** Values that differ for one project, on top of the user profile. Absent keys follow the user profile. */
+export type ProjectProfile = {
+  id: string; projectId: string; userId: string; version: number
+  overrides: Record<string, { value: number | string | null; source: 'declared' | 'learned'; proposalId: string | null }>
+  learnedPatterns: LearnedPattern[]; createdAt: string; updatedAt: string
 }
 
 export type ExecutionRecord = {
   id: string; planId: string; taskId: string; profileId: string; taskTitle: string
+  // Absent on records saved before they were added.
+  profileVersion?: number | null; projectId?: string | null; projectProfileId?: string | null
   plannedMinutes: number; actualMinutes: number | null; remainingMinutes?: number | null
   result: 'completed' | 'partial' | 'not_started' | 'incomplete'
   reasonCode: string | null; note: string; difficulty: number | null
@@ -142,6 +154,8 @@ export type ExecutionRecord = {
 }
 export type ProfileUpdateProposal = {
   id: string; profileId: string; appliedProfileId?: string
+  // Set when the change was learned from one project's records and applies to that project only.
+  projectId?: string | null; projectProfileId?: string | null; appliedProjectProfileId?: string
   proposedChanges: { blockMinutes: { from: number; to: number } }
   reason: string; evidenceRecordIds: string[]; ruleVersion: string
   status: 'pending' | 'approved' | 'rejected'; createdAt: string; decidedAt: string | null

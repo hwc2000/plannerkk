@@ -1,19 +1,25 @@
 import { useState } from 'react'
-import type { ExecutionRecord, ExecutionState, Memory } from '../../shared/types'
-import { adaptiveApi, executionApi } from './api'
+import type { ExecutionRecord, ExecutionState, Memory, ProfileUpdateProposal, Project } from '../../shared/types'
+import { adaptiveApi, executionApi, replansCurrentPlan } from './api'
 
 const reasons: Record<string, string> = {
   time_shortage: '시간 부족', task_too_large: '작업이 너무 큼', fatigue: '피로',
   interruption: '외부 방해', priority_changed: '우선순위 변경', unclear_task: '불명확한 작업',
   underestimated: '시간 과소 추정', other: '기타',
 }
-export function ExecutionLearning({ state, busy, run, approveProposal, events = [], memories = [] }: {
+export function ExecutionLearning({ state, busy, run, approveProposal, events = [], memories = [], projects = [] }: {
   state: ExecutionState; busy: boolean
   run: (action: () => Promise<ExecutionState>, message: string) => Promise<boolean>
   approveProposal?: (proposalId: string, consent: boolean) => Promise<boolean>
   events?: Array<{ date: string; startTime: string; endTime: string }>
   memories?: Memory[]
+  projects?: Project[]
 }) {
+  const projectTitle = (projectId: string) =>
+    projects.find(p => p.id === projectId)?.title ?? (state.plan?.project?.id === projectId ? state.plan.project.title : '다른 프로젝트')
+  // An approved change can be replanned again only while the settings it produced are still current.
+  const stillCurrent = (p: ProfileUpdateProposal) => p.appliedProfileId === state.profile?.id
+    && (!p.projectId || p.appliedProjectProfileId === state.projectProfiles?.[p.projectId]?.id)
   const [taskId, setTaskId] = useState('')
   const [result, setResult] = useState<ExecutionRecord['result']>('completed')
   const [reasonCode, setReasonCode] = useState('')
@@ -77,21 +83,22 @@ export function ExecutionLearning({ state, busy, run, approveProposal, events = 
       </>}
       <button className="primary-button" disabled={priorityChanged && !adaptiveConsent}>{priorityChanged ? '재계획 초안 만들기' : '실행 결과 저장'}</button>
     </fieldset></form>}
-    {(state.profileUpdateProposals ?? []).map(p => <article key={p.id}>
+    {(state.profileUpdateProposals ?? []).map(p => { const replan = replansCurrentPlan(state, p); return <article key={p.id}>
       <h3>집중 구간 {p.proposedChanges.blockMinutes.from}분 → {p.proposedChanges.blockMinutes.to}분</h3>
+      {p.projectId && <p className="execution-help">이 프로젝트에만 적용: {projectTitle(p.projectId)} · 다른 프로젝트와 기본 프로필은 그대로입니다.{!replan && p.status === 'pending' && ' 지금 계획은 그대로 두고 이 프로젝트의 다음 계획부터 반영합니다.'}</p>}
       <p>{p.reason}</p><p>상태: {{ pending: '사용자 승인 대기', approved: '승인됨', rejected: '거절됨' }[p.status]}</p>
       <ul>{p.evidenceRecordIds.map(id => { const r = records.find(r => r.id === id); return <li key={id}>{r ? `${r.taskTitle}: 예정 ${r.plannedMinutes}분 / 실제 ${r.actualMinutes ?? '미입력'}분 · ${r.reasonCode ? reasons[r.reasonCode] : ''}` : '실행 기록'}<small> · 근거 ID: {id}</small></li> })}</ul>
-      {(p.status === 'pending' || (p.status === 'approved' && Boolean(state.plan) && p.appliedProfileId === state.profile?.id)) && <>
-        {state.plan && <label className="execution-inline"><input type="checkbox" checked={replanConsent} onChange={e => setReplanConsent(e.target.checked)}/>목표·프로필·기억·가용 시간·프로젝트·기존 할 일·현재 계획·변경 근거를 LLM에 전송해 재계획 초안을 만드는 데 동의합니다.</label>}
+      {(p.status === 'pending' || (p.status === 'approved' && replan && stillCurrent(p))) && <>
+        {replan && <label className="execution-inline"><input type="checkbox" checked={replanConsent} onChange={e => setReplanConsent(e.target.checked)}/>목표·프로필·기억·가용 시간·프로젝트·기존 할 일·현재 계획·변경 근거를 LLM에 전송해 재계획 초안을 만드는 데 동의합니다.</label>}
         <div className="execution-actions">
-          <button disabled={busy || Boolean(state.plan && !replanConsent)} className="secondary-button" onClick={() => {
+          <button disabled={busy || (replan && !replanConsent)} className="secondary-button" onClick={() => {
             if (approveProposal) void approveProposal(p.id, replanConsent)
             else if (p.status === 'pending') void run(() => executionApi(`/proposals/${p.id}/approve`, { revision: state.revision }), '승인했습니다.')
-          }}>{p.status === 'approved' ? '재계획 초안 다시 만들기' : state.plan ? '승인하고 재계획 초안 만들기' : '승인'}</button>
+          }}>{p.status === 'approved' ? '재계획 초안 다시 만들기' : replan ? '승인하고 재계획 초안 만들기' : '승인'}</button>
           {p.status === 'pending' && <button disabled={busy} className="secondary-button" onClick={() => { void run(() => executionApi(`/proposals/${p.id}/reject`, { revision: state.revision }), '제안을 거절했습니다.') }}>거절</button>}
         </div>
       </>}
-    </article>)}
-    <details><summary>실행 기록 {records.length}건</summary>{[...records].reverse().map(r => <p key={r.id}>{r.taskTitle} · {{ completed: '완료', partial: '부분 완료', not_started: '미시작', incomplete: '미완료' }[r.result]}<br/>예정 {r.plannedMinutes}분 / 실제 {r.actualMinutes ?? '미입력'}분 · 차이 {r.actualMinutes === null ? '미정' : r.actualMinutes - r.plannedMinutes}분{r.reasonCode && ` · ${reasons[r.reasonCode]}`}<br/>{r.note}{r.recoveryAction && ` · 다음 시도: ${r.recoveryAction}`}</p>)}</details>
+    </article> })}
+    <details><summary>실행 기록 {records.length}건</summary>{[...records].reverse().map(r => <p key={r.id}>{r.projectId && `[${projectTitle(r.projectId)}] `}{r.taskTitle} · {{ completed: '완료', partial: '부분 완료', not_started: '미시작', incomplete: '미완료' }[r.result]}<br/>예정 {r.plannedMinutes}분 / 실제 {r.actualMinutes ?? '미입력'}분 · 차이 {r.actualMinutes === null ? '미정' : r.actualMinutes - r.plannedMinutes}분{r.reasonCode && ` · ${reasons[r.reasonCode]}`}<br/>{r.note}{r.recoveryAction && ` · 다음 시도: ${r.recoveryAction}`}</p>)}</details>
   </section>
 }
