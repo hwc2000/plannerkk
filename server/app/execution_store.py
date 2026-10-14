@@ -17,7 +17,7 @@ def empty_state():
             "_planDraftRecordId": None,
             "recoveryDrafts": {}, "executionRecords": [], "profileUpdateProposals": [],
             "surveyResponses": [], "profileRevisions": [], "memories": [], "profileConversations": [],
-            "plannerThreads": {}}
+            "projectProfiles": {}, "projectProfileRevisions": [], "plannerThreads": {}}
 
 
 class ExecutionStore:

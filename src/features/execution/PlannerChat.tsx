@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Plus } from 'lucide-react'
 import type { ExecutionState, Project } from '../../shared/types'
 import { projectColor } from '../../shared/projectColors'
@@ -10,11 +10,13 @@ const FREE = '_free'
 const FREE_COLOR = '#5855d6'
 
 /** One conversation per project, like separate chats; the weekly plan stays shared. */
-export function PlannerChat({ state, busy, run, projects, onCreateProject, onApplyPlan }: {
+export function PlannerChat({ state, busy, run, projects, onCreateProject, onApplyPlan, projectInfo }: {
   state: ExecutionState; busy: boolean
   run: (action: () => Promise<ExecutionState>, message: string) => Promise<boolean>
   projects: Project[]; onCreateProject?: () => void
   onApplyPlan: (goal: string, startDate: string, project: Project | null, consent: boolean) => Promise<boolean>
+  /** What this project adapted on top of the user profile, shown under its chat header. */
+  projectInfo?: (project: Project) => ReactNode
 }) {
   const threads = state.plannerThreads ?? {}
   const [selected, setSelected] = useState(() => mostRecentThread(threads, projects))
@@ -79,6 +81,7 @@ export function PlannerChat({ state, busy, run, projects, onCreateProject, onApp
             void run(() => executionApi('/chat/reset', { revision: state.revision, projectId: project?.id ?? null }), '새 대화를 시작했어요.')
         }}>새 대화</button>}
       </header>
+      {project && projectInfo?.(project)}
       {week && <p className="planner-week">이번 주 계획 {week.startDate} ~ {week.endDate} · 이 프로젝트 작업 {weekTasks.length}개 ({weekTasks.filter(t => t.completed).length}개 완료)</p>}
 
       <div className="profile-chat-log" role="log" aria-live="polite" aria-label="플래너 대화 기록">

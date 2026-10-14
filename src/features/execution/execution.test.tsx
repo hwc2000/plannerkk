@@ -9,7 +9,9 @@ import { ProfileChat } from './ProfileChat'
 import { ExecutionView } from './ExecutionView'
 import { ExecutionLearning } from './ExecutionLearning'
 import { PlannerChat } from './PlannerChat'
-import { approveProposalAndReplan, planCalendarEvents } from './api'
+import { PlanReasons } from './PlanReasons'
+import { ProjectSettings } from './ProjectSettings'
+import { approveProposalAndReplan, planCalendarEvents, planIsStale, replansCurrentPlan } from './api'
 import type { AvailabilitySlot, ExecutionPlan, ExecutionState, Project } from '../../shared/types'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -301,6 +303,38 @@ describe('profile proposal replan flow', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/plan')
   })
 
+  it('approves a change learned in another project without replanning the current plan', async () => {
+    const settings = { slots: [{ day: 0, hour: 18 }], view: 'timeline' as const }
+    const plan = {
+      id: 'week1', profileId: 'profile1', projectId: 'project-b', project: null, goal: '졸업작품',
+      startDate: '2030-01-07', endDate: '2030-01-13', timezone: 'Asia/Seoul', status: 'confirmed',
+      slots: settings.slots, entries: [], pendingTasks: [],
+    } as ExecutionPlan
+    const state = {
+      revision: 4, settings, plan,
+      profileUpdateProposals: [{ id: 'proposal-1', status: 'pending', projectId: 'project-a' }],
+    } as unknown as ExecutionState
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ ...state, revision: 5 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await approveProposalAndReplan(state, 'proposal-1', {
+      goal: plan.goal, startDate: plan.startDate, consent: false, project: null, existingTasks: [], events: [],
+    })
+
+    expect(result.revision).toBe(5)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/proposals/proposal-1/approve')
+    expect(replansCurrentPlan(state, { ...state.profileUpdateProposals![0], projectId: 'project-b' })).toBe(true)
+  })
+
+  it('treats a plan as stale once its project settings change', () => {
+    const plan = { id: 'week1', profileId: 'profile1', projectId: 'project-a', projectProfileId: null } as unknown as ExecutionPlan
+    const state = { profile: { id: 'profile1' }, projectProfiles: {} } as unknown as ExecutionState
+    expect(planIsStale(state, plan)).toBe(false)
+    expect(planIsStale({ ...state, projectProfiles: { 'project-a': { id: 'project-a-v1' } } } as unknown as ExecutionState, plan)).toBe(true)
+    expect(planIsStale({ ...state, profile: { id: 'profile2' } } as unknown as ExecutionState, plan)).toBe(true)
+  })
+
   it('does not approve before replan consent is given', async () => {
     const settings = { slots: [], view: 'timeline' as const }
     const state = { revision: 4, settings, plan: { id: 'week1' } } as unknown as ExecutionState
@@ -359,5 +393,75 @@ describe('conversational planner', () => {
     rerender(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} projects={[essay, app, fresh]} onApplyPlan={vi.fn()}/>)
     expect(screen.getByRole('heading', { name: '새 공부' })).toBeTruthy()
     expect(screen.getByRole('log').textContent).toContain('‘새 공부’에서 이번 주에 하고 싶은 일')
+  })
+})
+
+it('shows why the plan fits this user, with where each value came from', () => {
+  render(<PlanReasons open reasons={[
+    { key: 'taskLength', applied: '작업은 한 번에 20분 이하로 나눴습니다.', because: '확정한 집중 가능 시간 20분에 맞췄습니다.', source: 'declared', fields: ['focusMinutes'] },
+    { key: 'buffer', applied: '선택한 가용 시간의 40% 이상을 여유분으로 비워 두었습니다.', because: '일정이 불규칙하다고 답했습니다.', source: 'declared', fields: ['regularity'] },
+    { key: 'taskLength2', applied: '작업은 한 번에 20분 이하로 나눴습니다.', because: '최근 실행 기록 3건을 근거로 승인한 변경(50분 → 20분)을 따랐습니다.', source: 'learned', fields: ['learnedPatterns'] },
+    { key: 'dailyCap', applied: '하루에 최대 60분만 계획했습니다.', because: '이 프로젝트에서 하루 계획량을 따로 정했습니다. 기본 프로필 값은 90분입니다.', source: 'project', fields: ['dailyPlannedMinutes'] },
+  ]}/>)
+  expect(screen.getByText('이 계획에 반영한 나의 특성 4가지')).toBeTruthy()
+  expect(screen.getByText('이 프로젝트 설정')).toBeTruthy()
+  expect(screen.getByText('확정한 집중 가능 시간 20분에 맞췄습니다.')).toBeTruthy()
+  expect(screen.getByText('설문 답변 · 한 번의 집중 시간')).toBeTruthy()
+  expect(screen.getByText('설문 답변 · 생활 규칙성')).toBeTruthy()
+  expect(screen.getByText('실행 기록으로 학습')).toBeTruthy()
+})
+
+it('renders nothing for plans made before reasons existed', () => {
+  const { container } = render(<PlanReasons open reasons={[]}/>)
+  expect(container.innerHTML).toBe('')
+})
+
+describe('project settings', () => {
+  const project = { id: 'project-a', title: '토익', goal: '800점', startDate: '2030-01-01', dueDate: '2030-03-31', priority: 'high', status: 'active' } as Project
+  const state = {
+    revision: 3, settings: { slots: [], view: 'timeline' }, plan: null,
+    profile: { planningPreferences: { blockMinutes: 30, dailyPlannedMinutes: 90, bufferPercent: 25, starterMinutes: null, recoveryPreference: 'reduce' } },
+    projectProfiles: { 'project-a': { id: 'pp1', version: 1, overrides: { blockMinutes: { value: 20, source: 'learned', proposalId: 'proposal-1' } } } },
+  } as unknown as ExecutionState
+
+  it('shows what this project learned and saves only the values the user set', async () => {
+    const run = vi.fn(async (action: () => Promise<ExecutionState>) => { await action(); return true })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 4 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ProjectSettings state={state} project={project} busy={false} run={run} editable/>)
+
+    expect(screen.getByText('개발용 · 프로젝트 값 직접 넣기 · 한 번에 집중할 시간 20분(기록으로 학습)')).toBeTruthy()
+    expect(screen.getByText('이 프로젝트 기록으로 학습한 값: 20분 · 값을 정하면 직접 정한 값으로 바뀝니다')).toBeTruthy()
+    expect(screen.getByPlaceholderText('비우면 20분')).toBeTruthy()  // empty keeps the learned value
+    fireEvent.change(screen.getByLabelText(/하루 계획량/), { target: { value: '60' } })
+    fireEvent.click(screen.getByText('이 프로젝트 설정 저장'))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/projects/project-a/profile')
+    expect(fetchMock.mock.calls[0][1].method).toBe('PUT')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ revision: 3, overrides: { dailyPlannedMinutes: 60 } })
+  })
+
+  it('shows users what the project adapted, without settings to tune', () => {
+    render(<ProjectSettings state={state} project={project} busy={false} run={vi.fn()}/>)
+    expect(screen.getByRole('note').textContent).toBe(
+      '이 프로젝트에 맞춰 적용 중: 한 번에 집중할 시간 20분 (이 프로젝트 실행 기록으로 학습, 기본 30분)')
+    expect(screen.queryByRole('spinbutton')).toBeNull()
+    expect(screen.queryByText('이 프로젝트 설정 저장')).toBeNull()
+    cleanup()
+    render(<ProjectSettings state={{ ...state, projectProfiles: {} } as ExecutionState} project={project} busy={false} run={vi.fn()}/>)
+    expect(screen.getByRole('note').textContent).toContain('아직 기본 프로필대로 계획해요')
+  })
+
+  it('explains a value that breaks the profile rules without sending it', () => {
+    const run = vi.fn()
+    render(<ProjectSettings state={state} project={project} busy={false} run={run} editable/>)
+    fireEvent.change(screen.getByLabelText(/하루 계획량/), { target: { value: '15' } })
+    fireEvent.click(screen.getByText('이 프로젝트 설정 저장'))
+    expect(screen.getByRole('alert').textContent).toBe('한 번에 집중할 시간은 하루 계획량보다 길 수 없습니다.')
+    fireEvent.change(screen.getByLabelText(/하루 계획량/), { target: { value: '800' } })
+    fireEvent.click(screen.getByText('이 프로젝트 설정 저장'))
+    expect(screen.getByRole('alert').textContent).toContain('1~720')
+    expect(run).not.toHaveBeenCalled()
   })
 })

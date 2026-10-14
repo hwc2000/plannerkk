@@ -80,63 +80,127 @@ def validate_tasks(payload, block, projects=()):
     return result
 
 
-def daily_budgets(windows, buffer_percent):
-    budgets = {}
+MIN_PIECE_MINUTES = 10
+BREAK_MINUTES = 5
+
+
+def validate_tasks(payload, block, projects=()):
+    tasks = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(tasks, list) or not 1 <= len(tasks) <= 40:
+        raise ValueError("AI 작업 목록의 개수가 올바르지 않습니다.")
+    result = []
+    for t in tasks:
+        if not isinstance(t, dict) or type(t.get("minutes")) is not int or not 1 <= t["minutes"] <= block:
+            raise ValueError("AI 작업 시간이 집중 구간을 벗어났습니다. 다시 생성해 주세요.")
+        if any(not isinstance(t.get(k), str) or not 1 <= len(t[k].strip()) <= 500 for k in ("title", "doneWhen")):
+            raise ValueError("AI 작업 내용이 올바르지 않습니다.")
+        due = t.get("dueDate")
+        if due is not None:
+            try:
+                due = date.fromisoformat(due).isoformat()
+            except (TypeError, ValueError):
+                raise ValueError("AI 마감일 형식이 올바르지 않습니다.") from None
+        task = {"title": t["title"].strip(), "minutes": t["minutes"], "doneWhen": t["doneWhen"].strip(), "dueDate": due}
+        if projects:
+            # One project owns every task; with several, an unknown id falls back to "no project".
+            by_id = {p["id"]: p for p in projects}
+            owner = projects[0] if len(projects) == 1 else by_id.get(t.get("projectId"))
+            task["projectId"] = owner["id"] if owner else None
+            if owner:
+                task["dueDate"] = min(filter(None, (due, owner["dueDate"])))
+                task["notBefore"] = owner["startDate"]
+        result.append(task)
+    return result
+
+
+def daily_budgets(windows, buffer_percent, daily_cap=None):
+    """Work minutes per day: the free time minus the buffer, never above the daily cap."""
+    minutes = {}
     for begin, end in windows:
         key = begin.date().isoformat()
-        budgets[key] = budgets.get(key, 0) + int((end-begin).total_seconds()//60)
-    return {d: int(m*(100-buffer_percent)/100) for d, m in budgets.items()}
+        minutes[key] = minutes.get(key, 0) + int((end-begin).total_seconds()//60)
+    budgets = {d: int(m*(100-buffer_percent)/100) for d, m in minutes.items()}
+    if daily_cap is not None:
+        budgets = {d: min(b, daily_cap) for d, b in budgets.items()}
+    return budgets
 
 
-def schedule(tasks, windows, buffer_percent, max_piece=None):
+def _starter_entry(task, start, minutes):
+    action = (task.get("starter") or "").strip() or f"{task['title']} 자료를 열고 첫 단계만 해 보기"
+    end = start + timedelta(minutes=minutes)
+    return {"id": str(uuid4()), "kind": "task", "starter": True, "title": f"시작 행동: {action}", "minutes": minutes,
+            "doneWhen": "끝나면 바로 다음 작업으로 넘어가기", "dueDate": task["dueDate"],
+            **({"projectId": task["projectId"]} if "projectId" in task else {}),
+            "start": start.isoformat(timespec="minutes"), "end": end.isoformat(timespec="minutes"), "completed": False}
+
+
+def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=None):
     """Place tasks in order into the earliest free time.
 
-    A task that does not fit one window is split across later windows (never into
-    pieces shorter than MIN_PIECE_MINUTES) and each piece is at most ``max_piece``.
-    The daily budget keeps ``buffer_percent`` of each day's free time unplanned.
-    A task is either placed completely (possibly in pieces) or left pending whole.
+    A task goes whole into the first window that holds it, so focus-sized work
+    stays one block.  Only when no window holds it whole is it split across
+    windows (never into pieces shorter than MIN_PIECE_MINUTES), instead of being
+    left out while free time remains.  A task is either placed completely or
+    left pending whole.  With ``starter_minutes`` each day's first task gets a
+    short starter before it.
     """
     cursors = [begin for begin, _ in windows]
-    budgets = daily_budgets(windows, buffer_percent)
+    # Daily work budget leaves the rest for breaks and interruptions.
+    budgets = daily_budgets(windows, buffer_percent, daily_cap)
+    # Days where the cap, not the buffer, limits the work; pending reasons name it.
+    cap_binds = set() if daily_cap is None else {d for d, b in daily_budgets(windows, buffer_percent).items() if b > daily_cap}
+    started_days = set()
     entries, pending = [], []
     not_before = windows[0][0] if windows else datetime.max
-    for task in tasks:
-        not_before_day = task.get("notBefore")
-        task = {k: v for k, v in task.items() if k != "notBefore"}
-        left, pieces = task["minutes"], []
-        saved = (list(cursors), dict(budgets), len(entries))
-        for i, (_, end) in enumerate(windows):
-            while left > 0:
-                cursor = max(cursors[i], not_before)
-                day = cursor.date().isoformat()
-                if task["dueDate"] and day > task["dueDate"]:
+    for raw in tasks:
+        task = {k: v for k, v in raw.items() if k not in ("starter", "notBefore")}
+        first_day = raw.get("notBefore")
+        saved = (list(cursors), dict(budgets), set(started_days), len(entries))
+        capped = False
+        for split in (False, True):
+            left, pieces = task["minutes"], []
+            for i, (_, end) in enumerate(windows):
+                while left > 0:
+                    cursor = max(cursors[i], not_before)
+                    day = cursor.date().isoformat()
+                    if (task["dueDate"] and day > task["dueDate"]) or (first_day and day < first_day):
+                        break
+                    lead = starter_minutes if starter_minutes and day not in started_days else 0
+                    room = int((end - cursor).total_seconds()//60) - lead
+                    budget = budgets.get(day, 0) - lead
+                    piece = min(left, room, budget)
+                    if not split and piece < left:
+                        capped = capped or (budget < min(left, room) and day in cap_binds)
+                        break  # first pass: whole tasks only
+                    if 0 < left - piece < MIN_PIECE_MINUTES:
+                        piece -= MIN_PIECE_MINUTES - (left - piece)  # leave a workable remainder, not a sliver
+                    if piece < min(left, MIN_PIECE_MINUTES):
+                        capped = capped or (budget < min(left, room) and day in cap_binds)
+                        break
+                    if lead:
+                        entries.append(_starter_entry(raw | task, cursor, lead))
+                        started_days.add(day)
+                    start = cursor + timedelta(minutes=lead)
+                    finish = start + timedelta(minutes=piece)
+                    pieces.append((start, finish))
+                    budgets[day] -= lead + piece
+                    left -= piece
+                    cursors[i] = finish
+                    if finish + timedelta(minutes=BREAK_MINUTES) <= end:
+                        pause_end = finish + timedelta(minutes=BREAK_MINUTES)
+                        entries.append({"id": str(uuid4()), "kind": "break", "title": "휴식", "minutes": BREAK_MINUTES,
+                                        "doneWhen": "잠깐 쉬고 다음 작업 시작", "dueDate": None, "start": finish.isoformat(timespec="minutes"),
+                                        "end": pause_end.isoformat(timespec="minutes"), "completed": False})
+                        cursors[i] = pause_end
+                if left == 0:
                     break
-                if not_before_day and day < not_before_day:
-                    break  # this window is before the task's project starts
-                piece = min(left, int((end - cursor).total_seconds()//60), budgets.get(day, 0))
-                if max_piece:
-                    piece = min(piece, max_piece)
-                if 0 < left - piece < MIN_PIECE_MINUTES:
-                    piece -= MIN_PIECE_MINUTES - (left - piece)  # leave a workable remainder, not a sliver
-                if piece < min(left, MIN_PIECE_MINUTES):
-                    break
-                finish = cursor + timedelta(minutes=piece)
-                pieces.append((cursor, finish))
-                budgets[day] -= piece
-                left -= piece
-                cursors[i] = finish
-                if finish + timedelta(minutes=BREAK_MINUTES) <= end:
-                    pause_end = finish + timedelta(minutes=BREAK_MINUTES)
-                    entries.append({"id": str(uuid4()), "kind": "break", "title": "휴식", "minutes": BREAK_MINUTES,
-                                    "doneWhen": "잠깐 쉬고 다음 작업 시작", "dueDate": None, "start": finish.isoformat(timespec="minutes"),
-                                    "end": pause_end.isoformat(timespec="minutes"), "completed": False})
-                    cursors[i] = pause_end
             if left == 0:
                 break
+            cursors, budgets, started_days = list(saved[0]), dict(saved[1]), set(saved[2])
+            del entries[saved[3]:]
         if left > 0:
-            cursors, budgets = saved[0], saved[1]
-            del entries[saved[2]:]
-            reason = "마감일 전 가용 시간이 부족합니다." if task["dueDate"] else "이번 주 가용 시간과 여유분을 모두 사용했습니다."
+            reason = (f"하루 계획량 {daily_cap}분을 넘지 않도록 이번 주에는 넣지 않았습니다." if capped
+                      else "가용 시간·여유분·마감일 안에 배치할 수 없습니다.")
             pending.append({**task, "reason": reason})
             continue
         for n, (begin, finish) in enumerate(pieces, 1):
@@ -147,4 +211,5 @@ def schedule(tasks, windows, buffer_percent, max_piece=None):
         # Later tasks never start before this one, so the suggested order survives.
         not_before = pieces[0][0]
     entries.sort(key=lambda e: (e["start"], e["kind"] != "task"))
+    return entries, pending
     return entries, pending

@@ -109,27 +109,42 @@ export type AvailabilitySlot = { day: number; hour: number }
 export type PlannerSettings = { slots: AvailabilitySlot[]; view: 'timeline' | 'checklist' }
 export type ExecutionTask = { title: string; minutes: number; doneWhen: string; dueDate: string | null; projectId?: string | null }
 export type ExecutionEntry = ExecutionTask & {
-  id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean
+  id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean; starter?: boolean
+}
+/** Why the plan looks the way it does for this user; built by code from the values it applied. */
+export type PlanReason = {
+  key: string; applied: string; because: string
+  source: 'declared' | 'learned' | 'default' | 'profile' | 'memory' | 'project'; fields: string[]
 }
 export type ExecutionPlan = {
   profileVersion?: number
   scheduleStyle?: ScheduleStyle
   id: string; profileId: string; projectId: string | null
+  // The project's own settings version used for this plan; absent on older plans.
+  projectProfileId?: string | null; projectProfileVersion?: number | null
   project: Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'> | null
   projects?: Array<Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'>>
   projectGoals?: Record<string, string>
   goal: string; startDate: string; endDate: string; timezone: string
   status: 'draft' | 'confirmed'; slots: AvailabilitySlot[]
   entries: ExecutionEntry[]; pendingTasks: Array<ExecutionTask & { reason: string }>
+  personalization?: PlanReason[]
 }
 export type ExecutionState = {
   executionRecords?: ExecutionRecord[]; profileUpdateProposals?: ProfileUpdateProposal[]
   revision: number; profile: ExecutionProfile | null; profileDraft: ExecutionProfile | null
   settings: PlannerSettings; plan: ExecutionPlan | null; planDraft: ExecutionPlan | null
+  projectProfiles?: Record<string, ProjectProfile>
   llmAvailable: boolean; model: string
   plannerThreads?: Record<string, PlannerThread>
 }
 
+/** Values that differ for one project, on top of the user profile. Absent keys follow the user profile. */
+export type ProjectProfile = {
+  id: string; projectId: string; userId: string; version: number
+  overrides: Record<string, { value: number | string | null; source: 'declared' | 'learned'; proposalId: string | null }>
+  learnedPatterns: LearnedPattern[]; createdAt: string; updatedAt: string
+}
 export type PlannerMessage = { id: string; role: 'user' | 'assistant'; content: string }
 /** One conversation per project; the key is the project id, or '_free' for work without a project. */
 export type PlannerThread = { messages: PlannerMessage[]; action: PlannerAction | null; updatedAt?: string }
@@ -139,6 +154,8 @@ export type PlannerAction =
 
 export type ExecutionRecord = {
   id: string; planId: string; taskId: string; profileId: string; taskTitle: string
+  // Absent on records saved before they were added.
+  profileVersion?: number | null; projectId?: string | null; projectProfileId?: string | null
   plannedMinutes: number; actualMinutes: number | null; remainingMinutes?: number | null
   result: 'completed' | 'partial' | 'not_started' | 'incomplete'
   reasonCode: string | null; note: string; difficulty: number | null
@@ -146,6 +163,8 @@ export type ExecutionRecord = {
 }
 export type ProfileUpdateProposal = {
   id: string; profileId: string; appliedProfileId?: string
+  // Set when the change was learned from one project's records and applies to that project only.
+  projectId?: string | null; projectProfileId?: string | null; appliedProjectProfileId?: string
   proposedChanges: { blockMinutes: { from: number; to: number } }
   reason: string; evidenceRecordIds: string[]; ruleVersion: string
   status: 'pending' | 'approved' | 'rejected'; createdAt: string; decidedAt: string | null

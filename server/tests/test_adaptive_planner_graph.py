@@ -51,7 +51,49 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
             "changed_fields": ["block_minutes"], "reason": "긴 작업이 반복해서 미완료됨",
             "evidence_record_ids": ["record-1", "record-2"],
             "source_profile_id": "profile-old", "applied_profile_id": "profile-new",
+            "scope": "user", "project_id": None,
+            "source_project_profile_id": None, "applied_project_profile_id": None,
         })
+
+    def test_project_proposal_keeps_its_project_at_boundary(self):
+        proposal = {
+            "id": "proposal-1", "profileId": "profile-1", "appliedProfileId": "profile-1",
+            "projectId": "project-a", "projectProfileId": None, "appliedProjectProfileId": "project-a-v1",
+            "proposedChanges": {"blockMinutes": {"from": 50, "to": 20}},
+            "reason": "이 프로젝트에서 긴 작업이 반복해서 미완료됨", "evidenceRecordIds": ["record-1"],
+            "status": "approved",
+        }
+        context = to_profile_change_context(proposal, converter=profile_change_context_from_proposal)
+        self.assertEqual(
+            {k: context[k] for k in ("scope", "project_id", "source_project_profile_id", "applied_project_profile_id")},
+            {"scope": "project", "project_id": "project-a",
+             "source_project_profile_id": None, "applied_project_profile_id": "project-a-v1"},
+        )
+        with self.assertRaises(ValueError):  # a project change must say which settings it produced
+            to_profile_change_context({**proposal, "appliedProjectProfileId": None},
+                                      converter=profile_change_context_from_proposal)
+
+    def test_project_change_replans_only_its_own_project(self):
+        change = {
+            "before": {"block_minutes": 50}, "after": {"block_minutes": 20},
+            "changed_fields": ["block_minutes"], "reason": "긴 작업 미완료",
+            "evidence_record_ids": ["record-1"], "source_profile_id": "profile-1",
+            "applied_profile_id": "profile-1", "scope": "project", "project_id": "project-a",
+            "source_project_profile_id": None, "applied_project_profile_id": "project-a-v1",
+        }
+        graph = build_adaptive_planner_graph(
+            lambda _state: self.fail("recovery generator must not run"),
+            full_plan_generator=lambda _state: {"id": "draft", "profileId": "profile-1", "entries": []},
+        )
+        request = {"request": "replan", "planning_context": {"goal": "공부"}, "profile_change_context": change}
+
+        other = graph.invoke({**request, "project_id": "project-b"})
+        own = graph.invoke({**request, "project_id": "project-a"})
+
+        self.assertEqual(other["approval_status"], "needs_input")
+        self.assertEqual(other["fallback"]["invalid_fields"], ["profile_change_context.project_id"])
+        self.assertIsNone(other["plan_draft"])
+        self.assertEqual(own["approval_status"], "waiting")
 
     def test_profile_change_context_rejects_mismatched_fields(self):
         with self.assertRaises(ValueError):
@@ -140,12 +182,12 @@ class AdaptivePlannerGraphTests(unittest.TestCase):
         context = to_execution_context(raw_profile, raw_records, converter=converter)
 
         self.assertEqual(seen, [(raw_profile, raw_records)])
-        self.assertEqual(context, {"schedule_style": "time_blocks", "focus_minutes": 25, "break_minutes": None})
+        self.assertEqual(context, {"schedule_style": "time_blocks", "focus_minutes": 25, "break_minutes": None, "recovery_preference": None})
 
     def test_converter_does_not_invent_missing_values(self):
         context = to_execution_context(object(), [], converter=lambda _profile, _records: {})
 
-        self.assertEqual(context, {"schedule_style": None, "focus_minutes": None, "break_minutes": None})
+        self.assertEqual(context, {"schedule_style": None, "focus_minutes": None, "break_minutes": None, "recovery_preference": None})
 
     def test_malformed_focus_minutes_requests_information(self):
         for value in ("20", True, 20.0, 0):

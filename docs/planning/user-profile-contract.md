@@ -394,8 +394,37 @@ planning = get_planning_context(store.user_id, project, state=store.read(), memo
 ```
 
 반환 필드: schemaVersion, userId, profileId, profileVersion, generatedAt,
-userProfile(declaredFacts/planningPreferences/learnedPatterns), projectContext,
-availability(timezone/slots), memories, warnings.
+userProfile(declaredFacts/planningPreferences/learnedPatterns/projectOverrides), projectProfile,
+projectContext, availability(timezone/slots), memories, warnings.
+
+`planningPreferences`는 사용자 프로필 값 위에 그 프로젝트의 설정을 덧씌운 **적용값**이다.
+`projectOverrides`는 덧씌운 키마다 `{source: declared|learned, proposalId, baseValue}`(baseValue는
+사용자 프로필 값), `projectProfile`은 `{id, version, projectId}` 또는 null이다.
+`learnedPatterns`에는 사용자 프로필의 패턴과 그 프로젝트의 패턴이 같은 필터로 함께 들어간다.
+덧씌운 결과가 PlanningPreferences 규칙(예: 시작 행동 ≤ 집중 구간 ≤ 하루 계획량)을 어기면
+ValueError(400)로 거절한다.
+
+## 프로젝트 설정 (ProjectProfile)
+
+사용자 프로필은 사람에 대한 값(설문, 승인된 습관), 프로젝트 설정은 **그 프로젝트에서만 다른 값**이다.
+복사본이 아니라 덧씌우는 층이라 사용자 프로필이 바뀌면 덮지 않은 값은 모든 프로젝트에 바로 반영된다.
+
+```text
+state.projectProfiles[projectId] = {
+  id, projectId, userId, version, createdAt, updatedAt,
+  overrides: { <key>: {value, source: declared|learned, proposalId} },
+  learnedPatterns: LearnedPattern[]   # 모두 projectId = 이 프로젝트
+}
+state.projectProfileRevisions = [{projectId, version, projectProfileId, source, sourceId, createdAt, snapshot}]
+```
+
+- 덮을 수 있는 키: `blockMinutes`, `dailyPlannedMinutes`, `bufferPercent`, `starterMinutes`, `recoveryPreference`.
+  `dailyPlannedMinutes`·`starterMinutes`의 null은 "이 프로젝트에서는 없음"이다. 키가 없으면 사용자 프로필 값을 쓴다.
+- `PUT /api/execution/projects/{projectId}/profile` `{revision, overrides}`: 사용자가 정한 값(declared) 전체를 바꾼다.
+  같은 키의 학습값은 사용자가 정한 값으로 대체하고 그 패턴은 superseded, 다른 키의 학습값은 유지한다.
+- 프로젝트 실행 기록으로 배운 변경은 프로젝트 설정에만 적용한다(`apply_project_proposal`). 사용자 프로필의
+  ID·버전은 그대로라 다른 프로젝트의 계획은 계속 유효하다.
+- 프로필 초기화는 프로젝트 설정과 그 이력도 지운다.
 
 승인된 프로필만 로드한다. active + 승인 근거 존재 + 미만료 + 프로젝트 범위 일치 패턴만 포함한다.
 Memory는 user/ai_approved 출처, 민감하지 않음, 계획 사용 허용, 미만료,

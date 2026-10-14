@@ -65,6 +65,64 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(self.state['settings']['slots'],[])
         self.assertGreater(self.state['revision'],old_revision)
 
+    def test_checkbox_completion_is_an_execution_record_with_project_and_profile_version(self):
+        self.setup_profile()
+        project = {'id': 'project-1', 'title': '토익', 'goal': '800점', 'startDate': '2030-01-01', 'dueDate': '2030-03-31'}
+        self.post('/plan', goal='연습문제 공부', startDate='2030-01-07', consent=True, project=project)
+        self.post('/plan/confirm', planId=self.state['planDraft']['id'], project=project)
+        plan = self.state['plan']
+        first, second = [e for e in plan['entries'] if e['kind'] == 'task'][:2]
+
+        self.post('/task', planId=plan['id'], taskId=first['id'], completed=True)
+        [record] = self.state['executionRecords']
+        self.assertEqual(
+            {k: record[k] for k in ('planId', 'taskId', 'result', 'actualMinutes', 'plannedMinutes', 'projectId', 'profileVersion')},
+            {'planId': plan['id'], 'taskId': first['id'], 'result': 'completed', 'actualMinutes': None,
+             'plannedMinutes': first['minutes'], 'projectId': 'project-1', 'profileVersion': self.state['profile']['version']},
+        )
+        self.post('/task', planId=plan['id'], taskId=first['id'], completed=True)
+        self.assertEqual(len(self.state['executionRecords']), 1)
+
+        self.post('/task', planId=plan['id'], taskId=first['id'], completed=False)
+        self.assertEqual(self.state['executionRecords'], [])
+        self.assertFalse(next(e for e in self.state['plan']['entries'] if e['id'] == first['id'])['completed'])
+
+        # Unchecking undoes only the completion; the earlier failure stays for learning.
+        self.post('/records', planId=plan['id'], taskId=second['id'],
+                  actualMinutes=10, remainingMinutes=10, result='partial', reasonCode='time_shortage')
+        partial = self.state['executionRecords'][-1]
+        self.assertEqual((partial['projectId'], partial['profileVersion']), ('project-1', self.state['profile']['version']))
+        self.post('/task', planId=plan['id'], taskId=second['id'], completed=True)
+        self.assertEqual([r['result'] for r in self.state['executionRecords']], ['partial', 'completed'])
+        self.post('/task', planId=plan['id'], taskId=second['id'], completed=False)
+        self.assertEqual(self.state['executionRecords'], [partial])
+
+    def test_unchecking_keeps_a_completion_used_as_proposal_evidence(self):
+        self.setup_profile()
+        self.post('/plan', goal='연습문제 공부', startDate='2030-01-07', consent=True)
+        self.post('/plan/confirm', planId=self.state['planDraft']['id'])
+        plan = self.state['plan']
+        task = next(e for e in plan['entries'] if e['kind'] == 'task')
+        self.post('/task', planId=plan['id'], taskId=task['id'], completed=True)
+        record_id = self.state['executionRecords'][0]['id']
+        self.assertIsNone(self.state['executionRecords'][0]['projectId'])
+        proposal = {
+            'id': 'proposal-1', 'profileId': self.state['profile']['id'],
+            'proposedChanges': {'blockMinutes': {'from': 30, 'to': 20}}, 'reason': 'reason',
+            'evidenceRecordIds': [record_id], 'ruleVersion': 'test', 'status': 'pending',
+            'createdAt': '2030-01-01T00:00:00+00:00', 'decidedAt': None,
+        }
+        self.store.change(self.state['revision'], lambda doc: doc['profileUpdateProposals'].append(proposal))
+        self.state = self.client.get('/api/execution').json()
+
+        response = self.client.post('/api/execution/task', json={
+            'revision': self.state['revision'], 'planId': plan['id'], 'taskId': task['id'], 'completed': False})
+
+        self.assertEqual(response.status_code, 409, response.text)
+        reloaded = ExecutionStore(self.store.path).read()
+        self.assertEqual([r['id'] for r in reloaded['executionRecords']], [record_id])
+        self.assertTrue(next(e for e in reloaded['plan']['entries'] if e['id'] == task['id'])['completed'])
+
     def test_rejects_stale_requests_and_requires_consent(self):
         self.setup_profile()
         r=self.client.post('/api/execution/profile/confirm',json={'revision':0})
@@ -105,9 +163,9 @@ class ExecutionTests(unittest.TestCase):
                 return await super().generate(**kwargs)
 
         self.client.close()
-        # 18~20시 window (120분), buffer 40% -> flexible chunk 72분; time_blocks keeps blockMinutes 30.
+        # Both styles cap a task at the user's focus block (30분); the style only changes the prompt.
         # scheduleStyle currently follows regularity (regular -> time_blocks).
-        for regularity, style, max_block in (('regular', 'time_blocks', 30), ('irregular', 'flexible_queue', 72)):
+        for regularity, style, max_block in (('regular', 'time_blocks', 30), ('irregular', 'flexible_queue', 30)):
             with self.subTest(style=style):
                 llm = RecordingLLM()
                 store = ExecutionStore(Path(self.temp.name)/f'{style}.sqlite3')
@@ -123,6 +181,8 @@ class ExecutionTests(unittest.TestCase):
                 self.assertEqual(call['context']['scheduleStyle'], style)
                 self.assertEqual(call['context']['maxBlockMinutes'], max_block)
                 self.assertIn(SCHEDULE_STYLE_INSTRUCTIONS[style], call['instructions'])
+                # Tasks are placed in the returned order, so an early deadline must come first.
+                self.assertIn('dueDate가 이른 작업을 앞에 둔다', call['instructions'])
 
     def test_approved_profile_change_creates_new_profile_plan_draft_then_confirm_replaces_plan(self):
         self.setup_profile()
@@ -208,20 +268,20 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(all(a['end']<=b['start'] for a,b in zip(entries,entries[1:])))
 
     def test_splits_tasks_instead_of_leaving_free_time(self):
-        # Mon/Tue 19~21: 240 free minutes, 20% buffer -> 192 plannable minutes.
-        slots=[Slot(day=d,hour=h) for d in (0,1) for h in (19,20)]
-        windows=availability_windows(date(2030,1,7),slots,[],now=datetime(2030,1,1))
-        tasks=[{'title':f'작업{i}','minutes':30,'doneWhen':'완료','dueDate':None} for i in range(6)]
-        entries,pending=schedule(tasks,windows,20,max_piece=30)
-        placed=[e for e in entries if e['kind']=='task']
+        # Mon 19~21 cut by two events into two 30-minute windows, no buffer.
+        slots=[Slot(day=0,hour=19),Slot(day=0,hour=20)]
+        events=[BusyEvent(date=date(2030,1,7),startTime='19:30',endTime='20:00'),
+                BusyEvent(date=date(2030,1,7),startTime='20:30',endTime='21:00')]
+        windows=availability_windows(date(2030,1,7),slots,events,now=datetime(2030,1,1))
+        task=lambda m:{'title':'보고서','minutes':m,'doneWhen':'완료','dueDate':None}
+        # A task that fits a window stays whole.
+        entries,pending=schedule([task(30)],windows,0)
+        self.assertEqual([(e['title'],e['start']) for e in entries if e['kind']=='task'],[('보고서','2030-01-07T19:00')])
+        # One no window holds whole is split instead of left out.
+        entries,pending=schedule([task(40)],windows,0)
         self.assertEqual(pending,[])
-        self.assertEqual(sum(e['minutes'] for e in placed),180)
-        self.assertTrue(all(e['minutes']<=30 and e['minutes']>=10 for e in placed))
-        self.assertTrue(all(a['end']<=b['start'] for a,b in zip(entries,entries[1:])))
-        # A long task is split by the focus block rather than failing the plan.
-        entries,pending=schedule([{'title':'긴 작업','minutes':90,'doneWhen':'완료','dueDate':None}],windows,20,max_piece=30)
-        self.assertEqual([e['title'] for e in entries if e['kind']=='task'],['긴 작업 (1/3)','긴 작업 (2/3)','긴 작업 (3/3)'])
-        self.assertEqual(pending,[])
+        self.assertEqual([(e['title'],e['minutes'],e['start']) for e in entries if e['kind']=='task'],
+                         [('보고서 (1/2)',30,'2030-01-07T19:00'),('보고서 (2/2)',10,'2030-01-07T20:00')])
 
     def test_a_task_that_cannot_finish_before_its_deadline_stays_whole(self):
         windows=availability_windows(date(2030,1,7),[Slot(day=0,hour=19),Slot(day=1,hour=19)],[],now=datetime(2030,1,1))

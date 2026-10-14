@@ -20,13 +20,19 @@ POST /api/execution/records
   priority_changed / unclear_task / underestimated / other
 - note: 최대 2000자, difficulty: 선택값 1~5, recoveryAction: 최대 1000자
 - partial/not_started는 reasonCode 필수. incomplete는 상세 결과·이유를 아직 모르는 미완료 상태다. 미시작은 실제 시간 0분만 허용. 완료는 남은 시간 0 또는 null만 허용.
-- id, profileId, taskTitle, plannedMinutes, createdAt은 서버가 저장.
+- id, profileId, profileVersion, projectId, projectProfileId, taskTitle, plannedMinutes, createdAt은 서버가 저장. profileVersion·projectId·projectProfileId는 계획에서 복사하며, 계획이 바뀐 뒤에도 프로젝트·프로필 버전별로 기록을 모을 수 있게 한다.
 - 직접 records API는 동일 작업 중복을 차단한다. C의 대화 후속 입력은 복구 미결정 기록을 보완하고, 결정 후 재시도는 새 기록을 만든다. 후보 근거로 사용한 기록은 수정하지 않는다.
-- 완료 체크박스는 현재 계획 상태만 변경하며 과거 체크인 결과는 유지한다.
+
+POST /api/execution/task (완료 체크박스)
+- 체크하면 completed 실행 기록을 하나 만든다(실제 시간 미입력). 체크로 끝낸 작업도 완료율·학습에 들어간다.
+- 체크를 풀면 그 작업의 마지막 기록이 completed일 때 그 기록만 지운다. 이전 미완료·부분 완료 기록은 유지한다. 후보 근거로 쓴 기록이면 충돌로 거절한다.
+- 이미 같은 상태면 아무것도 바꾸지 않는다.
 
 POST /api/execution/proposals/{id}/approve 또는 /reject
 - 요청: revision
 - 승인 시 프로필 변경과 결정 기록을 같은 트랜잭션으로 저장.
+- `projectId`가 있는 후보는 그 프로젝트 설정만 바꾼다(사용자 프로필 ID·버전 유지). 계획 초안은 같은 프로젝트 것만 무효화한다.
+  지금 확정 계획이 다른 프로젝트면 재계획하지 않고, 그 프로젝트의 다음 계획부터 반영된다.
 - 프로필 교체·수정 중, 중복 처리, 오래된 revision은 충돌 처리.
 - 승인 시 새 프로필 ID를 부여하고 기존 계획 초안을 무효화.
   확정된 계획은 유지한다.
@@ -37,6 +43,12 @@ POST /api/execution/proposals/{id}/approve 또는 /reject
   `/plan/confirm`을 호출하기 전에는 기존 확정 계획을 바꾸지 않는다.
 
 ## 첫 규칙: long-task-v1
+
+규칙은 **범위별로** 돈다. 범위는 기록의 프로젝트(`projectId`)이고, 프로젝트 없는 기록은 사용자 범위다.
+한 프로젝트에서 찾은 패턴은 그 프로젝트에만 적용하는 후보(`projectId` 포함)가 되어, 어려운 프로젝트
+하나가 다른 프로젝트의 계획까지 줄이지 않는다. 범위의 현재 설정(사용자 프로필 버전 + 그 프로젝트 설정
+버전)으로 만든 기록만 센다. 대기 후보는 범위마다 하나다. 기준값(현재 집중 구간)은 프로젝트 설정을
+덧씌운 적용값이다.
 
 현재 프로필로 생성한 작업 중 최근 14일의 50분 이상 작업 마지막 3건이
 모두 미완료이고 2건 이상이 시간 부족 또는 작업 크기를 이유로 기록되면
@@ -146,8 +158,8 @@ A의 함수가 프로필 ID·버전·변경 전 값·근거 기록을 검증하�
 다음 계획 생성은 A의 get_planning_context를 통해 승인된 선호와 패턴을 읽는다.
 C는 A의 get_planning_context로 승인된 프로필을 읽고, 승인된 제안만 converter를 통해
 profile_change_context로 변환해 전체 재계획에 전달한다. 설문 원본 declaredFacts는 유지한다.
-시간 플래너는 blockMinutes를 작업 길이 상한으로 사용한다. A의 할 일 플래너는
-집중 구간을 개별 작업 길이 상한으로 강제하지 않고 승인값을 컨텍스트로 전달한다.
+시간 플래너와 할 일 플래너 모두 blockMinutes를 작업 길이 상한으로 사용한다.
+그래서 승인된 집중 구간 변경은 두 방식 모두에서 다음 계획의 작업 길이로 바로 보인다.
 
 검증: 실제 B API를 통한 후보 생성·승인·거절, 승인 전 컨텍스트 제외,
 승인 후 버전/근거/이력 저장, C converter와 다음 계획에 변경값 전달,

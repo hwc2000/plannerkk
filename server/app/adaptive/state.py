@@ -57,6 +57,22 @@ REASON_STRATEGY: dict[str, Strategy] = {
     "underestimated": "reschedule",
     "priority_changed": "replan",
 }
+RecoveryPreference = Literal["replan", "reduce", "continue", "abandon", "unknown"]
+# Where an approved profile change applies: the user profile, or one project's settings.
+ChangeScope = Literal["user", "project"]
+# The survey's "계획이 틀어지면 어떻게 하는 편이야?" answer, where it names a strategy.
+PREFERENCE_STRATEGY: dict[str, Strategy] = {"reduce": "shrink", "replan": "reschedule"}
+# Reasons about the circumstance rather than the task itself; here the user's
+# stated preference picks the strategy. A task that was too large or unclear is
+# always shrunk, and a priority change always replans.
+CIRCUMSTANCE_REASONS = frozenset({"time_shortage", "fatigue", "interruption", "underestimated", "other"})
+
+
+def default_strategy(reason_code: str | None, recovery_preference: str | None) -> Strategy | None:
+    preferred = PREFERENCE_STRATEGY.get(recovery_preference or "")
+    if preferred and reason_code in CIRCUMSTANCE_REASONS:
+        return preferred
+    return REASON_STRATEGY.get(reason_code or "")
 
 
 class ExecutionContext(TypedDict):
@@ -65,6 +81,7 @@ class ExecutionContext(TypedDict):
     schedule_style: ScheduleStyle | None
     focus_minutes: int | None  # required only for time_blocks
     break_minutes: int | None  # gap between pieces in one window for time_blocks; None = no gap
+    recovery_preference: RecoveryPreference | None  # picks the strategy for circumstance reasons
 
 
 class ProfileChangeContext(TypedDict):
@@ -77,6 +94,12 @@ class ProfileChangeContext(TypedDict):
     evidence_record_ids: list[str]
     source_profile_id: str
     applied_profile_id: str
+    # "project": learned from one project's records and applied to that project
+    # only; the user profile ids above then stay the same.
+    scope: ChangeScope
+    project_id: str | None
+    source_project_profile_id: str | None
+    applied_project_profile_id: str | None
 
 
 class RecoveryTask(TypedDict, total=False):
@@ -193,6 +216,7 @@ class ExecutionContextModel(BaseModel):
     schedule_style: ScheduleStyle | None = None
     focus_minutes: int | None = Field(default=None, ge=1, strict=True)
     break_minutes: int | None = Field(default=None, ge=0, strict=True)
+    recovery_preference: RecoveryPreference | None = None
 
 
 class ProfileChangeContextModel(BaseModel):
@@ -205,6 +229,10 @@ class ProfileChangeContextModel(BaseModel):
     evidence_record_ids: list[Id] = Field(min_length=1)
     source_profile_id: Id
     applied_profile_id: Id
+    scope: ChangeScope = "user"
+    project_id: Id | None = None
+    source_project_profile_id: Id | None = None  # None: the project had no own settings yet
+    applied_project_profile_id: Id | None = None
 
     @model_validator(mode="after")
     def consistent_change(self) -> "ProfileChangeContextModel":
@@ -212,12 +240,19 @@ class ProfileChangeContextModel(BaseModel):
             raise ValueError("changed_fields: 중복 필드는 허용하지 않습니다.")
         if set(self.before) != set(self.changed_fields) or set(self.after) != set(self.changed_fields):
             raise ValueError("before와 after는 changed_fields와 정확히 일치해야 합니다.")
+        if self.scope == "project" and (self.project_id is None or self.applied_project_profile_id is None):
+            raise ValueError("프로젝트 변경에는 project_id와 applied_project_profile_id가 필요합니다.")
+        if self.scope == "user" and (self.project_id or self.source_project_profile_id or self.applied_project_profile_id):
+            raise ValueError("사용자 프로필 변경에는 프로젝트 값이 없어야 합니다.")
         if any(self.before[field] == self.after[field] for field in self.changed_fields):
             raise ValueError("changed_fields의 변경 전후 값은 달라야 합니다.")
         if len(set(self.evidence_record_ids)) != len(self.evidence_record_ids):
             raise ValueError("evidence_record_ids: 중복 ID는 허용하지 않습니다.")
-        if self.source_profile_id == self.applied_profile_id:
+        # The settings the change produced must be a new version of the ones it replaced.
+        if self.scope == "user" and self.source_profile_id == self.applied_profile_id:
             raise ValueError("적용 프로필 ID는 원본 프로필 ID와 달라야 합니다.")
+        if self.scope == "project" and self.source_project_profile_id == self.applied_project_profile_id:
+            raise ValueError("적용 프로젝트 설정 ID는 원본 프로젝트 설정 ID와 달라야 합니다.")
         return self
 
 

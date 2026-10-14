@@ -38,11 +38,13 @@ def execution_context_from_profile(profile: Mapping[str, Any] | None, _records: 
     prefs = profile["planningPreferences"]
     # blockMinutes falls back to a default when the user answered "모름";
     # only use it when the user actually gave a focus time.
-    known_focus = profile.get("declaredFacts", profile.get("facts", {})).get("focusMinutes") is not None
+    known_focus = (profile.get("declaredFacts", profile.get("facts", {})).get("focusMinutes") is not None
+                   or "blockMinutes" in (profile.get("projectOverrides") or {}))
     return {
         "schedule_style": prefs.get("scheduleStyle"),
         "focus_minutes": prefs["blockMinutes"] if (known_focus or profile.get("learnedPatterns")) else None,
         "break_minutes": prefs.get("breakMinutes"),
+        "recovery_preference": prefs.get("recoveryPreference"),
     }
 
 
@@ -67,12 +69,17 @@ def profile_change_context_from_proposal(proposal: object) -> dict[str, Any]:
         name = _snake_key(external_name)
         before[name] = change["from"]
         after[name] = change["to"]
+    project_id = proposal.get("projectId")
     return {
         "before": before, "after": after, "changed_fields": list(before),
         "reason": proposal.get("reason"),
         "evidence_record_ids": proposal.get("evidenceRecordIds"),
         "source_profile_id": proposal.get("profileId"),
         "applied_profile_id": proposal.get("appliedProfileId"),
+        "scope": "project" if project_id else "user",
+        "project_id": project_id,
+        "source_project_profile_id": proposal.get("projectProfileId") if project_id else None,
+        "applied_project_profile_id": proposal.get("appliedProjectProfileId") if project_id else None,
     }
 
 
