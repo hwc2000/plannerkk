@@ -15,7 +15,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..execution_api import BusyEvent, build_full_plan_context
+from ..execution_api import BusyEvent, build_full_plan_context, plan_projects
 from ..execution_llm import ExecutionLLM
 from ..execution_store import ConflictError, ExecutionStore
 from ..execution_service import replace_plan_draft
@@ -133,6 +133,7 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
                 goal=plan["goal"],
                 start_date=date.fromisoformat(plan["startDate"]),
                 project=project,
+                projects=[ProjectContext.model_validate(p) for p in plan_projects(plan)],
                 current_plan=plan,
                 events=events,
                 memories=memories,

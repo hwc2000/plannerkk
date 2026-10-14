@@ -124,7 +124,8 @@ def schedule_context(
     """
     plan = state["plan"]
     entry = next(e for e in plan["entries"] if e["id"] == task_id)
-    deadline = entry.get("dueDate") or (plan.get("project") or {}).get("dueDate")
+    project = next((p for p in plan.get("projects") or [] if p["id"] == entry.get("projectId")), None)
+    deadline = entry.get("dueDate") or (project or plan.get("project") or {}).get("dueDate")
     within_plan = deadline is not None and deadline <= plan["endDate"]
     held = [t for other, d in drafts_for_plan(state).items() if other != task_id
             for t in d["draft"]["tasks"] if t.get("start")]

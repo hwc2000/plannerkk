@@ -13,3 +13,33 @@
 .profile-chat-choices button[aria-pressed="true"] { background: #244d40; color: #fff; border-color: #244d40; box-shadow: inset 0 0 0 1px #244d40; }
 .execution-project-settings{margin:4px 0 18px;padding:4px 16px;border:1px dashed var(--line);border-radius:10px;background:#fafaf7}.execution-project-settings .execution-label{margin:14px 0}.execution-project-settings small{font-weight:400}
 .execution-project-applied{margin:-8px 0 16px!important}
+
+.planner-action { margin: 0 0 16px; padding: 18px 20px; border: 1px solid var(--violet); border-radius: 14px; background: #f6f5ff; }
+.planner-action h3 { margin: 0 0 8px; }
+.planner-action p { margin: 6px 0; overflow-wrap: anywhere; }
+.project-dot { display: inline-block; flex: none; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.execution-task-project { display: flex; align-items: center; color: var(--muted); font-size: 11px; font-weight: 400; }
+
+.planner-workspace { --thread-color: var(--violet); display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 16px; align-items: start; margin: 20px 0; }
+.planner-threads { position: sticky; top: 20px; display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 17px; background: rgba(255,255,255,.85); }
+.planner-threads-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 10px; font-size: 13px; }
+.planner-new { display: inline-flex; align-items: center; gap: 4px; padding: 6px 8px; border-radius: 8px; background: #f0f2ef; color: #4e5954; font-size: 11px; font-weight: 700; }
+.planner-thread { --item-color: var(--violet); position: relative; display: flex; align-items: flex-start; gap: 6px; width: 100%; padding: 10px; border-radius: 10px; background: transparent; text-align: left; color: var(--ink); border-left: 3px solid transparent; }
+.planner-thread:hover { background: #f4f5f2; }
+.planner-thread.active { background: color-mix(in srgb, var(--item-color) 12%, white); border-left-color: var(--item-color); }
+.planner-thread .project-dot { margin-top: 5px; }
+.planner-thread span { display: grid; gap: 3px; min-width: 0; }
+.planner-thread b { font-size: 13px; }
+.planner-thread small { overflow: hidden; color: var(--muted); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.planner-badge { position: absolute; top: 12px; right: 10px; width: 7px; height: 7px; border-radius: 50%; background: var(--item-color); }
+.planner-chat { margin: 0; border-top: 4px solid var(--thread-color); }
+.planner-chat-head { display: flex; align-items: flex-start; gap: 8px; }
+.planner-chat-head .project-dot { width: 12px; height: 12px; margin-top: 15px; }
+.planner-chat-head > div { flex: 1; min-width: 0; }
+.planner-chat-head h2 { margin: 6px 0 2px !important; }
+.planner-week { margin: 12px 0 0; padding: 8px 12px; border-radius: 9px; background: color-mix(in srgb, var(--thread-color) 9%, white); color: #4a5851; font-size: 12px !important; }
+.planner-chat .profile-chat-message.user { background: var(--thread-color); }
+.planner-chat .primary-button { background: var(--thread-color); }
+.planner-chat .execution-workspace input[type=checkbox], .planner-chat input[type=checkbox] { accent-color: var(--thread-color); }
+.planner-action { border-color: var(--thread-color) !important; background: color-mix(in srgb, var(--thread-color) 7%, white) !important; }
+@media (max-width: 760px) { .planner-workspace { grid-template-columns: 1fr; } .planner-threads { position: static; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); overflow-x: auto; } .planner-threads-head { grid-column: 1 / -1; } }

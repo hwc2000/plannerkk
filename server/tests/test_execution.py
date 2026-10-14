@@ -267,4 +267,30 @@ class SchedulerTests(unittest.TestCase):
         self.assertLessEqual(sum(e['minutes'] for e in entries if e['kind']=='task'),51)
         self.assertTrue(all(a['end']<=b['start'] for a,b in zip(entries,entries[1:])))
 
+    def test_splits_tasks_instead_of_leaving_free_time(self):
+        # Mon 19~21 cut by two events into two 30-minute windows, no buffer.
+        slots=[Slot(day=0,hour=19),Slot(day=0,hour=20)]
+        events=[BusyEvent(date=date(2030,1,7),startTime='19:30',endTime='20:00'),
+                BusyEvent(date=date(2030,1,7),startTime='20:30',endTime='21:00')]
+        windows=availability_windows(date(2030,1,7),slots,events,now=datetime(2030,1,1))
+        task=lambda m:{'title':'보고서','minutes':m,'doneWhen':'완료','dueDate':None}
+        # A task that fits a window stays whole.
+        entries,pending=schedule([task(30)],windows,0)
+        self.assertEqual([(e['title'],e['start']) for e in entries if e['kind']=='task'],[('보고서','2030-01-07T19:00')])
+        # One no window holds whole is split instead of left out.
+        entries,pending=schedule([task(40)],windows,0)
+        self.assertEqual(pending,[])
+        self.assertEqual([(e['title'],e['minutes'],e['start']) for e in entries if e['kind']=='task'],
+                         [('보고서 (1/2)',30,'2030-01-07T19:00'),('보고서 (2/2)',10,'2030-01-07T20:00')])
+
+    def test_a_task_that_cannot_finish_before_its_deadline_stays_whole(self):
+        windows=availability_windows(date(2030,1,7),[Slot(day=0,hour=19),Slot(day=1,hour=19)],[],now=datetime(2030,1,1))
+        report={'title':'보고서','minutes':80,'doneWhen':'제출','dueDate':'2030-01-07'}
+        memo={'title':'메모','minutes':40,'doneWhen':'정리','dueDate':None}
+        entries,pending=schedule([report,memo],windows,0)
+        self.assertEqual([(p['title'],p['minutes']) for p in pending],[('보고서',80)])
+        self.assertIn('마감일', pending[0]['reason'])
+        # The rolled-back deadline task leaves Monday free for the next task.
+        self.assertEqual([(e['title'],e['start']) for e in entries if e['kind']=='task'],[('메모','2030-01-07T19:00')])
+
 if __name__=='__main__':unittest.main()

@@ -8,6 +8,7 @@ import { ProfileForm } from './ProfileForm'
 import { ProfileChat } from './ProfileChat'
 import { ExecutionView } from './ExecutionView'
 import { ExecutionLearning } from './ExecutionLearning'
+import { PlannerChat } from './PlannerChat'
 import { PlanReasons } from './PlanReasons'
 import { ProjectSettings } from './ProjectSettings'
 import { approveProposalAndReplan, planCalendarEvents, planIsStale, replansCurrentPlan } from './api'
@@ -52,6 +53,15 @@ it('maps confirmed tasks once and omits breaks', () => {
   expect(events).toHaveLength(1)
   expect(events[0]).toMatchObject({id:'execution:week1:task1',title:'✓ 문제 풀기',date:'2030-01-07',startTime:'18:00',endTime:'18:25'})
   expect(planCalendarEvents({...plan,status:'draft'},[])).toEqual([])
+})
+it('colors each calendar task by its own project in a multi-project week', () => {
+  const projects=[{id:'essay'},{id:'app'}] as Project[]
+  const plan={id:'week2',status:'confirmed',projectId:null,entries:[
+    {id:'a',kind:'task',start:'2030-01-07T19:00',end:'2030-01-07T19:20',title:'개요',completed:false,projectId:'essay'},
+    {id:'b',kind:'task',start:'2030-01-09T19:00',end:'2030-01-09T19:20',title:'로그인',completed:false,projectId:'app'},
+    {id:'c',kind:'task',start:'2030-01-10T19:00',end:'2030-01-10T19:20',title:'정리',completed:false,projectId:'deleted'},
+  ]} as ExecutionPlan
+  expect(planCalendarEvents(plan,projects).map(e=>e.projectId)).toEqual(['essay','app',undefined])
 })
 
 describe('conversational onboarding', () => {
@@ -334,6 +344,55 @@ describe('profile proposal replan flow', () => {
       goal: '시험 공부', startDate: '2030-01-07', consent: false, project: null, existingTasks: [], events: [],
     })).rejects.toThrow('동의')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+describe('conversational planner', () => {
+  const base: ExecutionState = { revision: 4, profile: null, profileDraft: null, settings: { slots: [{ day: 0, hour: 19 }], view: 'timeline' }, plan: null, planDraft: null, llmAvailable: true, model: 'test' }
+  const essay = { id: 'essay', title: '에세이', goal: '초안', startDate: '2030-01-01', dueDate: '2030-01-31', priority: 'high', status: 'active' } as Project
+  const app = { ...essay, id: 'app', title: '앱 개발' }
+  const run = (action: () => Promise<ExecutionState>) => action().then(() => true)
+  const threads = {
+    essay: { messages: [{ id: 'e1', role: 'user' as const, content: '에세이 초안 쓰기' }], action: null, updatedAt: '2030-01-02T10:00:00' },
+    app: { messages: [{ id: 'a1', role: 'user' as const, content: '로그인 화면' }], action: { kind: 'plan' as const, revision: 4, payload: { goal: '로그인 화면', startDate: '2030-01-07' } }, updatedAt: '2030-01-03T10:00:00' },
+  }
+  it('opens the most recent project conversation and switches threads per project', () => {
+    render(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} projects={[essay, app]} onApplyPlan={vi.fn()}/>)
+    expect(screen.getByRole('heading', { name: '앱 개발' })).toBeTruthy()
+    expect(screen.getByRole('log').textContent).toContain('로그인 화면')
+    fireEvent.click(screen.getByRole('button', { name: /에세이/ }))
+    expect(screen.getByRole('heading', { name: '에세이' })).toBeTruthy()
+    expect(screen.getByRole('log').textContent).toContain('에세이 초안 쓰기')
+    expect(screen.getByRole('log').textContent).not.toContain('로그인 화면')
+    fireEvent.click(screen.getByRole('button', { name: /자유 계획/ }))
+    expect(screen.getByRole('log').textContent).toContain('프로젝트와 상관없는 할 일')
+  })
+  it('sends the selected project with the message after consent', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...base, revision: 5 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<PlannerChat state={base} busy={false} run={run} projects={[essay]} onApplyPlan={vi.fn()}/>)
+    fireEvent.change(screen.getByLabelText('메시지'), { target: { value: '금요일까지 초안' } })
+    expect((screen.getByText('보내기') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByLabelText(/OpenAI에 전송하는 데 동의/))
+    fireEvent.click(screen.getByText('보내기'))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/execution/chat/message', expect.objectContaining({ method: 'POST' })))
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ revision: 4, text: '금요일까지 초안', consent: true, project: { id: 'essay' } })
+  })
+  it('applies a plan card for its own project only while it is current', () => {
+    const apply = vi.fn().mockResolvedValue(true)
+    const state = { ...base, plannerThreads: threads }
+    const { rerender } = render(<PlannerChat state={state} busy={false} run={run} projects={[essay, app]} onApplyPlan={apply}/>)
+    fireEvent.click(screen.getByLabelText(/OpenAI에 전송하는 데 동의/))
+    fireEvent.click(screen.getByText('확인하고 계획 초안 만들기'))
+    expect(apply).toHaveBeenCalledWith('로그인 화면', '2030-01-07', app, true)
+    rerender(<PlannerChat state={{ ...state, revision: 5 }} busy={false} run={run} projects={[essay, app]} onApplyPlan={apply}/>)
+    expect(screen.queryByText('확인하고 계획 초안 만들기')).toBeNull()
+  })
+  it('opens a fresh conversation for a newly created project', () => {
+    const { rerender } = render(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} projects={[essay, app]} onApplyPlan={vi.fn()}/>)
+    const fresh = { ...essay, id: 'new', title: '새 공부' }
+    rerender(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} projects={[essay, app, fresh]} onApplyPlan={vi.fn()}/>)
+    expect(screen.getByRole('heading', { name: '새 공부' })).toBeTruthy()
+    expect(screen.getByRole('log').textContent).toContain('‘새 공부’에서 이번 주에 하고 싶은 일')
   })
 })
 

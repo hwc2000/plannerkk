@@ -110,7 +110,7 @@ export function CalendarView({
                     {plans.slice(0, 2).map((plan) => (
                       <span
                         className="calendar-pill project"
-                        style={{ borderLeftColor: plan.color }}
+                        style={{ borderLeftColor: plan.color, background: plan.color && `color-mix(in srgb, ${plan.color} 16%, white)` }}
                         key={`${plan.type}-${plan.id}`}
                       >
                         {plan.label}

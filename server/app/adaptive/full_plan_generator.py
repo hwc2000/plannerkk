@@ -43,13 +43,14 @@ def _too_long(payload: Any, block: int) -> list[str]:
     ]
 
 
-def _validated_tasks(payload: Any, block: int, starter_minutes: int | None) -> list[dict[str, Any]]:
+def _validated_tasks(payload: Any, block: int, starter_minutes: int | None,
+                     projects: list[dict[str, Any]] = ()) -> list[dict[str, Any]]:
     """Rule check of the LLM tasks; a failure is retried by the graph with these errors."""
     too_long = _too_long(payload, block)
     if too_long:
         raise PlanValidationError(too_long)
     try:
-        tasks = validate_tasks(payload, block)
+        tasks = validate_tasks(payload, block, projects)
     except ValueError as exc:
         raise PlanValidationError([str(exc)]) from None
     if starter_minutes:
@@ -100,6 +101,7 @@ class LLMFullPlanGenerator:
             "endDate": context["end_date"],
             "availableWindows": context["available_windows"],
             "project": context.get("project"),
+            "projects": context.get("projects", []),
             "existingTasks": context.get("existing_tasks", []),
             "currentPlan": context.get("current_plan"),
             "completedTasks": context.get("completed_tasks", []),
@@ -123,6 +125,9 @@ class LLMFullPlanGenerator:
             "작업은 순서대로 하루씩 채워지므로 dailyCapMinutes가 있으면 하루 작업 합계가 그 이하가 되도록 "
             "하루치 작업 길이를 dayTaskMinutes처럼 구성해 하루 단위로 이어서 낸다(마지막 날은 덜 채워도 된다). "
             "dueDate는 목표나 existingTasks에 명시한 마감이 있을 때만 YYYY-MM-DD로 주고 없으면 null. 진단이나 사용자의 능력을 추정하지 않는다. "
+            "projects가 여러 개면 한 주 계획 안에 모든 프로젝트를 함께 배치한다. 각 작업의 projectId는 해당 프로젝트의 id로 하고, "
+            "프로젝트 기간(startDate~dueDate)과 마감·우선순위를 고려해 분량을 나눈다. 프로젝트와 무관한 작업은 projectId를 null로 한다. "
+            "projects가 하나 이하이면 projectId는 그 프로젝트 id 또는 null이다. existingTasks의 projectId로 어느 프로젝트의 할 일인지 구분한다. "
             "completedTasks는 이미 끝난 작업이므로 다시 만들지 않는다. pendingTasks는 이전 계획에서 배치되지 않은 작업이므로 "
             "누락하지 말고 이번 주에 배치하거나 다시 pending으로 남긴다. currentPlan과 profileChange가 있으면 변경된 설정의 영향을 받는 "
             "남은 작업만 조정하고, 변경과 무관한 목표·마감·프로젝트 범위는 유지한다. "
@@ -142,7 +147,7 @@ class LLMFullPlanGenerator:
         except LLMUnavailableError as exc:
             raise GenerationUnavailableError from exc
 
-        tasks = _validated_tasks(payload, context["max_block_minutes"], policy.starter_minutes)
+        tasks = _validated_tasks(payload, context["max_block_minutes"], policy.starter_minutes, context.get("projects", []))
         entries, pending, placement = place_tasks(tasks, windows, policy)
         if pending and state.get("retry_count", 0) < state.get("retry_limit", 0):
             # Overflow is a soft rule: ask again with numbers, keep the last attempt's pending list.
@@ -181,6 +186,7 @@ class LLMFullPlanGenerator:
             "scheduleStyle": context["schedule_style"],
             "projectId": context.get("project_id"),
             "project": context.get("project"),
+            "projects": context.get("projects", []),
             "goal": context["goal"],
             "startDate": context["start_date"],
             "endDate": context["end_date"],

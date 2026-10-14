@@ -64,6 +64,7 @@ class ExistingTask(BaseModel):
     dueDate: date
     estimatedHours: float = Field(gt=0, le=1000)
     status: str = Field(min_length=1, max_length=32)
+    projectId: str | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def validate_date_order(self):

@@ -1,33 +1,34 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './execution.css'
 import type { CalendarEvent, ExecutionPlan, ExecutionState, Milestone, Project, Memory, ProfileUpdateProposal } from '../../shared/types'
 import { dateKey } from '../../shared/constants'
 import { ExecutionLearning } from './ExecutionLearning'
 import { ProfileForm } from './ProfileForm'
+import { PlannerChat } from './PlannerChat'
 import { AvailabilityGrid } from './AvailabilityGrid'
 import { PlanReasons } from './PlanReasons'
 import { ProjectSettings } from './ProjectSettings'
 import { answerLabels, formatAnswer } from './profileLabels'
-import { approveProposalAndReplan, downloadJson, executionApi, planIsStale, projectContext, replansCurrentPlan } from './api'
+import { approveProposalAndReplan, downloadJson, executionApi, existingTasksFor, planIsStale, planProjectIds, projectContext, replansCurrentPlan } from './api'
+import { projectColor } from '../../shared/projectColors'
 
-export function ExecutionView({ state, onChange, projects, milestones, events, memories = [] }: {
+export function ExecutionView({ state, onChange, projects, milestones, events, memories = [], onCreateProject }: {
   state: ExecutionState; onChange: (state: ExecutionState) => void
   projects: Project[]; milestones: Milestone[]; events: CalendarEvent[]; memories?: Memory[]
+  onCreateProject?: () => void
 }) {
   const [chatKey, setChatKey] = useState(0)
   const [editing, setEditing] = useState(!state.profile && !state.profileDraft)
   const [slots, setSlots] = useState(state.settings.slots)
-  const [goal, setGoal] = useState(state.planDraft?.goal ?? state.plan?.goal ?? '')
-  const [startDate, setStartDate] = useState(state.planDraft?.startDate ?? state.plan?.startDate ?? dateKey(new Date()))
-  const [projectId, setProjectId] = useState(state.planDraft?.projectId ?? state.plan?.projectId ?? '')
-  const [consent, setConsent] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const shownProfile = state.profileDraft ?? state.profile
-  const selectedProject = projects.find(p => p.id === projectId)
   const busyEvents = events.map(({ date, startTime, endTime }) => ({ date, startTime, endTime }))
-  const slotsDirty = JSON.stringify(slots) !== JSON.stringify(state.settings.slots)
+  const savedSlots = JSON.stringify(state.settings.slots)
+  const slotsDirty = JSON.stringify(slots) !== savedSlots
+  // The chat can save availability too; follow the server whenever the saved slots change.
+  useEffect(() => { setSlots(JSON.parse(savedSlots)) }, [savedSlots])
 
   async function run(action: () => Promise<ExecutionState>, message: string) {
     if (busy) return false
@@ -41,29 +42,28 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
     } finally { setBusy(false) }
   }
 
-  async function generatePlan() {
-    await run(async () => {
+  // Plans only this project's part of the shared week; other projects keep their tasks.
+  async function generatePlan(goal: string, startDate: string, project: Project | null, consent: boolean) {
+    return run(async () => {
       let current = state
       if (slotsDirty) current = await executionApi('/settings', { revision: current.revision, settings: { slots, view: current.settings.view } }, 'PUT')
       return executionApi('/plan', {
-        revision: current.revision, goal, startDate, consent, memories, project: projectContext(selectedProject), events: busyEvents,
-        existingTasks: milestones.filter(m => m.projectId === projectId).map(({ title, startDate, dueDate, estimatedHours, status }) => ({ title, startDate, dueDate, estimatedHours, status })),
+        revision: current.revision, goal, startDate, consent, memories, project: projectContext(project ?? undefined), merge: true, events: busyEvents,
+        existingTasks: existingTasksFor(milestones, project ? [project.id] : []),
       })
-    }, '주간 계획 초안을 만들었습니다. 검토 후 확정하면 캘린더에도 표시됩니다.')
+    }, '계획 초안을 만들었습니다. 검토 후 확정하면 캘린더에도 표시됩니다.')
   }
 
   async function approveProposal(proposalId: string, replanConsent: boolean) {
     const plan = state.plan
     return run(() => approveProposalAndReplan(state, proposalId, {
-      goal: plan?.goal ?? goal,
-      startDate: plan?.startDate ?? startDate,
+      goal: plan?.goal ?? '',
+      startDate: plan?.startDate ?? dateKey(new Date()),
       consent: replanConsent,
       memories,
       project: plan?.project ?? null,
       events: busyEvents,
-      existingTasks: milestones.filter(m => m.projectId === plan?.projectId).map(
-        ({ title, startDate, dueDate, estimatedHours, status }) => ({ title, startDate, dueDate, estimatedHours, status }),
-      ),
+      existingTasks: existingTasksFor(milestones, planProjectIds(plan)),
     }), approvalMessage(state.profileUpdateProposals?.find(p => p.id === proposalId)))
   }
 
@@ -76,6 +76,7 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
   }
 
   function planCard(plan: ExecutionPlan, draft: boolean) {
+    const projectTitle = (id?: string | null) => id ? (projects.find(p => p.id === id)?.title ?? plan.projects?.find(p => p.id === id)?.title ?? plan.project?.title) : undefined
     const timed = (plan.scheduleStyle ?? state.profile?.planningPreferences.scheduleStyle) !== 'flexible_queue' && state.settings.view === 'timeline'
     const entries = plan.entries.filter(e => timed || e.kind==='task')
     const dates = [...new Set(entries.map(e => e.start.slice(0,10)))]
@@ -89,11 +90,11 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
         {entries.filter(e => e.start.startsWith(day)).map(e => e.kind==='break'?<div className="execution-break" key={e.id}>{e.start.slice(11)} ~ {e.end.slice(11)} · 휴식</div>:
           <label className={`execution-task ${e.completed?'done':''} ${e.starter?'starter':''}`} key={e.id}>
             <input aria-label={`${e.title} 완료`} type="checkbox" checked={e.completed} disabled={draft||busy} onChange={event => { void run(() => executionApi('/task',{ revision:state.revision,planId:plan.id,taskId:e.id,completed:event.target.checked }),event.target.checked?'완료를 실행 기록에 남겼습니다.':'완료 기록을 취소했습니다.') }} />
-            <span>{timed && <b className="execution-task-time">{e.start.slice(11)} ~ {e.end.slice(11)}</b>}<strong>{e.title}</strong><small>{e.doneWhen} · {e.minutes}분</small></span>
+            <span>{timed && <b className="execution-task-time">{e.start.slice(11)} ~ {e.end.slice(11)}</b>}{projectTitle(e.projectId ?? plan.projectId) && <small className="execution-task-project"><i className="project-dot" style={{ background: projectColor(e.projectId ?? plan.projectId ?? undefined) }}/>{projectTitle(e.projectId ?? plan.projectId)}</small>}<strong>{e.title}</strong><small>{e.doneWhen} · {e.minutes}분</small></span>
           </label>)}
       </div>)}
       {!dates.length && <p>선택한 시간에 배치된 작업이 없습니다. 가용 시간이나 목표를 조정해 주세요.</p>}
-      {plan.pendingTasks.length>0 && <details open><summary>배치하지 못한 작업 {plan.pendingTasks.length}개</summary>{plan.pendingTasks.map((t,i) => <p className="execution-help" key={i}>{t.title} · {t.minutes}분<br/>{t.reason}</p>)}</details>}
+      {plan.pendingTasks.length>0 && <details open><summary>배치하지 못한 작업 {plan.pendingTasks.length}개</summary>{plan.pendingTasks.map((t,i) => <p className="execution-help" key={i}>{projectTitle(t.projectId ?? plan.projectId) && `[${projectTitle(t.projectId ?? plan.projectId)}] `}{t.title} · {t.minutes}분<br/>{t.reason}</p>)}</details>}
       <p className="execution-help">작업 시간은 추정치입니다. 선택한 시간과 기존 일정을 기준으로 배치하며 남는 시간은 여유분입니다. 전체 목표의 완료를 보장하지 않습니다.</p>
       <div className="execution-actions">
         <button className="secondary-button" onClick={() => downloadJson(plan,'replan-week.json')}>계획 JSON 다운로드</button>
@@ -108,7 +109,7 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
     <div className="execution-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => {
       if (!window.confirm('프로필과 대화 기록, 작성 중인 초안, 프로젝트별 설정을 초기화할까요? 가용 시간과 확정 계획은 유지됩니다.')) return
       void run(() => executionApi('/profile/reset', { revision: state.revision }), '프로필을 초기화했습니다. 설문을 다시 작성해 주세요.').then(ok => {
-        if (ok) { setEditing(true); setChatKey(key => key + 1); setConsent(false) }
+        if (ok) { setEditing(true); setChatKey(key => key + 1) }
       })
     }}>프로필 초기화하기</button></div>
     {error && <p className="form-error" role="alert">{error}</p>}{notice && <p className="execution-notice" role="status">{notice}</p>}
@@ -126,30 +127,22 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
         <div className="execution-actions"><button className="secondary-button" disabled={busy} onClick={()=>{setEditing(true)}}>설문 수정</button><button className="secondary-button" onClick={()=>downloadJson(shownProfile,'replan-profile.json')}>프로필 JSON 다운로드</button>{state.profileDraft && <button type="button" className="primary-button" disabled={busy} onClick={()=>{void run(()=>executionApi('/profile/confirm',{revision:state.revision}),'프로필을 저장했어. 아래에서 계획할 시간을 고르고 이번 주 목표를 알려 줘.') }}>{busy?'프로필 저장 중…':'프로필 확정'}</button>}</div>
         {error && <p className="form-error" role="alert">{error}</p>}
         {notice && <p className="execution-notice" role="status">{notice}</p>}
-        {shownProfile.status==='confirmed' && <div className="execution-next"><strong>프로필이 DB에 저장되었습니다.</strong><p>프로필 설정이 끝났어. 아래에서 계획할 시간을 고르고 이번 주 목표를 알려 줘.</p><a className="primary-button" href="#weekly-goal">이번 주 목표 입력으로 이동 →</a></div>}
+        {shownProfile.status==='confirmed' && <div className="execution-next"><strong>프로필이 DB에 저장되었습니다.</strong><p>프로필 설정이 끝났어. 아래 플래너와 대화하면서 이번 주 계획을 세워 봐.</p><a className="primary-button" href="#weekly-goal">플래너와 대화하기 →</a></div>}
       </section>}
     {state.profile && !editing && <>
       <details id="weekly-setup" className="execution-card" open={slots.length === 0 || slotsDirty ? true : undefined}><summary>계획할 시간 · 주 {slots.length}시간</summary>
         <p className="execution-help">하루 작업량은 계획의 분량이고, 여기서는 실제로 배치할 요일과 시간을 골라 줘. 저장한 시간은 다음에도 그대로 사용할게. 고정 일정과 겹치는 시간은 선택에서 빼 줘.</p><AvailabilityGrid slots={slots} onChange={setSlots} disabled={busy}/>
         <button className="secondary-button" disabled={busy||!slotsDirty} onClick={()=>{void run(()=>executionApi('/settings',{revision:state.revision,settings:{...state.settings,slots}},'PUT'),'계획할 시간을 저장했어.') }}>시간 변경 저장</button>
       </details>
-      <form id="weekly-goal" className="execution-card" onSubmit={e=>{e.preventDefault();void generatePlan()}}><fieldset className="execution-fieldset" disabled={busy}><h2>이번 주에 무엇을 할까요?</h2>
-        <label className="execution-label">연결할 프로젝트<select value={projectId} onChange={e=>setProjectId(e.target.value)}><option value="">자유 목표 · 프로젝트 없이</option>{projects.map(p=><option key={p.id} value={p.id}>{p.title}</option>)}</select></label>
-        {selectedProject && state.profile && <ProjectSettings key={selectedProject.id} state={state} project={selectedProject} busy={busy} run={run} editable={import.meta.env.DEV}/>}
-        <label className="execution-label">목표와 할 일<textarea required maxLength={2000} value={goal} onChange={e=>setGoal(e.target.value)} placeholder="예: 금요일까지 전공 3장 연습문제 10개, 주말까지 포트폴리오 소개 페이지 완성. 전공 공부를 먼저 하고 싶어요." /></label>
-        <label className="execution-label">계획 시작일<input type="date" required value={startDate} onChange={e=>setStartDate(e.target.value)}/></label>
-        <p className="execution-help">시작일부터 7일 · 한국 시간. 지난 시간과 기존 캘린더 일정은 제외합니다. 연결한 프로젝트가 있으면 해당 기간 안에서만 배치합니다.</p>
-        <label className="execution-inline"><input type="checkbox" required checked={consent} onChange={e=>setConsent(e.target.checked)}/>목표·프로필·기억·가용 시간·프로젝트와 기존 할 일을 OpenAI에 전송하는 데 동의합니다.</label>
-        <p className="execution-help">선택한 가용 시간과 생성한 초안은 DB에 저장됩니다. 확정 전에는 기존 계획과 캘린더를 바꾸지 않습니다. 확정하면 이전 주간 계획을 대체합니다.</p>
-        <button className="primary-button" type="submit" disabled={!slots.length||!state.llmAvailable}>{busy?'계획 생성 중…':'주간 계획 초안 만들기'}</button>{!state.llmAvailable&&<p className="execution-help">서버 API 키를 설정하면 LLM 계획을 만들 수 있습니다.</p>}
-      </fieldset></form>
+      <PlannerChat state={state} busy={busy} run={run} projects={projects} onCreateProject={onCreateProject} onApplyPlan={generatePlan}
+        projectInfo={project => state.profile && <ProjectSettings key={project.id} state={state} project={project} busy={busy} run={run} editable={import.meta.env.DEV}/>}/>
     </>}
     {state.planDraft && !editing && planCard(state.planDraft,true)}
     {state.plan && !editing && planCard(state.plan,false)}
     <ExecutionLearning state={state} busy={busy} run={run} approveProposal={approveProposal} events={busyEvents} memories={memories} projects={projects}/>
     <details className="execution-card"><summary>저장 및 초기화</summary><p className="execution-help">프로필·가용 시간·주간 계획·완료 상태는 SQLite DB에 저장됩니다. 기존 프로젝트·수동 일정·기억은 기존 브라우저 저장 방식을 유지합니다.</p><button className="secondary-button" disabled={busy} onClick={()=>{
       if(!window.confirm('실행 프로필·가용 시간·주간 계획·실행 기록·변경 후보를 모두 초기화할까요? 기존 프로젝트·수동 일정·기억은 유지됩니다.'))return
-      void run(()=>executionApi('/reset',{revision:state.revision}),'실행 프로필과 계획을 초기화했습니다.').then(ok=>{if(ok){setSlots([]);setEditing(true);setGoal('');setConsent(false)}})
+      void run(()=>executionApi('/reset',{revision:state.revision}),'실행 프로필과 계획을 초기화했습니다.').then(ok=>{if(ok){setSlots([]);setEditing(true)}})
     }}>프로필부터 다시 시작</button></details>
   </section>
 }
