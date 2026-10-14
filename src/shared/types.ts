@@ -1,4 +1,4 @@
-export type View = 'today' | 'calendar' | 'memory' | 'portfolio' | 'execution'
+export type View = 'calendar' | 'memory' | 'portfolio' | 'execution'
 
 export type ProjectStatus = 'active' | 'completed' | 'paused'
 export type MilestoneStatus = 'todo' | 'in_progress' | 'done' | 'deferred'
@@ -107,7 +107,7 @@ export type ExecutionProfile = {
 
 export type AvailabilitySlot = { day: number; hour: number }
 export type PlannerSettings = { slots: AvailabilitySlot[]; view: 'timeline' | 'checklist' }
-export type ExecutionTask = { title: string; minutes: number; doneWhen: string; dueDate: string | null }
+export type ExecutionTask = { title: string; minutes: number; doneWhen: string; dueDate: string | null; projectId?: string | null }
 export type ExecutionEntry = ExecutionTask & {
   id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean
 }
@@ -116,6 +116,8 @@ export type ExecutionPlan = {
   scheduleStyle?: ScheduleStyle
   id: string; profileId: string; projectId: string | null
   project: Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'> | null
+  projects?: Array<Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'>>
+  projectGoals?: Record<string, string>
   goal: string; startDate: string; endDate: string; timezone: string
   status: 'draft' | 'confirmed'; slots: AvailabilitySlot[]
   entries: ExecutionEntry[]; pendingTasks: Array<ExecutionTask & { reason: string }>
@@ -125,7 +127,15 @@ export type ExecutionState = {
   revision: number; profile: ExecutionProfile | null; profileDraft: ExecutionProfile | null
   settings: PlannerSettings; plan: ExecutionPlan | null; planDraft: ExecutionPlan | null
   llmAvailable: boolean; model: string
+  plannerThreads?: Record<string, PlannerThread>
 }
+
+export type PlannerMessage = { id: string; role: 'user' | 'assistant'; content: string }
+/** One conversation per project; the key is the project id, or '_free' for work without a project. */
+export type PlannerThread = { messages: PlannerMessage[]; action: PlannerAction | null; updatedAt?: string }
+export type PlannerAction =
+  | { kind: 'plan'; revision: number; payload: { goal: string; startDate: string } }
+  | { kind: 'settings'; revision: number; payload: PlannerSettings }
 
 export type ExecutionRecord = {
   id: string; planId: string; taskId: string; profileId: string; taskTitle: string

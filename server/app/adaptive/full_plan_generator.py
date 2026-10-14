@@ -13,7 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..execution_llm import ExecutionLLM, LLMUnavailableError
-from ..execution_scheduler import TASK_SCHEMA, schedule, validate_tasks
+from ..execution_scheduler import TASK_SCHEMA, daily_budgets, schedule, validate_tasks
 from .ports import GenerationUnavailableError
 from .state import PlannerState
 
@@ -56,10 +56,12 @@ class LLMFullPlanGenerator:
             "scheduleStyle": context["schedule_style"],
             "maxBlockMinutes": context["max_block_minutes"],
             "budgetMinutes": context["budget_minutes"],
+            "dailyBudgetMinutes": daily_budgets(windows, context["buffer_percent"]),
             "startDate": context["start_date"],
             "endDate": context["end_date"],
             "availableWindows": context["available_windows"],
             "project": context.get("project"),
+            "projects": context.get("projects", []),
             "existingTasks": context.get("existing_tasks", []),
             "currentPlan": context.get("current_plan"),
             "completedTasks": context.get("completed_tasks", []),
@@ -73,7 +75,12 @@ class LLMFullPlanGenerator:
             "조언이 아닌 구체적인 행동과 완료 조건을 쓴다. 의존 관계와 마감·우선순위를 고려한 실행 순서로 반환한다. "
             "기존 할 일과 중복하지 말고, 목표 전체가 불가능하면 이번 주 진척에 집중한다. "
             "minutes는 1~maxBlockMinutes의 정수이며 총합은 budgetMinutes 이하로 한다. 긴 작업은 여러 구간으로 분할한다. "
+            "dailyBudgetMinutes는 날짜별로 배치 가능한 작업 분량이다. 하루에 몰리는 작업 합계가 그날 분량을 넘지 않게 크기와 순서를 정하고, "
+            "마감이 있는 작업은 마감일까지의 분량 안에 들어가게 만든다. 넣을 수 없는 일은 억지로 만들지 말고 이번 주 범위를 줄인다. "
             "dueDate는 명시한 마감이 있을 때만 YYYY-MM-DD로 주고 없으면 null. 진단이나 사용자의 능력을 추정하지 않는다. "
+            "projects가 여러 개면 한 주 계획 안에 모든 프로젝트를 함께 배치한다. 각 작업의 projectId는 해당 프로젝트의 id로 하고, "
+            "프로젝트 기간(startDate~dueDate)과 마감·우선순위를 고려해 분량을 나눈다. 프로젝트와 무관한 작업은 projectId를 null로 한다. "
+            "projects가 하나 이하이면 projectId는 그 프로젝트 id 또는 null이다. existingTasks의 projectId로 어느 프로젝트의 할 일인지 구분한다. "
             "completedTasks는 이미 끝난 작업이므로 다시 만들지 않는다. pendingTasks는 이전 계획에서 배치되지 않은 작업이므로 "
             "누락하지 말고 이번 주에 배치하거나 다시 pending으로 남긴다. currentPlan과 profileChange가 있으면 변경된 설정의 영향을 받는 "
             "남은 작업만 조정하고, 변경과 무관한 목표·마감·프로젝트 범위는 유지한다. "
@@ -91,8 +98,8 @@ class LLMFullPlanGenerator:
         except LLMUnavailableError as exc:
             raise GenerationUnavailableError from exc
 
-        tasks = validate_tasks(payload, context["max_block_minutes"])
-        entries, pending = schedule(tasks, windows, context["buffer_percent"])
+        tasks = validate_tasks(payload, context["max_block_minutes"], context.get("projects", []))
+        entries, pending = schedule(tasks, windows, context["buffer_percent"], context["max_block_minutes"])
         represented_titles = {task["title"] for task in tasks}
         for previous in context.get("pending_tasks", []):
             if previous.get("title") not in represented_titles:
@@ -111,6 +118,7 @@ class LLMFullPlanGenerator:
             "scheduleStyle": context["schedule_style"],
             "projectId": context.get("project_id"),
             "project": context.get("project"),
+            "projects": context.get("projects", []),
             "goal": context["goal"],
             "startDate": context["start_date"],
             "endDate": context["end_date"],

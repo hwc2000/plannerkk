@@ -11,6 +11,7 @@ from .adaptive.api import adaptive_router
 from .execution_api import execution_router
 from .execution_store import ConflictError, ExecutionStore
 from .profile_chat import profile_chat_router
+from .planner_chat import planner_chat_router
 from .execution_llm import ExecutionLLM
 from .planning_context import get_planning_context
 
@@ -33,6 +34,7 @@ def create_app(generator: PlanGenerator | None = None, execution_store=None, exe
     app.include_router(execution_router(store, execution_llm))
     app.include_router(profile_chat_router(store, execution_llm or ExecutionLLM()))
     app.include_router(adaptive_router(store, execution_llm))
+    app.include_router(planner_chat_router(store, execution_llm or ExecutionLLM()))
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

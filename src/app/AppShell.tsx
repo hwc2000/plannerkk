@@ -2,7 +2,6 @@ import { useState, type ReactNode } from 'react'
 import {
   Brain,
   CalendarDays,
-  LayoutDashboard,
   Menu,
   MoreHorizontal,
   Plus,
@@ -26,7 +25,6 @@ type AppShellProps = {
 }
 
 const mobileNavigation: ReadonlyArray<readonly [View, string]> = [
-  ['today', '오늘'],
   ['calendar', '캘린더'],
   ['memory', '기억'],
   ['portfolio', '전체 계획'],
@@ -37,8 +35,7 @@ function viewTitle(view: View) {
   if (view === 'execution') return '실행 프로필·주간 계획'
   if (view === 'portfolio') return '전체 계획'
   if (view === 'calendar') return '캘린더'
-  if (view === 'memory') return '기억 관리'
-  return '오늘'
+  return '기억 관리'
 }
 
 export function AppShell({
@@ -64,9 +61,6 @@ export function AppShell({
         <nav className="nav-list" aria-label="주요 메뉴">
           <button className={`nav-item ${activeView === 'execution' ? 'active' : ''}`} onClick={() => onChangeView('execution')}>
             <Sparkles size={18} />실행 프로필·주간 계획
-          </button>
-          <button className={`nav-item ${activeView === 'today' ? 'active' : ''}`} onClick={() => onChangeView('today')}>
-            <LayoutDashboard size={18} />오늘
           </button>
           <button className={`nav-item ${activeView === 'calendar' ? 'active' : ''}`} onClick={() => onChangeView('calendar')}>
             <CalendarDays size={18} />캘린더

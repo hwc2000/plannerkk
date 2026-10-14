@@ -28,7 +28,7 @@ def _timestamp(value):
     return dt
 
 
-def get_planning_context(user, project=None, *, state, memories=None, now=None):
+def get_planning_context(user, project=None, *, state, memories=None, now=None, extra_project_ids=()):
     """user is a trusted server-side identity; state comes from its scoped store.
 
     Browser-owned projects/memories are supplied by the existing local client.
@@ -54,7 +54,7 @@ def get_planning_context(user, project=None, *, state, memories=None, now=None):
             if (memory["sensitive"] or not memory["useForPlanning"] or expired
                 or stamp > now or stamp < now - timedelta(days=180)
                 or memory["userId"] not in (None, user)
-                or memory["projectId"] not in (None, project_id)):
+                or memory["projectId"] not in (None, project_id, *extra_project_ids)):
                 continue
             selected.append({k: memory[k] for k in ("id", "content", "category", "source", "createdAt")})
         except (ValueError, TypeError):

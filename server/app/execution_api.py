@@ -22,6 +22,7 @@ from .user_profile import save_profile_draft, confirm_profile_draft
 from .planning_context import get_planning_context, MemoryInput
 from .execution_scheduler import availability_windows
 from .planner import ProjectContext, ExistingTask
+from .plan_merge import active_plan, kept_entries, merge_into
 
 class Mutation(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -82,8 +83,15 @@ def build_full_plan_context(
     existing_tasks: list[ExistingTask] | None = None,
     memories: list[dict] | None = None,
     now: datetime | None = None,
+    projects: list[ProjectContext] | None = None,
 ) -> dict:
-    """Build C's full-plan input from the persisted A/B execution state."""
+    """Build C's full-plan input from the persisted A/B execution state.
+
+    One project limits the week to its period, as before.  Several projects share
+    the week; each task is then kept inside its own project's period.
+    """
+    selected = list({p.id: p for p in (projects or ([project] if project else []))}.values())
+    project = selected[0] if len(selected) == 1 else None
     settings = PlannerSettings.model_validate(state["settings"])
     completed_entries = [
         dict(entry) for entry in (current_plan or {}).get("entries", [])
@@ -96,7 +104,8 @@ def build_full_plan_context(
     windows = availability_windows(start_date, settings.slots, held_events, project, now=now)
     if not windows:
         raise ValueError("선택한 주에 사용 가능한 시간이 없습니다. 가용 시간, 기존 일정, 프로젝트 기간을 확인해 주세요.")
-    planning = get_planning_context(user_id, project, state=state, memories=memories or [])
+    planning = get_planning_context(user_id, project, state=state, memories=memories or [],
+                                    extra_project_ids=tuple(p.id for p in selected))
     prefs = planning["userProfile"]["planningPreferences"]
     free_minutes = sum(int((end - start).total_seconds() // 60) for start, end in windows)
     budget = int(free_minutes * (100 - prefs["bufferPercent"]) / 100)
@@ -122,6 +131,7 @@ def build_full_plan_context(
         ],
         "project": serialized_project,
         "project_id": project.id if project else None,
+        "projects": [p.model_dump(mode="json") for p in selected],
         "existing_tasks": [task.model_dump(mode="json") for task in (existing_tasks or [])],
         "current_plan": [
             {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate", "completed")}
@@ -146,9 +156,17 @@ class WeeklyRequest(Mutation):
     startDate: date
     consent: bool = False
     project: ProjectContext | None = None
+    projects: list[ProjectContext] = Field(default_factory=list, max_length=10)
     existingTasks: list[ExistingTask] = Field(default_factory=list, max_length=100)
     events: list[BusyEvent] = Field(default_factory=list, max_length=500)
     profileChangeProposalId: str | None = Field(default=None, min_length=1)
+    # Plan only ``project`` (or free work when it is null) inside the active weekly plan.
+    merge: bool = False
+
+
+def plan_projects(plan: dict) -> list[dict]:
+    """Projects a stored plan covers; plans saved before multi-project weeks keep one."""
+    return plan.get("projects") or ([plan["project"]] if plan.get("project") else [])
 
 
 class ConfirmPlan(Mutation):
@@ -304,19 +322,30 @@ def execution_router(store=None, llm=None):
 
         effective_goal = current_plan["goal"] if current_plan else request.goal
         effective_start_date = date.fromisoformat(current_plan["startDate"]) if current_plan else request.startDate
-        effective_project = (
-            ProjectContext.model_validate(current_plan["project"])
-            if current_plan and current_plan.get("project")
-            else (None if current_plan else request.project)
-        )
+        merge_base, held = None, []
+        if request.merge and not replan:
+            from .adaptive.local import local_now  # adaptive.local imports this module
+            merge_base = active_plan(state, local_now().date())
+        if merge_base:
+            # The week is shared: plan into it and keep other projects' tasks where they are.
+            effective_start_date = date.fromisoformat(merge_base["startDate"])
+            scope_id = request.project.id if request.project else None
+            held = [BusyEvent(date=e["start"][:10], startTime=e["start"][11:], endTime=e["end"][11:])
+                    for e in kept_entries(merge_base, scope_id)]
+        if current_plan:
+            effective_projects = [ProjectContext.model_validate(p) for p in plan_projects(current_plan)]
+        else:
+            effective_projects = request.projects or ([request.project] if request.project else [])
+        effective_project = effective_projects[0] if len(effective_projects) == 1 else None
         planning_context = build_full_plan_context(
             state=state,
             user_id=store.user_id,
             goal=effective_goal,
             start_date=effective_start_date,
             project=effective_project,
+            projects=effective_projects,
             current_plan=current_plan,
-            events=request.events,
+            events=[*request.events, *held],
             existing_tasks=request.existingTasks,
             memories=[memory.model_dump() for memory in request.memories],
         )
@@ -330,10 +359,11 @@ def execution_router(store=None, llm=None):
         if result["approval_status"] != "waiting" or not result.get("plan_draft"):
             reason = (result.get("fallback") or {}).get("reason") or "계획 초안 생성에 실패했습니다."
             raise ValueError(reason)
-        return change(
-            request.revision,
-            lambda doc: replace_plan_draft(doc, result["plan_draft"]),
-        )
+        draft = result["plan_draft"]
+        if merge_base:
+            draft = merge_into(merge_base, draft, effective_project.model_dump(mode="json") if effective_project else None,
+                               request.goal)
+        return change(request.revision, lambda doc: replace_plan_draft(doc, draft))
 
     @router.post("/plan/confirm")
     def confirm_plan(request: ConfirmPlan):
@@ -373,6 +403,10 @@ def execution_router(store=None, llm=None):
             if task is None:
                 raise ValueError("작업을 찾을 수 없습니다.")
             task["completed"] = request.completed
+            # A waiting draft keeps this entry; confirming it must not undo the check.
+            for entry in (state.get("planDraft") or {}).get("entries", []):
+                if entry["id"] == request.taskId:
+                    entry["completed"] = request.completed
         return change(request.revision, update)
 
     @router.post("/records")

@@ -207,4 +207,30 @@ class SchedulerTests(unittest.TestCase):
         self.assertLessEqual(sum(e['minutes'] for e in entries if e['kind']=='task'),51)
         self.assertTrue(all(a['end']<=b['start'] for a,b in zip(entries,entries[1:])))
 
+    def test_splits_tasks_instead_of_leaving_free_time(self):
+        # Mon/Tue 19~21: 240 free minutes, 20% buffer -> 192 plannable minutes.
+        slots=[Slot(day=d,hour=h) for d in (0,1) for h in (19,20)]
+        windows=availability_windows(date(2030,1,7),slots,[],now=datetime(2030,1,1))
+        tasks=[{'title':f'작업{i}','minutes':30,'doneWhen':'완료','dueDate':None} for i in range(6)]
+        entries,pending=schedule(tasks,windows,20,max_piece=30)
+        placed=[e for e in entries if e['kind']=='task']
+        self.assertEqual(pending,[])
+        self.assertEqual(sum(e['minutes'] for e in placed),180)
+        self.assertTrue(all(e['minutes']<=30 and e['minutes']>=10 for e in placed))
+        self.assertTrue(all(a['end']<=b['start'] for a,b in zip(entries,entries[1:])))
+        # A long task is split by the focus block rather than failing the plan.
+        entries,pending=schedule([{'title':'긴 작업','minutes':90,'doneWhen':'완료','dueDate':None}],windows,20,max_piece=30)
+        self.assertEqual([e['title'] for e in entries if e['kind']=='task'],['긴 작업 (1/3)','긴 작업 (2/3)','긴 작업 (3/3)'])
+        self.assertEqual(pending,[])
+
+    def test_a_task_that_cannot_finish_before_its_deadline_stays_whole(self):
+        windows=availability_windows(date(2030,1,7),[Slot(day=0,hour=19),Slot(day=1,hour=19)],[],now=datetime(2030,1,1))
+        report={'title':'보고서','minutes':80,'doneWhen':'제출','dueDate':'2030-01-07'}
+        memo={'title':'메모','minutes':40,'doneWhen':'정리','dueDate':None}
+        entries,pending=schedule([report,memo],windows,0)
+        self.assertEqual([(p['title'],p['minutes']) for p in pending],[('보고서',80)])
+        self.assertIn('마감일', pending[0]['reason'])
+        # The rolled-back deadline task leaves Monday free for the next task.
+        self.assertEqual([(e['title'],e['start']) for e in entries if e['kind']=='task'],[('메모','2030-01-07T19:00')])
+
 if __name__=='__main__':unittest.main()

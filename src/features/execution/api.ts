@@ -1,4 +1,4 @@
-import type { CalendarEvent, ExecutionPlan, ExecutionState, Memory, Project } from '../../shared/types'
+import type { CalendarEvent, ExecutionPlan, ExecutionState, Memory, Milestone, Project } from '../../shared/types'
 
 type ReplanInput = {
   goal: string
@@ -49,7 +49,21 @@ export async function approveProposalAndReplan(
 export function projectContext(project: Project | undefined) {
   if (!project) return null
   const { id, title, goal, startDate, dueDate } = project
-  return { id, title, goal, startDate, dueDate }
+  // The server requires a goal; a project saved without one is described by its title.
+  return { id, title, goal: goal.trim() || title, startDate, dueDate }
+}
+
+/** Project ids a plan covers; plans saved before multi-project weeks have one. */
+export function planProjectIds(plan: ExecutionPlan | null | undefined): string[] {
+  if (!plan) return []
+  if (plan.projects?.length) return plan.projects.map(p => p.id)
+  return plan.projectId ? [plan.projectId] : []
+}
+
+export function existingTasksFor(milestones: Milestone[], projectIds: string[]) {
+  return milestones.filter(m => projectIds.includes(m.projectId)).map(
+    ({ title, startDate, dueDate, estimatedHours, status, projectId }) => ({ title, startDate, dueDate, estimatedHours, status, projectId }),
+  )
 }
 
 export function planCalendarEvents(plan: ExecutionPlan | null, projects: Project[]): CalendarEvent[] {
@@ -57,7 +71,7 @@ export function planCalendarEvents(plan: ExecutionPlan | null, projects: Project
   return plan.entries.filter(e => e.kind === 'task').map(e => ({
     id: `execution:${plan.id}:${e.id}`, title: `${e.completed ? '✓ ' : ''}${e.title}`,
     date: e.start.slice(0, 10), startTime: e.start.slice(11, 16), endTime: e.end.slice(11, 16),
-    projectId: projects.some(p => p.id === plan.projectId) ? plan.projectId ?? undefined : undefined,
+    projectId: projects.find(p => p.id === (e.projectId ?? plan.projectId))?.id,
     isFixed: false,
   }))
 }
