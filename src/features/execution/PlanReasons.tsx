@@ -3,6 +3,7 @@ import { answerLabels } from './profileLabels'
 
 const sourceLabels: Record<PlanReason['source'], string> = {
   declared: '설문 답변', learned: '실행 기록으로 학습', default: '아직 모르는 값의 시작값', profile: '확정한 프로필', memory: '저장한 기억',
+  project: '이 프로젝트 설정',
 }
 
 export function PlanReasons({ reasons, open }: { reasons: PlanReason[]; open: boolean }) {

@@ -23,6 +23,7 @@ from ..planner import ProjectContext
 from .context import to_execution_context
 from .full_plan_generator import LLMFullPlanGenerator
 from ..planning_context import MemoryInput, get_planning_context
+from ..project_profile import current_project_profile_id
 from .graph import build_adaptive_planner_graph
 from .llm_generator import LLMRecoveryGenerator
 from .local import (
@@ -115,6 +116,9 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
         if needs_current_profile and state["plan"]["profileId"] != state["profile"]["id"]:
             # Recovering with a newer profile's values would mix two profiles in one plan.
             raise ValueError("계획을 만든 뒤 실행 프로필이 바뀌었습니다. 새 프로필로 주간 계획을 다시 생성해 주세요.")
+        plan_project_id = state["plan"].get("projectId")
+        if needs_current_profile and state["plan"].get("projectProfileId") != current_project_profile_id(state, plan_project_id):
+            raise ValueError("계획을 만든 뒤 이 프로젝트 설정이 바뀌었습니다. 새 설정으로 주간 계획을 다시 생성해 주세요.")
         return state
 
     def graph_input(

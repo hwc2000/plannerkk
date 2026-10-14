@@ -1,9 +1,10 @@
 """Per-user plan policy and the reasons shown with each plan.
 
 Every value comes from the user's own confirmed profile (declared answers,
-planning preferences and approved learned patterns), so the same code serves
-any number of users.  Reasons are built from the values the code applied, not
-from LLM text, so a reason never claims something the plan did not do.
+planning preferences and approved learned patterns) with the project's own
+settings on top, so the same code serves any number of users and projects.
+Reasons are built from the values the code applied, not from LLM text, so a
+reason never claims something the plan did not do.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ PERIODS = {"morning": (5, 12), "afternoon": (12, 18), "evening": (18, 24)}
 MIN_HINT_PIECE = 10  # a day's leftover shorter than this is not worth a task
 PERIOD_LABELS = {"morning": "오전", "afternoon": "오후", "evening": "저녁"}
 
-Source = Literal["declared", "learned", "default", "profile", "memory"]
+Source = Literal["declared", "learned", "default", "profile", "memory", "project"]
 Placement = Literal["preferred", "mixed", "unavailable"]
 Window = tuple[datetime, datetime]
 
@@ -105,9 +106,43 @@ def _survey_preferences(facts: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
 
 
-def _task_length(facts, prefs, survey, patterns) -> dict[str, Any]:
+# Same wording as the survey options (src/features/execution/profileLabels.ts).
+RECOVERY_LABELS = {"replan": "시간을 다시 배치", "reduce": "할 일을 줄임", "continue": "밀린 일을 건너뛰고 계속",
+                   "abandon": "그날 계획을 포기", "unknown": "잘 모르겠어요"}
+
+
+def _value_text(field: str, value: Any) -> str:
+    if field == "bufferPercent":
+        return f"{value}%"
+    if field == "recoveryPreference":
+        return RECOVERY_LABELS.get(value, str(value))
+    return f"{value}분"
+
+
+def _project_reason(key: str, applied: str, field: str, override: Mapping[str, Any], label: str,
+                    patterns: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """A value this project overrides: set by the user for it, or learned from its records."""
+    if override["source"] == "learned":
+        pattern = next((p for p in patterns if p.get("approvedProposalId") == override.get("proposalId")), None)
+        change = ((pattern or {}).get("proposedChanges") or {}).get(field) or {}
+        if change:
+            count = len(pattern.get("evidenceRecordIds") or [])
+            because = (f"이 프로젝트의 실행 기록 {count}건을 근거로 승인한 변경"
+                       f"({_value_text(field, change.get('from'))} → {_value_text(field, change.get('to'))})을 따랐습니다.")
+        else:
+            # e.g. a starter shortened along with an approved focus-block change
+            because = f"이 프로젝트에서 승인한 변경에 맞춰 {label}을 조정했습니다."
+        return _reason(key, applied, because, "learned", ["learnedPatterns"])
+    base = override.get("baseValue")
+    note = f" 기본 프로필 값은 {_value_text(field, base)}입니다." if base is not None else ""
+    return _reason(key, applied, f"이 프로젝트에서 {label}을 따로 정했습니다.{note}", "project", [field])
+
+
+def _task_length(facts, prefs, survey, patterns, overrides) -> dict[str, Any]:
     block = prefs["blockMinutes"]
     applied = f"작업은 한 번에 {block}분 이하로 나눴습니다."
+    if "blockMinutes" in overrides:
+        return _project_reason("taskLength", applied, "blockMinutes", overrides["blockMinutes"], "집중 구간", patterns)
     for pattern in patterns:
         change = (pattern.get("proposedChanges") or {}).get("blockMinutes") or {}
         if change.get("to") == block:
@@ -218,16 +253,32 @@ def personalization_reasons(
 ) -> list[dict[str, Any]]:
     """Explain each profile value the plan applied. Free-text survey notes never appear here."""
     facts, prefs = user_profile["declaredFacts"], user_profile["planningPreferences"]
+    patterns = user_profile.get("learnedPatterns") or []
+    overrides = user_profile.get("projectOverrides") or {}
     survey = _survey_preferences(facts)
-    reasons = [_task_length(facts, prefs, survey, user_profile.get("learnedPatterns") or [])]
+
+    def project_or(key, applied, field, label, fallback):
+        if field in overrides:
+            return _project_reason(key, applied, field, overrides[field], label, patterns)
+        return fallback()
+
+    reasons = [_task_length(facts, prefs, survey, patterns, overrides)]
     if starter_used and prefs.get("starterMinutes"):
-        reasons.append(_starter(facts, prefs, survey))
+        reasons.append(project_or("starter", f"매일 첫 작업 앞에 {prefs['starterMinutes']}분짜리 시작 행동을 두었습니다.",
+                                  "starterMinutes", "시작 행동 시간", lambda: _starter(facts, prefs, survey)))
     if prefs.get("dailyPlannedMinutes"):
-        reasons.append(_daily_cap(facts, prefs, survey))
-    reasons.append(_buffer(facts, prefs, survey))
+        reasons.append(project_or("dailyCap", f"하루에 최대 {prefs['dailyPlannedMinutes']}분만 계획했습니다.",
+                                  "dailyPlannedMinutes", "하루 계획량", lambda: _daily_cap(facts, prefs, survey)))
+    reasons.append(project_or("buffer", f"선택한 가용 시간의 {prefs['bufferPercent']}% 이상을 여유분으로 비워 두었습니다.",
+                              "bufferPercent", "여유분", lambda: _buffer(facts, prefs, survey)))
     if placement is not None:
         reasons.append(_period(facts["energy"], placement))
-    reasons += [r for r in (_schedule_style(facts, prefs, survey), _recovery(prefs)) if r]
+    style = _schedule_style(facts, prefs, survey)
+    recovery = _recovery(prefs)
+    if recovery and "recoveryPreference" in overrides:
+        recovery = _project_reason("recovery", recovery["applied"], "recoveryPreference",
+                                   overrides["recoveryPreference"], "복구 방식", patterns)
+    reasons += [r for r in (style, recovery) if r]
     if memory_count:
         reasons.append(_reason("memories", f"저장한 기억 {memory_count}개를 계획 생성에 참고 자료로 넘겼습니다.",
                                "사용자가 저장을 승인한 기억만 사용합니다.", "memory", ["memories"]))

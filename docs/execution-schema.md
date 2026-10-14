@@ -13,6 +13,9 @@ type ExecutionRecord = {
   planId: string
   taskId: string
   profileId: string
+  profileVersion?: number | null
+  projectId?: string | null
+  projectProfileId?: string | null
   taskTitle: string
 
   plannedMinutes: number
@@ -46,6 +49,9 @@ type ReasonCode =
 | `planId` | 연결된 계획 ID |
 | `taskId` | 연결된 작업 ID |
 | `profileId` | 계획 생성에 사용한 프로필 ID |
+| `profileVersion` | 계획 생성에 사용한 프로필 버전. 계획에서 복사. 이 필드 추가 전 기록·버전 없는 계획은 없거나 null |
+| `projectId` | 계획의 프로젝트 ID. 계획에서 복사. 프로젝트 없는 계획·추가 전 기록은 없거나 null |
+| `projectProfileId` | 계획이 쓴 프로젝트 설정 버전. 계획에서 복사. 프로젝트 설정이 없었으면 null |
 | `taskTitle` | 기록 시점의 작업 이름 |
 | `plannedMinutes` | 기록 시점의 예정 시간 |
 | `actualMinutes` | 실제 시간. 정수 0~1440 또는 null |
@@ -78,6 +84,8 @@ C의 복구 결정은 `shrink`, `reschedule`, `keep_current_plan`, `plan_replace
 type ProfileUpdateProposal = {
   id: string
   profileId: string
+  projectId?: string | null
+  projectProfileId?: string | null
 
   proposedChanges: {
     blockMinutes: {
@@ -94,6 +102,7 @@ type ProfileUpdateProposal = {
   createdAt: string
   decidedAt: string | null
   appliedProfileId?: string
+  appliedProjectProfileId?: string
 }
 ```
 
@@ -101,6 +110,8 @@ type ProfileUpdateProposal = {
 |---|---|
 | `id` | 변경 후보 ID |
 | `profileId` | 제안 대상 프로필 ID |
+| `projectId` | 이 프로젝트의 기록에서 나온 변경이면 그 프로젝트. null이면 사용자 프로필 변경 |
+| `projectProfileId` | 제안 당시 그 프로젝트 설정 버전. 설정이 없었으면 null |
 | `proposedChanges` | 변경 전후 값. 현재 planningPreferences.blockMinutes만 지원 |
 | `reason` | 변경 제안 이유 |
 | `evidenceRecordIds` | 근거 실행 기록 ID 목록 |
@@ -108,7 +119,8 @@ type ProfileUpdateProposal = {
 | `status` | 승인 대기 / 승인 / 거절 |
 | `createdAt` | 후보 생성 시각 |
 | `decidedAt` | 승인·거절 시각. 대기 중이면 null |
-| `appliedProfileId` | 승인 후 적용된 프로필 ID. 승인 시에만 생성 |
+| `appliedProfileId` | 승인 후 적용된 프로필 ID. 승인 시에만 생성. 프로젝트 변경이면 바뀌지 않은 사용자 프로필 ID |
+| `appliedProjectProfileId` | 프로젝트 변경 승인으로 생긴 프로젝트 설정 버전 |
 
 후보 생성만으로 프로필을 변경하지 않습니다. 사용자 승인 후 A의
 apply_profile_proposal을 호출하여 프로필 version 증가, learnedPatterns와

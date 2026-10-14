@@ -1,4 +1,4 @@
-import type { CalendarEvent, ExecutionPlan, ExecutionState, Memory, Project } from '../../shared/types'
+import type { CalendarEvent, ExecutionPlan, ExecutionState, Memory, ProfileUpdateProposal, Project } from '../../shared/types'
 
 type ReplanInput = {
   goal: string
@@ -28,17 +28,31 @@ export async function adaptiveApi(path: string, body: unknown): Promise<Executio
   return requestState(`/api/adaptive${path}`, body)
 }
 
+/** A user-profile change replans the current plan; a project's change only replans that project's plan. */
+export function replansCurrentPlan(state: ExecutionState, proposal: ProfileUpdateProposal | undefined): boolean {
+  if (!state.plan) return false
+  return !proposal?.projectId || proposal.projectId === state.plan.projectId
+}
+
+/** The plan was made with settings that have since changed: the user profile or this project's own settings. */
+export function planIsStale(state: ExecutionState, plan: ExecutionPlan): boolean {
+  if (state.profile?.id !== plan.profileId) return true
+  const current = plan.projectId ? state.projectProfiles?.[plan.projectId]?.id ?? null : null
+  return (plan.projectProfileId ?? null) !== current
+}
+
 export async function approveProposalAndReplan(
   state: ExecutionState,
   proposalId: string,
   input: ReplanInput,
 ): Promise<ExecutionState> {
-  if (state.plan && !input.consent) throw new Error('재계획을 위한 LLM 전송에 동의해 주세요.')
   const proposal = state.profileUpdateProposals?.find(item => item.id === proposalId)
+  const replan = replansCurrentPlan(state, proposal)
+  if (replan && !input.consent) throw new Error('재계획을 위한 LLM 전송에 동의해 주세요.')
   const approved = proposal?.status === 'approved'
     ? state
     : await executionApi(`/proposals/${proposalId}/approve`, { revision: state.revision })
-  if (!state.plan) return approved
+  if (!replan) return approved
   return executionApi('/plan', {
     revision: approved.revision,
     ...input,

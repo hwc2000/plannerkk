@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .execution_learning import REASON_CODES, propose_update
 from .execution_store import ConflictError
+from .project_profile import apply_project_proposal
 from .user_profile import apply_profile_proposal
 
 
@@ -89,8 +90,15 @@ class ExecutionService:
                 profile = state['profile']
                 if not profile or profile['id'] != proposal['profileId'] or state['profileDraft']:
                     raise ConflictError('프로필이 변경되었거나 수정 중입니다. 후보를 거절하고 새 기록을 모아 주세요.')
-                resolve_plan_draft(state, 'keep_current_plan')
-                apply_profile_proposal(state, proposal_id, expected_version=profile['version'])
+                # A project change only touches that project: other projects' drafts stay valid.
+                project_id = proposal.get('projectId')
+                draft = state.get('planDraft')
+                if project_id is None or (draft and draft.get('projectId') == project_id):
+                    resolve_plan_draft(state, 'keep_current_plan')
+                if project_id is None:
+                    apply_profile_proposal(state, proposal_id, expected_version=profile['version'])
+                else:
+                    apply_project_proposal(state, proposal_id, user_id=self.store.user_id)
                 return
             proposal['status'] = 'approved' if decision == 'approve' else 'rejected'
             proposal['decidedAt'] = datetime.now(timezone.utc).isoformat()
@@ -121,13 +129,51 @@ def save_execution_record(state, payload, *, allow_follow_up=False):
         pending.update(request.model_dump(exclude={'recoveryAction'}))
         record = pending
     else:
-        record = request.model_dump()
-        record.update(id=str(uuid4()), profileId=plan['profileId'], taskTitle=task['title'],
-                      plannedMinutes=task['minutes'], createdAt=datetime.now(timezone.utc).isoformat())
+        record = _new_record(plan, task, request)
         state['executionRecords'].append(record)
     task['completed'] = request.result == 'completed'
-    propose_update(state)
+    propose_update(state, record.get('projectId'))
     return record['id']
+
+
+def _new_record(plan, task, request):
+    # The plan's project and settings versions travel with the record, so
+    # learning can group records by project after the plan itself is replaced.
+    record = request.model_dump()
+    record.update(id=str(uuid4()), profileId=plan['profileId'], profileVersion=plan.get('profileVersion'),
+                  projectId=plan.get('projectId'), projectProfileId=plan.get('projectProfileId'),
+                  taskTitle=task['title'], plannedMinutes=task['minutes'],
+                  createdAt=datetime.now(timezone.utc).isoformat())
+    return record
+
+
+def set_task_completion(state, plan_id, task_id, completed):
+    """Checking a task off stores a completion record, so completions count in learning.
+
+    Unchecking undoes it: the task's latest record, when it is a completion, is
+    removed. Older failure records of the task are kept.
+    """
+    plan = state['plan']
+    if not plan or plan['id'] != plan_id:
+        raise ValueError('계획이 변경되었습니다. 다시 불러와 주세요.')
+    task = next((e for e in plan['entries'] if e['id'] == task_id and e['kind'] == 'task'), None)
+    if task is None:
+        raise ValueError('작업을 찾을 수 없습니다.')
+    if bool(task.get('completed')) == completed:
+        return
+    if completed:
+        request = ExecutionRecordInput(planId=plan_id, taskId=task_id, result='completed')
+        state['executionRecords'].append(_new_record(plan, task, request))
+        task['completed'] = True
+        propose_update(state, plan.get('projectId'))
+        return
+    matches = [r for r in state['executionRecords'] if r['planId'] == plan_id and r['taskId'] == task_id]
+    if matches and matches[-1]['result'] == 'completed':
+        last = matches[-1]
+        if any(last['id'] in p['evidenceRecordIds'] for p in state['profileUpdateProposals']):
+            raise ConflictError('변경 후보의 근거로 사용된 기록은 되돌릴 수 없습니다.')
+        state['executionRecords'].remove(last)
+    task['completed'] = False
 
 
 def set_recovery_action(state, record_id, action):

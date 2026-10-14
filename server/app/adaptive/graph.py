@@ -7,7 +7,8 @@ its output is validated before anyone can approve it.
 
 Connected today:
 - new_plan / replan: full-plan generator creates a reviewable plan_draft
-  (generate → validate → bounded retry)
+  (generate → validate → bounded retry).  A change learned in one project
+  (profile_change_context.scope = "project") replans that project's plan only.
 - recovery / shrink: LLM splits the task, code places the pieces in free time
   (generate → validate → bounded retry)
 - recovery / reschedule: code moves the remaining work into free time; when it
@@ -153,6 +154,16 @@ def _input_errors(state: PlannerState) -> tuple[list[str], list[str]]:
     for field in required:
         if state.get(field) is None:
             missing_fields.append(field)
+    change = state.get("profile_change_context")
+    if (
+        request == "replan"
+        and isinstance(change, Mapping)
+        and not any(f.startswith("profile_change_context") for f in missing_fields + invalid_fields)
+        and change.get("scope") == "project"
+        and change.get("project_id") != state.get("project_id")
+    ):
+        # A change learned in one project replans that project's plan only.
+        invalid_fields.append("profile_change_context.project_id")
     return missing_fields, invalid_fields
 
 

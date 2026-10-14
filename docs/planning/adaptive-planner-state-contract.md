@@ -112,7 +112,15 @@ ProfileUpdateProposal (camelCase, B 소유)
         evidence_record_ids
         source_profile_id
         applied_profile_id
+        scope                       # user | project
+        project_id                  # scope = project일 때 그 프로젝트
+        source_project_profile_id   # 바뀌기 전 프로젝트 설정 버전 (없었으면 null)
+        applied_project_profile_id  # 승인으로 생긴 프로젝트 설정 버전
 ```
+
+`scope = project`는 한 프로젝트의 실행 기록에서 배워 그 프로젝트에만 적용한 변경이다.
+이때 사용자 프로필은 그대로라 `source_profile_id == applied_profile_id`이고, 대신 프로젝트 설정
+버전이 바뀐다(`source_project_profile_id != applied_project_profile_id`).
 
 외부 제안 객체를 `PlannerState`에 그대로 넣지 않는다. 현재 로컬 변환기는
 `adaptive/local.py::profile_change_context_from_proposal`이고, 공용 검증 경계는
@@ -161,6 +169,22 @@ full-plan generator에 전달하고, 결과를 `plan_draft`로 반환한다. 저
 검토하며, 확정 전에는 기존 계획이 유지된다. 완료된 작업은 재계획 초안에도 그대로
 보존하고 그 시간은 새 작업 배치에서 제외한다.
 
+### 프로젝트 변경의 라우팅
+
+| 승인한 변경 | 재계획 대상 | 다른 프로젝트 |
+|---|---|---|
+| `scope = user` (프로젝트 없는 기록에서 배움) | 지금 확정 계획 | 다음 계획부터 반영 |
+| `scope = project`, 지금 계획이 같은 프로젝트 | 지금 확정 계획 | 영향 없음. 계획·초안·복구 그대로 유효 |
+| `scope = project`, 지금 계획이 다른 프로젝트 | 재계획 안 함 (400) | 그 프로젝트의 다음 계획부터 반영 |
+
+같은 판단을 세 곳에서 한다: 화면(`replansCurrentPlan`), API(`/plan`의 재계획 검사),
+그래프(`_input_errors`: `profile_change_context.project_id`가 `project_id`와 다르면
+`invalid_fields`로 입력 요청). 그래프는 생성기를 부르기 전에 멈춘다.
+
+계획은 만들 때 쓴 프로젝트 설정 버전(`projectProfileId`)을 갖는다. 프로필 또는 그 프로젝트
+설정이 바뀌면 그 계획은 복구(`/api/adaptive/check-in`)와 초안 확정(`/plan/confirm`)이 막히고
+재계획으로만 갱신한다. 다른 프로젝트 설정이 바뀌는 것은 영향이 없다.
+
 `profileId`는 사용자 ID가 아니라 계획 생성에 사용한 프로필 **버전 ID**다.
 `user_id`는 소유자, `project_id`는 업무 범위다. 현재 로컬 저장소는 아직 단일 사용자
 구조이며 다중 사용자 격리나 인증을 구현한 것으로 해석하지 않는다.
@@ -168,7 +192,7 @@ full-plan generator에 전달하고, 결과를 `plan_draft`로 반환한다. 저
 ## 사용자별 개인화와 근거
 
 계획은 사용자 본인의 확정 프로필(설문 답변 `declaredFacts`, `planningPreferences`,
-승인된 `learnedPatterns`)로만 정한다. 특정 사용자 예시를 코드에 넣지 않으므로
+승인된 `learnedPatterns`)과 그 위에 덧씌운 프로젝트 설정으로만 정한다. 특정 사용자 예시를 코드에 넣지 않으므로
 사용자가 몇 명이든 같은 규칙이 각자의 값으로 적용된다. 규칙은
 `server/app/adaptive/personalization.py`에 있고, LLM은 작업 내용만 만든다.
 
@@ -191,7 +215,9 @@ full-plan generator에 전달하고, 결과를 `plan_draft`로 반환한다. 저
 
 `source`는 출처다. `declared`(설문 답으로 정해진 값), `default`(모른다고 답해 쓰는 시작값),
 `learned`(실행 기록으로 승인한 변경), `profile`(설문 규칙과 다른 값을 사용자가 확정함),
-`memory`(승인된 기억을 참고 자료로 전달함).
+`memory`(승인된 기억을 참고 자료로 전달함), `project`(이 프로젝트에서 따로 정한 값).
+프로젝트 실행 기록으로 배운 값은 `learned`이고 근거 문장이 "이 프로젝트의 실행 기록 N건"으로 시작한다.
+프로젝트 값의 근거에는 기본 프로필 값을 함께 적는다.
 
 전체 계획 생성도 검증에 실패하면 오류를 LLM에 데이터(`previousErrors`)로 넘겨
 `max_retries`(기본 2)번까지 다시 만들고, 그래도 실패하면 기존 계획을 유지한다.
