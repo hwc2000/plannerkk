@@ -83,6 +83,7 @@ def _context(state: PlannerState) -> dict[str, Any]:
             "remainingMinutes": check_in.get("remaining_minutes"),
             "reasonCode": check_in.get("reason_code"),
             "note": check_in.get("note", ""),
+            "difficulty": check_in.get("difficulty"),
         } if check_in else None,
         "scheduleStyle": state["execution_context"]["schedule_style"],
         "minTaskMinutes": state["min_task_minutes"],

@@ -48,6 +48,15 @@ def plan_policy(user_profile: Mapping[str, Any]) -> PlanPolicy:
     )
 
 
+def block_is_start_value(user_profile: Mapping[str, Any]) -> bool:
+    """True while the focus block is only the start value: the user did not know it and nothing set it since."""
+    if user_profile["declaredFacts"].get("focusMinutes") is not None:
+        return False
+    if "blockMinutes" in (user_profile.get("projectOverrides") or {}):
+        return False
+    return not any("blockMinutes" in (p.get("proposedChanges") or {}) for p in user_profile.get("learnedPatterns") or [])
+
+
 def day_task_minutes(policy: PlanPolicy) -> list[int]:
     """One day's task lengths that fill the daily cap, e.g. [50, 40] for 90 minutes with 50-minute blocks.
 

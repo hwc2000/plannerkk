@@ -69,7 +69,8 @@ def validate_insights(data):
     return data
 
 # Start value when the user does not know their focus time yet (a default, shown as such).
-UNKNOWN_FOCUS_START = 15
+# Plans tell the AI it is only a starting value, so it sizes each task's workload to fit.
+UNKNOWN_FOCUS_START = 60
 
 
 def generate_profile(raw):

@@ -16,7 +16,8 @@ from ..execution_llm import ExecutionLLM, LLMUnavailableError
 from ..execution_profile import object_schema
 from ..execution_scheduler import TASK_SCHEMA, validate_tasks
 from .personalization import (
-    day_task_minutes, personalization_reasons, place_tasks, plan_policy, project_task_length_reasons,
+    block_is_start_value, day_task_minutes, personalization_reasons, place_tasks, plan_policy,
+    project_task_length_reasons,
 )
 from .ports import GenerationUnavailableError, PlanValidationError
 from .state import PlannerState
@@ -112,13 +113,15 @@ class LLMFullPlanGenerator:
             "planningContext": context.get("source_planning_context"),
             "scheduleStyle": context["schedule_style"],
             "maxBlockMinutes": context["max_block_minutes"],
+            "blockIsStartValue": block_is_start_value(planning["userProfile"]),
             "budgetMinutes": context["budget_minutes"],
             "startDate": context["start_date"],
             "endDate": context["end_date"],
             "availableWindows": context["available_windows"],
             "project": context.get("project"),
-            "projects": [{**p, "maxBlockMinutes": caps[p["id"]]} if p["id"] in caps else p
-                         for p in context.get("projects", [])],
+            "projects": [{**p, "maxBlockMinutes": caps[p["id"]],
+                          "blockIsStartValue": block_is_start_value(settings[p["id"]]["user_profile"])}
+                         if p["id"] in caps else p for p in context.get("projects", [])],
             "existingTasks": context.get("existing_tasks", []),
             "currentPlan": context.get("current_plan"),
             "completedTasks": context.get("completed_tasks", []),
@@ -138,6 +141,9 @@ class LLMFullPlanGenerator:
             "배치되지 않으므로, 의존 관계를 지키면서 dueDate가 이른 작업을 앞에 둔다. "
             "기존 할 일과 중복하지 말고, 목표 전체가 불가능하면 이번 주 진척에 집중한다. "
             "minutes는 1~maxBlockMinutes의 정수이며 총합은 budgetMinutes 이하로 한다. 긴 작업은 여러 구간으로 분할한다. "
+            "blockIsStartValue가 true이면 사용자가 아직 자기 집중 시간을 모르고 maxBlockMinutes는 시작값일 뿐이다. "
+            "그때는 상한을 채우려 하지 말고, 작업마다 그 시간 안에 무리 없이 끝낼 수 있는 분량을 판단해 minutes와 doneWhen을 정하며 "
+            "무거운 일은 더 짧은 작업 여러 개로 나눈다. "
             "existingTasks의 estimatedHours처럼 maxBlockMinutes보다 긴 일은 maxBlockMinutes 이하 작업 여러 개로 나눈다. "
             "작업은 순서대로 하루씩 채워지므로 dailyCapMinutes가 있으면 하루 작업 합계가 그 이하가 되도록 "
             "하루치 작업 길이를 dayTaskMinutes처럼 구성해 하루 단위로 이어서 낸다(마지막 날은 덜 채워도 된다). "

@@ -36,13 +36,11 @@ def execution_context_from_profile(profile: Mapping[str, Any] | None, _records: 
     if not profile:
         return {}
     prefs = profile["planningPreferences"]
-    # blockMinutes falls back to a default when the user answered "모름";
-    # only use it when the user actually gave a focus time.
-    known_focus = (profile.get("declaredFacts", profile.get("facts", {})).get("focusMinutes") is not None
-                   or "blockMinutes" in (profile.get("projectOverrides") or {}))
+    # When the user did not know their focus time, blockMinutes is the start value
+    # (shown as a default in plan reasons); recovery uses it rather than stopping to ask.
     return {
         "schedule_style": prefs.get("scheduleStyle"),
-        "focus_minutes": prefs["blockMinutes"] if (known_focus or profile.get("learnedPatterns")) else None,
+        "focus_minutes": prefs["blockMinutes"],
         "break_minutes": prefs.get("breakMinutes"),
         "recovery_preference": prefs.get("recoveryPreference"),
     }
