@@ -472,8 +472,14 @@ B의 서비스/엔드포인트 자체는 PR #8 병합 시 위 한 경계로 연�
 
 기본 로컬 사용자는 기존 execution_state(id=1, document)를 유지한다.
 다른 사용자 저장소는 ExecutionStore(path, user_id='...')로 만들고 user_execution_state에 분리 저장한다.
-HTTP 서버는 여전히 로컬 단일 사용자용이다. userId를 외부 요청에서 받지 않는다.
-다중 사용자 서비스 배포 시 인증된 사용자로 저장소를 주입하고 프로젝트/기억 소유권을 검증해야 한다.
+모든 API는 요청마다 `server/app/auth.py`의 `current_user(request)`로 사용자를 정하고, 그 사용자의 저장소만 쓴다
+(`UserStores.bind` 앱 의존성 → `CurrentUserStore`). 사용자를 모르면 저장소를 열지 않는다(fail closed).
+userId를 요청 본문에서 받지 않는다.
+
+**로그인 담당이 바꿀 곳은 `current_user` 본문 하나다.** 지금은 항상 `"local"`을 돌려준다. 세션 쿠키를 읽어 사용자 id를
+돌려주고, 없으면 401을 내게 바꾸면 모든 API가 사용자별로 나뉜다. 테스트에서는
+`app.dependency_overrides[current_user]`로 다른 사용자를 흉내 낸다(`server/tests/test_user_isolation.py`).
+브라우저에 있는 프로젝트·일정·기억은 아직 사용자별로 나뉘지 않는다(저장 키에 사용자 id를 붙이거나 서버로 옮겨야 함).
 
 기존 프로필은 읽기 시 호환 보완, 다음 쓰기 시 저장한다. 기존 ID/승인 상태/계획을 유지한다.
 기존 facts는 원본 설문이라고 꾸미지 않고 legacy_snapshot으로만 기록한다.

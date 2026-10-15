@@ -4,13 +4,14 @@ import secrets
 from pathlib import Path
 from typing import Protocol
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from .adaptive.api import adaptive_router
 from .execution_api import execution_router
+from .auth import CurrentUserStore, UserStores
 from .execution_store import ConflictError, ExecutionStore
 from .profile_chat import profile_chat_router
 from .planner_chat import planner_chat_router
@@ -31,8 +32,10 @@ class PlanGenerator(Protocol):
 
 
 def create_app(generator: PlanGenerator | None = None, execution_store=None, execution_llm=None) -> FastAPI:
-    app = FastAPI(title="PlannerKK API")
-    store = execution_store or ExecutionStore()
+    stores = UserStores(execution_store or ExecutionStore())
+    # Every request first resolves who is calling; each API then sees only that user's store.
+    app = FastAPI(title="PlannerKK API", dependencies=[Depends(stores.bind)])
+    store = CurrentUserStore()
     app.include_router(execution_router(store, execution_llm))
     app.include_router(profile_chat_router(store, execution_llm or ExecutionLLM()))
     app.include_router(adaptive_router(store, execution_llm))
