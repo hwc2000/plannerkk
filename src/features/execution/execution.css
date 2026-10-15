@@ -43,3 +43,10 @@
 .planner-chat .execution-workspace input[type=checkbox], .planner-chat input[type=checkbox] { accent-color: var(--thread-color); }
 .planner-action { border-color: var(--thread-color) !important; background: color-mix(in srgb, var(--thread-color) 7%, white) !important; }
 @media (max-width: 760px) { .planner-workspace { grid-template-columns: 1fr; } .planner-threads { position: static; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); overflow-x: auto; } .planner-threads-head { grid-column: 1 / -1; } }
+/* Hours the fixed schedule takes: never planned in, so shown as taken rather than as a choice. */
+.availability-cell.fixed { cursor: default; height: 30px; border-radius: 4px; border: 1px solid #e1e7df; background: repeating-linear-gradient(135deg, #e4e6e0 0 4px, #f3f4f0 4px 8px); }
+.availability-cell.partly-fixed span, .availability-cell.partly-fixed input:checked+span { background-image: repeating-linear-gradient(135deg, transparent 0 4px, rgba(255,255,255,.35) 4px 8px); }
+.availability-cell.partly-fixed span { background-image: repeating-linear-gradient(135deg, transparent 0 4px, rgba(0,0,0,.07) 4px 8px); }
+.fixed-list { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
+.fixed-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: white; font-size: 13px; }
+.planner-skill { display: block; margin-top: 6px; font-size: 11px; opacity: .65; }

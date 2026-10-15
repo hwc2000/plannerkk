@@ -26,9 +26,14 @@ QUESTIONS = [
 ]
 DEFAULTS = {"roles": ["other"], "regularity": "unknown", "barriers": ["unknown"], "focusMinutes": None,
             "dailyMinutes": None, "energy": "unknown", "recovery": "unknown", "scheduleStyle": "unknown", "constraints": "", "context": ""}
-# Daily availability is chosen after profile confirmation, never in onboarding.
-QUESTIONS = [q for q in QUESTIONS if q[0] != "dailyMinutes"]
-DEFAULTS.pop("dailyMinutes")
+# Answers onboarding no longer asks; the profile schema keeps them with these values.
+# Daily and weekly time are chosen after profile confirmation, the fixed schedule has its
+# own editor that placement reads, and the time of day the user focuses best is learned
+# from execution records (focus-time-v1), not guessed by the user up front.
+NOT_ASKED = {"dailyMinutes": None, "energy": "unknown", "constraints": ""}
+QUESTIONS = [q for q in QUESTIONS if q[0] not in NOT_ASKED]
+for _field in NOT_ASKED:
+    DEFAULTS.pop(_field)
 # Each field has its own typed value; invalid enum strings cannot be emitted.
 ANSWER_SCHEMAS = {
     **{k: ({"type": "array", "items": {"type": "string", "enum": values}} if k in ("roles", "barriers") else {"type": "string", "enum": values}) for k, values in OPTIONS.items()},
@@ -50,10 +55,8 @@ TIME_MEANINGS = {
     "barriers": "최근 세운 계획을 실천하기 어려웠던 이유. 예: 시작하기 어려웠어, 너무 많이 계획했어, 아니면 다른 이유가 있었어?",
     "recovery": "계획이 틀어졌을 때 실제로 어떻게 대응하는지. 예: 시간을 다시 잡는 편이야, 할 일을 줄이는 편이야? 막연히 다시 시작한다는 말은 구체적으로 확인한다.",
     "scheduleStyle": "계획을 어떤 형태로 받고 싶은지. 예: 18:30~19:00처럼 시작과 끝 시간을 정할까, 아니면 공부 1시간처럼 할 양만 정할까?",
-    "constraints": "매주 다른 일을 하기 어려운 고정 일정의 요일과 시작·종료 시간. 화면의 선택기로 입력할 수 있다고 안내한다.",
     "context": "이미 말한 내용 외에 계획을 짤 때 고려할 추가 상황. 없다고 답할 수 있다.",
     "focusMinutes": "쉬기 전 한 번에 연속해서 집중할 수 있는 시간. 하루 합계가 아니다. 예: 한 번에 25분.",
-    "energy": "집중이 잘되는 시간대. 오전/오후/저녁/그때그때 다름이며 시간 길이가 아니다.",
 }
 
 
@@ -190,6 +193,8 @@ def profile_chat_router(store, llm):
             answers.pop("dailyMinutes", None)
             if existing:
                 answers.setdefault("scheduleStyle", "unknown")
+            for field in NOT_ASKED:  # kept from an older profile, but no longer part of the conversation
+                answers.pop(field, None)
             greeting = "기존 프로필을 불러왔어. 바꾸고 싶은 내용을 이야기하거나 수정할 항목을 골라 줘." if existing else QUESTIONS[0][1]
             state["profileConversations"].append({"id": str(uuid4()), "userId": store.user_id, "status": "active",
                 "answers": answers, "evidence": {}, "messages": [message("assistant", greeting)], "createdAt": utc_now()})
@@ -240,15 +245,15 @@ def profile_chat_router(store, llm):
                     "각 update의 messageId와 quote는 실제 사용자 원문 근거여야 한다. 구조화된 필드명과 열거값, quote는 원래 형식을 유지한다. "
                     "사용자가 방금 한 말이 모호하면 먼저 구체적으로 한 번 물어보고 다른 항목으로 넘어간다. 모호한 답은 임의 분류하지 않는다. '밀린 일을 다시 시작한다'만으로 recovery=replan이라고 판단하지 않는다. "
                     "replan은 시간을 다시 잡는다는 명시 답, reduce는 할 일을 줄인다는 답, continue는 밀린 일을 건너뛰고 다음 일을 한다는 답이다. "
-                    "focusMinutes는 쉬기 전 한 번에 연속해서 집중하는 분이다. 하루 총 가용 시간과 요일별 가용 시간은 프로필 확정 후 별도 화면에서 선택하므로 묻거나 추출하지 않는다. "
-                    "집중 시간은 쉬지 않고 한 번에 집중하기 편한 시간이 몇 분 정도인지 묻는다. 집중 횟수, 하루에 그런 시간이 몇 번인지, 자연스럽게 몇 번 집중하는지는 어떤 항목에서도 묻지 않는다. energy는 시간대이며 길이가 아니다. "
+                    "focusMinutes는 쉬기 전 한 번에 연속해서 집중하는 분이다. 하루 총 가용 시간, 요일별 가용 시간, 고정 일정은 프로필 확정 후 별도 화면에서 정하고, 집중이 잘 되는 시간대는 실행 기록으로 알아내므로 묻거나 추출하지 않는다. "
+                    "집중 시간은 쉬지 않고 한 번에 집중하기 편한 시간이 몇 분 정도인지 묻는다. 집중 횟수, 하루에 그런 시간이 몇 번인지, 자연스럽게 몇 번 집중하는지는 어떤 항목에서도 묻지 않는다. "
                     "scheduleStyle은 시각 지정이면 time_blocks, 작업별 소요량이면 flexible_queue다. 모르겠다고 명시할 때만 unknown 또는 시간 null을 저장한다. "
                     "이미 답한 항목은 unknown, null, 빈 문자열이라도 다시 묻지 않는다. 이번 updates까지 반영한 뒤 아직 없는 항목만 질문한다. 사용자에게 기존 답을 재확인시키지 않는다. 단 사용자가 명시적으로 수정하는 항목만 다시 물을 수 있다. missingFields와 대화 맥락에 따라 순서를 선택한다. nextField는 새 reply에서 실제로 묻는 항목이다. "
-                    "예: 계획 방식을 물으면 scheduleStyle, 고정 일정을 물으면 constraints(요일·시간 선택기가 표시됨). "
+                    "예: 계획 방식을 물으면 scheduleStyle. "
                     "선택지로 답할 수 없는 구체적인 확인 질문은 nextField=null로 둔다. 모든 답이 모이면 nextField=null로 요약 검토를 안내한다. "
-                    "프로필을 확정했다고 말하지 않는다. constraints/context는 각각 1500자 이내다."
+                    "프로필을 확정했다고 말하지 않는다. context는 1500자 이내다."
                 ),
-                context={"messages": messages, "answers": answers, "allowedOptions": {**OPTIONS, "scheduleStyle": ["time_blocks", "flexible_queue", "unknown"]},
+                context={"messages": messages, "answers": answers, "allowedOptions": {**{k: v for k, v in OPTIONS.items() if k in DEFAULTS}, "scheduleStyle": ["time_blocks", "flexible_queue", "unknown"]},
                          "fields": list(DEFAULTS), "fieldMeanings": TIME_MEANINGS, "missingFields": [k for k in DEFAULTS if k not in answers], "currentQuestion": public_session(session)["question"]})
             if not isinstance(result, dict) or not isinstance(result.get("reply"), str) or not 1 <= len(result["reply"]) <= 1500 or not isinstance(result.get("updates"), list) or len(result["updates"]) > len(DEFAULTS):
                 raise ValueError("AI가 올바른 설문 응답을 반환하지 않았습니다.")
@@ -294,7 +299,7 @@ def profile_chat_router(store, llm):
                 raise ValueError("수정할 항목을 고르거나 AI 자유 대화로 수정 내용을 알려 줘.")
             answers[q[0]] = guided_answer(q[0], text)
             evidence[q[0]] = {"messageId": sent["id"], "quote": text, "source": "user"}
-        validate_answers({"dailyMinutes": None, **DEFAULTS, **answers})
+        validate_answers({**NOT_ASKED, **DEFAULTS, **answers})
         updated = {**session, "answers": answers, "evidence": evidence}
         if request.mode == "guided" or session.get("pendingField") in seen:
             updated.pop("pendingField", None)
@@ -313,13 +318,17 @@ def profile_chat_router(store, llm):
 
     @router.post("/draft")
     def draft(request: ChatRequest):
-        _, session = load(request)
+        state, session = load(request)
         if not public_session(session)["ready"]:
             raise ValueError("아직 답하지 않은 질문이 있습니다.")
-        profile = generate_profile({"dailyMinutes": None, **session["answers"]})
+        # An earlier profile's answers to questions no longer asked stay as they were.
+        existing = (state.get("profileDraft") or state.get("profile") or {}).get("declaredFacts") or {}
+        kept = {k: existing.get(k, v) for k, v in NOT_ASKED.items() if k != "dailyMinutes"}
+        answers = {**NOT_ASKED, **kept, **session["answers"]}
+        profile = generate_profile(answers)
         profile["id"] = str(uuid4())
         def save(state):
-            save_profile_draft(state, profile, {"dailyMinutes": None, **session["answers"]}, store.user_id)
+            save_profile_draft(state, profile, answers, store.user_id)
             state["surveyResponses"][-1]["conversationId"] = session["id"]
             state["surveyResponses"][-1]["extractionEvidence"] = deepcopy(session["evidence"])
             saved = next(s for s in state["profileConversations"] if s["id"] == session["id"])

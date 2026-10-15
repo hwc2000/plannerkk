@@ -68,6 +68,9 @@ def validate_insights(data):
         raise ValueError("LLM 후속 질문이 올바르지 않습니다.")
     return data
 
+# Parts of the day a focus time can name (system boundaries, start hour inclusive).
+FOCUS_PERIODS = {"morning": (5, 12), "afternoon": (12, 18), "evening": (18, 24)}
+
 # Start value when the user does not know their focus time yet (a default, shown as such).
 # Plans tell the AI it is only a starting value, so it sizes each task's workload to fit.
 UNKNOWN_FOCUS_START = 60
@@ -93,6 +96,9 @@ def generate_profile(raw):
         "scheduleStyle": a.get("scheduleStyle") if a.get("scheduleStyle") in ("time_blocks", "flexible_queue") else ("time_blocks" if a["regularity"] == "regular" else "flexible_queue"),
         "scheduleStyleSource": "user" if a.get("scheduleStyle") in ("time_blocks", "flexible_queue") else "rule",
         "recoveryPreference": a["recovery"],
+        # When the user focuses best.  Onboarding no longer asks: it starts unknown and is
+        # learned from execution records (an older answer is kept as the user's own).
+        "focusTime": a["energy"],
         "starterMinutes": min(5, block) if "starting" in a["barriers"] else None,
         "status": "provisional",
     }

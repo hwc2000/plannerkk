@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from .execution_learning import REASON_CODES, propose_update
+from .execution_learning import REASON_CODES, propose_focus_time, propose_update
 from .execution_store import ConflictError
 from .plan_merge import entry_owner
 from .project_profile import apply_project_proposal, entry_settings_version
@@ -134,6 +134,7 @@ def save_execution_record(state, payload, *, allow_follow_up=False):
         state['executionRecords'].append(record)
     task['completed'] = request.result == 'completed'
     propose_update(state, record.get('projectId'))
+    propose_focus_time(state)
     return record['id']
 
 
@@ -143,7 +144,7 @@ def _new_record(plan, task, request):
     record = request.model_dump()
     record.update(id=str(uuid4()), profileId=plan['profileId'], profileVersion=plan.get('profileVersion'),
                   projectId=entry_owner(plan, task), projectProfileId=entry_settings_version(plan, task),
-                  taskTitle=task['title'], plannedMinutes=task['minutes'],
+                  taskTitle=task['title'], plannedMinutes=task['minutes'], plannedStart=task['start'],
                   createdAt=datetime.now(timezone.utc).isoformat())
     return record
 
@@ -167,6 +168,7 @@ def set_task_completion(state, plan_id, task_id, completed):
         state['executionRecords'].append(_new_record(plan, task, request))
         task['completed'] = True
         propose_update(state, entry_owner(plan, task))
+        propose_focus_time(state)
         return
     matches = [r for r in state['executionRecords'] if r['planId'] == plan_id and r['taskId'] == task_id]
     if matches and matches[-1]['result'] == 'completed':

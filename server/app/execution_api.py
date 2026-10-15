@@ -27,6 +27,10 @@ from .project_profile import (
 from .user_profile import save_profile_draft, confirm_profile_draft
 from .planning_context import get_planning_context, MemoryInput
 from .execution_scheduler import availability_windows, daily_budgets
+from .availability import (
+    BlockedTime, FixedBlock, MAX_BLOCKED_TIMES, MAX_FIXED_BLOCKS, blocked_times_value, busy_times,
+    fixed_schedule_value, local_today, relocate,
+)
 from .planner import ProjectContext, ExistingTask
 from .plan_merge import active_plan, entry_owner, kept_entries, merge_into, thread_key
 
@@ -99,7 +103,8 @@ def build_full_plan_context(
         dict(entry) for entry in (current_plan or {}).get("entries", [])
         if entry.get("kind") == "task" and entry.get("completed")
     ]
-    held_events = list(events)
+    # The fixed schedule and blocked hours are the user's; no project plans in them.
+    held_events = [*events, *busy_times(state, start_date)]
     for entry in completed_entries:
         start, end = datetime.fromisoformat(entry["start"]), datetime.fromisoformat(entry["end"])
         held_events.append(BusyEvent(date=start.date(), startTime=start.time(), endTime=end.time()))
@@ -231,6 +236,17 @@ class ExecutionRecordRequest(ExecutionRecordInput, Mutation):
     consent: bool = False
 
 
+class FixedScheduleRequest(Mutation):
+    items: list[FixedBlock] = Field(max_length=MAX_FIXED_BLOCKS)
+    # Calendar events stay in the browser; they are sent so moved tasks avoid them too.
+    events: list[BusyEvent] = Field(default_factory=list, max_length=500)
+
+
+class BlockedTimesRequest(Mutation):
+    items: list[BlockedTime] = Field(max_length=MAX_BLOCKED_TIMES)
+    events: list[BusyEvent] = Field(default_factory=list, max_length=500)
+
+
 class ProjectProfileRequest(Mutation):
     # Raw values: ProjectPreferenceValues validates them strictly (no 1 from true).
     overrides: dict[str, Any] = Field(default_factory=dict, max_length=10)
@@ -272,6 +288,28 @@ def execution_router(store=None, llm=None):
                 resolve_plan_draft(state, "keep_current_plan")
             state["settings"] = value
         return change(request.revision, update)
+
+    def save_unavailable(revision, key, value, events):
+        """Store time the user cannot plan in, then move the open tasks that now collide."""
+        moved = {"moved": [], "unplaced": []}
+
+        def update(state):
+            if state.get(key) == value:
+                return
+            state[key] = value
+            # A waiting draft was placed in the old free time.
+            resolve_plan_draft(state, "keep_current_plan")
+            moved.update(relocate(state, events))
+        return {**change(revision, update), "relocated": moved}
+
+    @router.put("/fixed-schedule")
+    def save_fixed_schedule(request: FixedScheduleRequest):
+        return save_unavailable(request.revision, "fixedSchedule", fixed_schedule_value(request.items), request.events)
+
+    @router.put("/blocked-times")
+    def save_blocked_times(request: BlockedTimesRequest):
+        return save_unavailable(request.revision, "blockedTimes", blocked_times_value(request.items, local_today()),
+                                request.events)
 
     @router.post("/profile")
     async def profile(request: ProfileRequest):

@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
 import './execution.css'
-import type { CalendarEvent, ExecutionPlan, ExecutionState, Milestone, Project, Memory, ProfileUpdateProposal } from '../../shared/types'
+import type { BlockedTime, CalendarEvent, ExecutionPlan, ExecutionState, Milestone, Project, Memory, ProfileUpdateProposal } from '../../shared/types'
 import { dateKey } from '../../shared/constants'
 import { ExecutionLearning } from './ExecutionLearning'
 import { ProfileForm } from './ProfileForm'
 import { PlannerChat } from './PlannerChat'
-import { AvailabilityGrid } from './AvailabilityGrid'
+import { AvailabilityGrid, fixedMinutes } from './AvailabilityGrid'
+import { FixedScheduleEditor, blockedLabel } from './FixedScheduleEditor'
 import { PlanReasons } from './PlanReasons'
 import { ProjectSettings } from './ProjectSettings'
-import { answerLabels, formatAnswer } from './profileLabels'
+import { answerLabels, focusTimeText, formatAnswer, notAsked } from './profileLabels'
 import { approveProposalAndReplan, downloadJson, executionApi, existingTasksFor, planIsStale, planProjectIds, projectContext, replansCurrentPlan, staleProjectIds } from './api'
 import { projectColor } from '../../shared/projectColors'
 
@@ -24,15 +25,17 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const shownProfile = state.profileDraft ?? state.profile
+  const fixed = state.fixedSchedule ?? []
+  const blocked = state.blockedTimes ?? []
   const busyEvents = events.map(({ date, startTime, endTime }) => ({ date, startTime, endTime }))
   const savedSlots = JSON.stringify(state.settings.slots)
   const slotsDirty = JSON.stringify(slots) !== savedSlots
   useEffect(() => { setSlots(JSON.parse(savedSlots)) }, [savedSlots])
 
-  async function run(action: () => Promise<ExecutionState>, message: string) {
+  async function run(action: () => Promise<ExecutionState>, message: string | ((next: ExecutionState) => string)) {
     if (busy) return false
     setBusy(true); setError(''); setNotice('')
-    try { const next = await action(); onChange(next); setNotice(message); return true }
+    try { const next = await action(); onChange(next); setNotice(typeof message === 'string' ? message : message(next)); return true }
     catch (caught) {
       setError(caught instanceof Error ? caught.message : '요청에 실패했습니다.')
       // A generation may finish server-side after a client disconnect. Recover the actual DB state.
@@ -50,6 +53,30 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
         existingTasks: existingTasksFor(milestones, project ? [project.id] : []),
       })
     }, '계획 초안을 만들었습니다. 검토 후 확정하면 캘린더에도 표시됩니다.')
+  }
+
+  /** Say which open tasks the server moved out of time that is no longer free. */
+  function withRelocation(base: string) {
+    return (next: ExecutionState) => {
+      const moved = next.relocated?.moved.length ?? 0
+      const unplaced = next.relocated?.unplaced.length ?? 0
+      return [base, moved > 0 && `겹친 작업 ${moved}개를 빈 시간으로 옮겼어요.`,
+        unplaced > 0 && `${unplaced}개는 이번 주 남은 시간에 들어가지 않아 ‘배치하지 못한 작업’에 두었어요.`].filter(Boolean).join(' ')
+    }
+  }
+
+  // Hours taken out for every project, then (when asked) this project's open work planned again.
+  async function adjustWeek(blocked: Array<Omit<BlockedTime, 'id'>>, goal: string | null, startDate: string, project: Project | null, consent: boolean) {
+    return run(async () => {
+      let current = state
+      if (blocked.length) current = await executionApi('/blocked-times', { revision: current.revision, items: [...(current.blockedTimes ?? []), ...blocked], events: busyEvents }, 'PUT')
+      if (!goal) return current
+      const next = await executionApi('/plan', {
+        revision: current.revision, goal, startDate, consent, memories, project: projectContext(project ?? undefined), merge: true, events: busyEvents,
+        existingTasks: existingTasksFor(milestones, project ? [project.id] : []),
+      })
+      return { ...next, relocated: current.relocated }
+    }, withRelocation(goal ? '계획 조정 초안을 만들었어요. 검토 후 확정해 주세요.' : '그 시간을 비웠어요.'))
   }
 
   async function approveProposal(proposalId: string, replanConsent: boolean) {
@@ -124,10 +151,10 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
       if (ok) setEditing(false)
     }}/> : shownProfile &&
       <section className="execution-card"><p className="section-kicker">MY PROFILE · {shownProfile.status==='draft'?'확정 전 초안':'확정됨'}</p><h2>나의 실행 프로필</h2><p className="execution-help">{shownProfile.source==='llm'?'LLM 분석':'답변에서 계산한 계획 선호'}</p><p>{shownProfile.insights.summary}</p>
-        <div className="execution-metrics"><div><strong>{shownProfile.planningPreferences.blockMinutes}분</strong><span>첫 집중 구간</span></div><div><strong>{shownProfile.planningPreferences.bufferPercent}%</strong><span>계획의 여유분</span></div></div>
+        <div className="execution-metrics"><div><strong>{shownProfile.planningPreferences.blockMinutes}분</strong><span>첫 집중 구간</span></div><div><strong>{shownProfile.planningPreferences.bufferPercent}%</strong><span>계획의 여유분</span></div><div><strong>{focusTimeText(shownProfile).value}</strong><span>집중이 잘 되는 시간대 · {focusTimeText(shownProfile).source}</span></div></div>
         {Object.keys(state.projectProfiles ?? {}).length > 0 && <p className="execution-help">모든 프로젝트의 기본값입니다. 프로젝트마다 다르게 정했거나 기록으로 배운 값은 아래 ‘이번 주에 무엇을 할까요?’에서 프로젝트를 고르면 보여요.</p>}
         <p><strong>계획 방식: </strong>{shownProfile.planningPreferences.scheduleStyle === 'time_blocks' ? '시간 지정형 · 18:30~19:00' : '작업량 지정형 · A 1시간, B 2시간'}</p>
-        <details open={shownProfile.status === 'draft'}><summary>설문 답변 확인</summary>{Object.entries(shownProfile.declaredFacts ?? shownProfile.facts).filter(([key]) => key !== 'dailyMinutes').map(([key,value]) => <p key={key}><strong>{answerLabels[key] ?? key}: </strong>{formatAnswer(key, value)}</p>)}<p className="execution-help">다르게 정리된 내용은 ‘설문 수정’에서 고친 뒤 확정해 주세요.</p></details>
+        <details open={shownProfile.status === 'draft'}><summary>설문 답변 확인</summary>{Object.entries(shownProfile.declaredFacts ?? shownProfile.facts).filter(([key]) => !notAsked.includes(key)).map(([key,value]) => <p key={key}><strong>{answerLabels[key] ?? key}: </strong>{formatAnswer(key, value)}</p>)}<p className="execution-help">다르게 정리된 내용은 ‘설문 수정’에서 고친 뒤 확정해 주세요.</p></details>
         <details><summary>추천 근거와 추가 질문</summary>{shownProfile.insights.strategies.map((s,i)=><div key={i}><h3>{s.action}</h3><p>{s.reason}</p><small>답변 근거: {s.evidence.map(k=>answerLabels[k]??k).join(', ')}</small></div>)}{shownProfile.insights.followUpQuestions.map(q=><p key={q}>{q}</p>)}<p className="execution-help">선택한 답변은 ‘설문 수정’에서 바꿀 수 있어요. 추천값은 실행 후 조정할 초기 가설입니다.</p></details>
         <div className="execution-actions"><button className="secondary-button" disabled={busy} onClick={()=>{setEditing(true)}}>설문 수정</button><button className="secondary-button" onClick={()=>downloadJson(shownProfile,'replan-profile.json')}>프로필 JSON 다운로드</button>{state.profileDraft && <button type="button" className="primary-button" disabled={busy} onClick={()=>{void run(()=>executionApi('/profile/confirm',{revision:state.revision}),'프로필을 저장했어. 아래에서 계획할 시간을 고르고 이번 주 목표를 알려 줘.') }}>{busy?'프로필 저장 중…':'프로필 확정'}</button>}</div>
         {error && <p className="form-error" role="alert">{error}</p>}
@@ -135,11 +162,15 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
         {shownProfile.status==='confirmed' && <div className="execution-next"><strong>프로필이 DB에 저장되었습니다.</strong><p>프로필 설정이 끝났어. 아래 플래너와 대화하면서 이번 주 계획을 세워 봐.</p><a className="primary-button" href="#weekly-goal">플래너와 대화하기 →</a></div>}
       </section>}
     {state.profile && !editing && <>
-      <details id="weekly-setup" className="execution-card" open={slots.length === 0 || slotsDirty ? true : undefined}><summary>계획할 시간 · 주 {slots.length}시간</summary>
-        <p className="execution-help">하루 작업량은 계획의 분량이고, 여기서는 실제로 배치할 요일과 시간을 골라 줘. 저장한 시간은 다음에도 그대로 사용할게. 고정 일정과 겹치는 시간은 선택에서 빼 줘.</p><AvailabilityGrid slots={slots} onChange={setSlots} disabled={busy}/>
+      <details id="weekly-setup" className="execution-card" open={slots.length === 0 || slotsDirty ? true : undefined}><summary>계획할 시간 · 주 {slots.filter(s => fixedMinutes(fixed, s.day, s.hour) < 60).length}시간{fixed.length > 0 && ` · 고정 일정 ${fixed.length}개`}</summary>
+        <p className="execution-help">하루 작업량은 계획의 분량이고, 여기서는 실제로 배치할 요일과 시간을 골라 줘. 저장한 시간은 다음에도 그대로 사용할게. 고정 일정은 저장해 두면 알아서 빠져.</p>
+        <FixedScheduleEditor items={fixed} disabled={busy} onSave={items => run(() => executionApi('/fixed-schedule', { revision: state.revision, items, events: busyEvents }, 'PUT'), withRelocation('고정 일정을 저장했어. 계획할 시간에서 자동으로 빠져.'))}/>
+        {blocked.length > 0 && <div className="execution-fieldset"><strong>이번 주에 비워 둔 시간</strong><ul className="fixed-list">{blocked.map(b => <li key={b.id}>{blockedLabel(b)}
+          <button type="button" className="secondary-button" disabled={busy} onClick={() => { void run(() => executionApi('/blocked-times', { revision: state.revision, items: blocked.filter(x => x.id !== b.id), events: busyEvents }, 'PUT'), '그 시간을 다시 계획에 쓸 수 있어요. 비어 있던 작업은 다음에 계획할 때 들어가요.') }}>되돌리기</button></li>)}</ul></div>}
+        <AvailabilityGrid slots={slots} onChange={setSlots} fixed={fixed} disabled={busy}/>
         <button className="secondary-button" disabled={busy||!slotsDirty} onClick={()=>{void run(()=>executionApi('/settings',{revision:state.revision,settings:{...state.settings,slots}},'PUT'),'계획할 시간을 저장했어.') }}>시간 변경 저장</button>
       </details>
-      <PlannerChat state={state} busy={busy} run={run} projects={projects} onCreateProject={onCreateProject} onApplyPlan={generatePlan}
+      <PlannerChat state={state} busy={busy} run={run} projects={projects} onCreateProject={onCreateProject} onApplyPlan={generatePlan} onAdjust={adjustWeek} events={busyEvents}
         projectInfo={project => state.profile && <ProjectSettings key={project.id} state={state} project={project} busy={busy} run={run} editable={import.meta.env.DEV}/>}/>
     </>}
     {state.planDraft && !editing && planCard(state.planDraft,true)}

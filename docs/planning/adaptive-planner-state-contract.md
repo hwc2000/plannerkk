@@ -210,7 +210,7 @@ full-plan generator에 전달하고, 결과를 `plan_draft`로 반환한다. 저
 | `dailyPlannedMinutes` | 하루 작업 합계 상한. 하루 예산 = min(가용 시간 × (1 − 여유분), 하루 계획량). LLM에는 하루치 작업 길이 예시(`dayTaskMinutes`, 예: 90분·50분 상한 → [50, 40])를 준다. |
 | `bufferPercent` | 가용 시간 중 비워 둘 비율 |
 | `starterMinutes` | 매일 첫 작업 앞에 그 길이의 시작 행동을 둔다(`entries[].starter = true`). 문장은 LLM이 작업별로 쓰고, 없으면 코드가 기본 문장을 쓴다. |
-| `declaredFacts.energy` | 오전/오후/저녁이면 그 시간대에 먼저 배치한다. 그 시간대만으로 덜 들어가면 전체 시간을 쓰고 근거에 그렇게 적는다. |
+| `focusTime` | 오전/오후/저녁이면 그 시간대에 먼저 배치한다. 그 시간대만으로 덜 들어가면 전체 시간을 쓰고 근거에 그렇게 적는다. 설문에서 묻지 않고 실행 기록으로 학습한다(focus-time-v1, 근거 출처 `learned`). 예전 프로필은 설문 `energy` 답(`declared`). |
 | `recoveryPreference` | 시간 부족·피로·방해·과소 추정·기타 이유의 복구 전략을 정한다(`reduce` → 축소, `replan` → 재배치). 작업이 크거나 모호하면 항상 축소, 우선순위 변경은 항상 재계획이다. 사용자가 고른 전략이 우선한다. |
 
 계획 초안과 확정 계획에는 `personalization` 목록이 붙는다. 코드가 실제로 적용한 값으로

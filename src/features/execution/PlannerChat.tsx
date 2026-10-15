@@ -1,20 +1,28 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Plus } from 'lucide-react'
-import type { ExecutionState, Project } from '../../shared/types'
+import type { BlockedTime, ExecutionState, Project } from '../../shared/types'
 import { projectColor } from '../../shared/projectColors'
 import { dateKey } from '../../shared/constants'
 import { executionApi, projectContext } from './api'
 import { settingLabel, settingValue } from './ProjectSettings'
+import { blockedLabel } from './FixedScheduleEditor'
 
 const days = '월화수목금토일'
 const FREE = '_free'
 const FREE_COLOR = '#5855d6'
+// Which skill answered a message and what saved information it read, shown under the reply.
+const SKILLS: Record<string, string> = { answer: '답하기', plan_create: '계획 만들기', plan_adjust: '계획 조정', availability: '가능한 시간', project_settings: '프로젝트 방식' }
+const LOOKUPS: Record<string, string> = { week: '이번 주 시간표', profile: '프로필', tasks: '이 프로젝트 작업' }
 
-export function PlannerChat({ state, busy, run, projects, onCreateProject, onApplyPlan, projectInfo }: {
+export function PlannerChat({ state, busy, run, projects, onCreateProject, onApplyPlan, onAdjust, events = [], projectInfo }: {
   state: ExecutionState; busy: boolean
   run: (action: () => Promise<ExecutionState>, message: string) => Promise<boolean>
   projects: Project[]; onCreateProject?: () => void
   onApplyPlan: (goal: string, startDate: string, project: Project | null, consent: boolean) => Promise<boolean>
+  /** Take hours out of this week and/or plan this project's open work again. */
+  onAdjust?: (blocked: Array<Omit<BlockedTime, 'id'>>, goal: string | null, startDate: string, project: Project | null, consent: boolean) => Promise<boolean>
+  /** Calendar events, so the planner's week lookup leaves them out. */
+  events?: Array<{ date: string; startTime: string; endTime: string }>
   projectInfo?: (project: Project) => ReactNode
 }) {
   const threads = state.plannerThreads ?? {}
@@ -43,7 +51,7 @@ export function PlannerChat({ state, busy, run, projects, onCreateProject, onApp
   async function send() {
     if (!text.trim() || !consent || busy) return
     const ok = await run(() => executionApi('/chat/message', {
-      revision: state.revision, text, consent, project: projectContext(project ?? undefined),
+      revision: state.revision, text, consent, project: projectContext(project ?? undefined), events,
     }), '플래너가 답했어요.')
     if (ok) setDrafts(d => ({ ...d, [key]: '' }))
   }
@@ -87,7 +95,8 @@ export function PlannerChat({ state, busy, run, projects, onCreateProject, onApp
           : project
             ? opening(state, project)
             : '프로젝트와 상관없는 할 일을 알려 주세요. 언제부터 시작할지도 말해 주시면 계획 초안을 준비할게요.'}</p></div>}
-        {messages.map(m => <div key={m.id} className={`profile-chat-message ${m.role}`}><small>{m.role === 'user' ? '나' : '플래너'}</small><p>{m.content}</p></div>)}
+        {messages.map(m => <div key={m.id} className={`profile-chat-message ${m.role}`}><small>{m.role === 'user' ? '나' : '플래너'}</small><p>{m.content}</p>
+          {m.skill && <small className="planner-skill">{SKILLS[m.skill] ?? m.skill}{m.lookups?.length ? ` · ${m.lookups.map(l => LOOKUPS[l] ?? l).join('·')} 확인` : ''}</small>}</div>)}
         {busy && <p role="status">플래너가 생각하고 있어요…</p>}
         <div ref={end}/>
       </div>
@@ -97,6 +106,7 @@ export function PlannerChat({ state, busy, run, projects, onCreateProject, onApp
           <h3>이 내용으로 계획 초안을 만들까요?</h3>
           <p><strong>목표: </strong>{action.payload.goal}</p>
           <p><strong>기간: </strong>{action.payload.startDate}부터 7일</p>
+          {action.freeMinutes != null && <p><strong>이번 주 남은 빈 시간: </strong>{Math.floor(action.freeMinutes / 60)}시간{action.freeMinutes % 60 ? ` ${action.freeMinutes % 60}분` : ''}</p>}
           {week && <p className="execution-help">이번 주 계획에서 이 {project ? '프로젝트' : '자유 계획'}의 남은 작업만 바꿔요. 다른 프로젝트 작업과 완료한 작업은 그대로 둬요.</p>}
           {!state.settings.slots.length && <p className="form-error">계획할 시간이 아직 없어요. 가능한 요일과 시간을 먼저 알려 주세요.</p>}
           <button className="primary-button" disabled={busy || !consent || !state.settings.slots.length} onClick={() => { void onApplyPlan(action.payload.goal, action.payload.startDate, project, consent) }}>확인하고 계획 초안 만들기</button>
@@ -107,10 +117,28 @@ export function PlannerChat({ state, busy, run, projects, onCreateProject, onApp
           <p className="execution-help">이 프로젝트에만 적용돼요. 기본 프로필과 다른 프로젝트는 그대로예요.{weekTasks.some(t => !t.completed) ? ' 이번 주 이 프로젝트의 남은 작업은 다시 계획하면 반영돼요.' : ''}</p>
           <button className="primary-button" disabled={busy} onClick={() => { void run(() => executionApi(`/projects/${encodeURIComponent(action.payload.projectId)}/profile`,
             { revision: state.revision, overrides: action.payload.overrides }, 'PUT'), `‘${project?.title}’ 프로젝트에 맞췄어요.`) }}>확인하고 이 프로젝트에 적용</button>
+        </> : action.kind === 'adjust' ? <>
+          <h3>이번 주 계획을 이렇게 바꿀까요?</h3>
+          {action.payload.blockedTimes.length > 0 && <>
+            <p><strong>비워 둘 시간: </strong>{action.payload.blockedTimes.map(blockedLabel).join(', ')}</p>
+            <p className="execution-help">모든 프로젝트에 적용돼요. 이 시간과 겹치는 작업은 빈 시간으로 옮겨요.</p>
+          </>}
+          {action.payload.goal && <>
+            <p><strong>다시 계획: </strong>{action.payload.goal}</p>
+            <p className="execution-help">이 {project ? '프로젝트' : '자유 계획'}의 남은 작업만 새로 짜서 초안으로 보여 드려요. 다른 프로젝트 작업과 완료한 작업은 그대로예요.</p>
+          </>}
+          <button className="primary-button" disabled={busy || !onAdjust || (!!action.payload.goal && !consent)} onClick={() => {
+            void onAdjust?.(action.payload.blockedTimes, action.payload.goal, action.payload.startDate, project, consent) }}>{action.payload.goal ? '확인하고 계획 다시 짜기' : '확인하고 시간 비우기'}</button>
         </> : <>
           <h3>계획할 시간을 이렇게 바꿀까요?</h3>
-          <p>{action.payload.slots.length ? action.payload.slots.map(s => `${days[s.day]} ${s.hour}~${s.hour + 1}시`).join(', ') : '선택한 시간 없음'}</p>
-          <p className="execution-help">모든 프로젝트가 함께 쓰는 시간이에요. 기존에 저장한 시간을 모두 이 내용으로 바꿔요.</p>
+          {action.change ? <>
+            {action.change.added.length > 0 && <p><strong>더할 시간: </strong>{slotRanges(action.change.added)}</p>}
+            {action.change.removed.length > 0 && <p><strong>뺄 시간: </strong>{slotRanges(action.change.removed)}</p>}
+            <p className="execution-help">모든 프로젝트가 함께 쓰는 매주 시간이에요. 바꾼 뒤에는 주 {action.payload.slots.length}시간이에요.</p>
+          </> : <>
+            <p>{action.payload.slots.length ? slotRanges(action.payload.slots) : '선택한 시간 없음'}</p>
+            <p className="execution-help">모든 프로젝트가 함께 쓰는 시간이에요. 기존에 저장한 시간을 모두 이 내용으로 바꿔요.</p>
+          </>}
           <button className="primary-button" disabled={busy} onClick={() => { void run(() => executionApi('/settings', { revision: state.revision, settings: action.payload }, 'PUT'), '계획할 시간을 저장했어요.') }}>확인하고 시간 저장</button>
         </>}
         <p className="execution-help">고칠 내용이 있으면 아래 대화로 알려 주세요.</p>
@@ -136,6 +164,17 @@ function opening(state: ExecutionState, project: Project) {
     ? `이 프로젝트만의 값으로 계획해요: ${Object.entries(overrides).map(([key, item]) => `${settingLabel(key)} ${settingValue(key, item.value)}`).join(', ')}. `
     : block ? `지금은 기본 프로필대로 한 번에 ${block}분씩 계획해요. ` : ''
   return `‘${project.title}’ 대화를 시작해요. ${now}이 프로젝트만 다르게 하고 싶은 점(예: 한 번에 25분씩, 하루 1시간만)이 있으면 먼저 알려 주세요. 없으면 이번 주에 하고 싶은 일과 마감을 말해 주세요.`
+}
+
+/** Weekly hours as ranges per day, e.g. 월 9~11시, 화 19~22시. */
+function slotRanges(slots: Array<{ day: number; hour: number }>) {
+  const ranges: Array<[number, number, number]> = []
+  for (const s of [...slots].sort((a, b) => a.day - b.day || a.hour - b.hour)) {
+    const last = ranges.at(-1)
+    if (last && last[0] === s.day && last[2] === s.hour) last[2] = s.hour + 1
+    else ranges.push([s.day, s.hour, s.hour + 1])
+  }
+  return ranges.map(([day, start, end]) => `${days[day]} ${start}~${end}시`).join(', ')
 }
 
 function mostRecentThread(threads: NonNullable<ExecutionState['plannerThreads']>, projects: Project[]) {

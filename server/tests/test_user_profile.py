@@ -185,21 +185,26 @@ class ChatTests(unittest.TestCase):
 
     def test_guided_conversation_restores_and_builds_unconfirmed_profile(self):
         sid = self.start()
-        for value in ('학생', '규칙적이에요', '시작이 어려워요', '30분', '저녁·밤', '할 일을 줄여요', '작업량 지정형', '없음', '없음'):
+        for value in ('학생', '규칙적이에요', '시작이 어려워요', '30분', '할 일을 줄여요', '작업량 지정형', '없음'):
             r = self.post('/profile/chat/message', sessionId=sid, text=value)
             self.assertEqual(r.status_code, 200, r.text)
         session = self.client.get('/api/execution/profile/chat').json()['session']
         self.assertTrue(session['ready'])
-        self.assertEqual(len(session['messages']), 19)
+        self.assertEqual(len(session['messages']), 15)
         self.assertNotIn('dailyMinutes', session['answers'])
         self.assertIsNone(self.store.read()['profile'])
+        # Fixed schedule and focus time of day are not asked; the profile keeps them as unknown.
+        self.assertFalse({'energy', 'constraints'} & {q['field'] for q in session['editableQuestions']})
         r = self.post('/profile/chat/draft', sessionId=sid)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()['profileDraft']['planningPreferences']['scheduleStyle'], 'flexible_queue')
+        facts = r.json()['profileDraft']['declaredFacts']
+        self.assertEqual((facts['energy'], facts['constraints']), ('unknown', ''))
+        self.assertEqual(r.json()['profileDraft']['planningPreferences']['focusTime'], 'unknown')
         self.assertIsNone(r.json()['profile'])
         survey = self.store.read()['surveyResponses'][-1]
         self.assertEqual(survey['conversationId'], sid)
-        self.assertEqual(len(survey['extractionEvidence']), 9)
+        self.assertEqual(len(survey['extractionEvidence']), 7)
 
     def test_invalid_chat_and_stale_revision_do_not_lose_messages(self):
         sid = self.start()
@@ -237,7 +242,7 @@ class ChatTests(unittest.TestCase):
 
     def test_editing_completed_chat_preserves_other_answers(self):
         sid = self.start()
-        for value in ('학생', '규칙적이에요', '시작이 어려워요', '30분', '저녁·밤', '할 일을 줄여요', '시간 지정형', '없음', '없음'):
+        for value in ('학생', '규칙적이에요', '시작이 어려워요', '30분', '할 일을 줄여요', '시간 지정형', '없음'):
             self.assertEqual(self.post('/profile/chat/message', sessionId=sid, text=value).status_code, 200)
         self.assertEqual(self.post('/profile/chat/question', sessionId=sid, field='scheduleStyle').status_code, 200)
         self.assertEqual(self.post('/profile/chat/message', sessionId=sid, text='작업량 지정형').status_code, 200)

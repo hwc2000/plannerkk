@@ -3,7 +3,9 @@ import type { ExecutionAnswers } from '../../shared/types'
 
 import { answerLabels, options } from './profileLabels'
 
-const emptyAnswers: ExecutionAnswers = { roles: [], regularity: '', barriers: [], focusMinutes: null, dailyMinutes: null, energy: '', recovery: '', constraints: '', context: '', scheduleStyle: 'unknown' }
+// Focus time of day and the fixed schedule are not asked here: the first is learned from
+// execution records, the second has its own editor next to the weekly time.
+const emptyAnswers: ExecutionAnswers = { roles: [], regularity: '', barriers: [], focusMinutes: null, dailyMinutes: null, energy: 'unknown', recovery: '', constraints: '', context: '', scheduleStyle: 'unknown' }
 
 export function ProfileForm({ initial, busy, onGenerate, onCancel, requestError }: {
   initial?: ExecutionAnswers; busy: boolean; requestError?: string
@@ -27,7 +29,7 @@ export function ProfileForm({ initial, busy, onGenerate, onCancel, requestError 
     </div></fieldset>
   }
   async function submit() {
-    const fields: Array<Array<keyof ExecutionAnswers>> = [['roles','regularity'],['barriers'],['energy'],['recovery','scheduleStyle']]
+    const fields: Array<Array<keyof ExecutionAnswers>> = [['roles','regularity'],['barriers'],[],['recovery','scheduleStyle']]
     if (fields[step].some(k => !answers[k] || (Array.isArray(answers[k]) && !(answers[k] as string[]).length))) { setError('항목을 선택해 주세요. 확실하지 않다면 모름을 선택해 주세요.'); return }
     setError('')
     if (step<3) { setStep(step+1); return }
@@ -38,7 +40,7 @@ export function ProfileForm({ initial, busy, onGenerate, onCancel, requestError 
     <h2>{stepNames[step]}</h2><p className="execution-help">최근 2주를 떠올리며 선택해 줘. 가용시간은 프로필을 확정한 다음 고를 수 있어.</p>
     {step===0 && <>{choice('roles',true)}{choice('regularity')}</>}
     {step===1 && <>{choice('barriers',true)}</>}
-    {step===2 && <><fieldset className="execution-fieldset"><legend>쉬지 않고 한 번에 집중하기 편한 시간은?</legend><div className="execution-options">{[15,25,30,45,50,60,90,null].map(value => <label className="execution-option" key={String(value)}><input type="radio" name="focusMinutes" checked={answers.focusMinutes===value} onChange={()=>setAnswers(a=>({...a,focusMinutes:value}))}/>{value===null?'아직 모르겠어요':`${value}분`}</label>)}</div></fieldset>{choice('energy')}</>}
+    {step===2 && <><fieldset className="execution-fieldset"><legend>쉬지 않고 한 번에 집중하기 편한 시간은?</legend><div className="execution-options">{[15,25,30,45,50,60,90,null].map(value => <label className="execution-option" key={String(value)}><input type="radio" name="focusMinutes" checked={answers.focusMinutes===value} onChange={()=>setAnswers(a=>({...a,focusMinutes:value}))}/>{value===null?'아직 모르겠어요':`${value}분`}</label>)}</div></fieldset><p className="execution-help">언제 집중이 잘 되는지는 묻지 않아요. 실행 기록이 쌓이면 잘 끝내는 시간대를 찾아 제안할게요.</p></>}
     {step===3 && <>{choice('recovery')}{choice('scheduleStyle')}</>}
     {(error || requestError) && <p role="alert" className="form-error">{error || requestError}</p>}
     <p className="execution-help">초안과 확정 프로필은 이 컴퓨터의 DB에 저장됩니다. 언제든 초기화할 수 있어요.</p>

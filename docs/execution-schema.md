@@ -18,6 +18,7 @@ type ExecutionRecord = {
   projectProfileId?: string | null
   taskTitle: string
 
+  plannedStart?: string        // 작업이 계획된 시각. 이전 기록에는 없음
   plannedMinutes: number
   actualMinutes: number | null
   remainingMinutes?: number | null
@@ -53,6 +54,7 @@ type ReasonCode =
 | `projectId` | 계획의 프로젝트 ID. 계획에서 복사. 프로젝트 없는 계획·추가 전 기록은 없거나 null |
 | `projectProfileId` | 그 작업이 계획될 때 쓴 그 프로젝트의 설정 버전. 작업(entry)에서 복사(이전 작업은 계획의 값). 프로젝트 설정이 없었으면 null |
 | `taskTitle` | 기록 시점의 작업 이름 |
+| `plannedStart` | 그 작업이 계획된 시작 시각(작업에서 복사). 집중이 잘 되는 시간대(focus-time-v1)를 찾는 근거. 이전 기록에는 없어 그 규칙에서 빠짐 |
 | `plannedMinutes` | 기록 시점의 예정 시간 |
 | `actualMinutes` | 실제 시간. 정수 0~1440 또는 null |
 | `remainingMinutes` | 사용자가 예상한 남은 작업 시간. 정수 0~1440 또는 null. 실제−예정 시간으로 계산하지 않음 |
@@ -87,12 +89,11 @@ type ProfileUpdateProposal = {
   projectId?: string | null
   projectProfileId?: string | null
 
-  proposedChanges: {
-    blockMinutes: {
-      from: number
-      to: number
-    }
-  }
+  // 둘 중 하나: 집중 구간(long-task-v2) 또는 집중이 잘 되는 시간대(focus-time-v1)
+  proposedChanges:
+    | { blockMinutes: { from: number; to: number } }
+    | { focusTime: { from: FocusTime; to: FocusTime } }
+  focusStats?: Record<"morning" | "afternoon" | "evening", { planned: number; finished: number }>
 
   reason: string
   evidenceRecordIds: string[]
@@ -112,11 +113,12 @@ type ProfileUpdateProposal = {
 | `profileId` | 제안 대상 프로필 ID |
 | `projectId` | 이 프로젝트의 기록에서 나온 변경이면 그 프로젝트. null이면 사용자 프로필 변경 |
 | `projectProfileId` | 제안 당시 그 프로젝트 설정 버전. 설정이 없었으면 null |
-| `proposedChanges` | 변경 전후 값. 현재 planningPreferences.blockMinutes만 지원 |
+| `proposedChanges` | 변경 전후 값. planningPreferences의 `blockMinutes`(프로젝트 범위 가능) 또는 `focusTime`(사용자 프로필만) |
+| `focusStats` | focusTime 후보만. 비교한 시간대별 계획한 작업 수와 끝낸 수 |
 | `reason` | 변경 제안 이유 |
 | `evidenceRecordIds` | 근거 실행 기록 ID 목록 |
-| `ruleVersion` | 후보 생성 규칙 버전 (`long-task-v2`) |
-| `sizedBy` | 새 값을 정한 방법. `evidence`(실제 집중 시간의 가운데 값) 또는 `ai`(LLM이 작업 내용까지 보고 정함) |
+| `ruleVersion` | 후보 생성 규칙 버전 (`long-task-v2`, `focus-time-v1`) |
+| `sizedBy` | 새 값을 정한 방법. `evidence`(기록에서 계산: 실제 집중 시간의 가운데 값 / 끝낸 비율이 가장 높은 시간대) 또는 `ai`(동의했을 때 LLM이 작업 내용까지 보고 정함) |
 | `sizing` | 실제 기록으로 정한 근거 문장 |
 | `aiReason` | AI가 정했을 때 그 이유(기록에 있는 사실만, 최대 300자) |
 | `status` | 승인 대기 / 승인 / 거절 |

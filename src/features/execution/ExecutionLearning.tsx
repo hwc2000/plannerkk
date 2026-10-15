@@ -1,12 +1,22 @@
 import { useState } from 'react'
 import type { ExecutionRecord, ExecutionState, Memory, ProfileUpdateProposal, Project } from '../../shared/types'
 import { adaptiveApi, executionApi, replansCurrentPlan } from './api'
+import { focusTimeLabels } from './profileLabels'
 
 const reasons: Record<string, string> = {
   time_shortage: '시간 부족', task_too_large: '작업이 너무 큼', fatigue: '피로',
   interruption: '외부 방해', priority_changed: '우선순위 변경', unclear_task: '불명확한 작업',
   underestimated: '시간 과소 추정', other: '기타',
 }
+const periodLabel = (value: string) => focusTimeLabels[value] ?? '모름'
+
+/** What a proposal changes, in the user's words. */
+function proposalTitle(p: ProfileUpdateProposal) {
+  const { blockMinutes, focusTime } = p.proposedChanges
+  if (focusTime) return `집중이 잘 되는 시간대 ${periodLabel(focusTime.from)} → ${periodLabel(focusTime.to)}`
+  return `집중 구간 ${blockMinutes?.from}분 → ${blockMinutes?.to}분`
+}
+
 export function ExecutionLearning({ state, busy, run, approveProposal, events = [], memories = [], projects = [] }: {
   state: ExecutionState; busy: boolean
   run: (action: () => Promise<ExecutionState>, message: string) => Promise<boolean>
@@ -79,7 +89,7 @@ export function ExecutionLearning({ state, busy, run, approveProposal, events = 
       <label className="execution-label">난이도<select name="difficulty"><option value="">미입력</option>{[1,2,3,4,5].map(n => <option key={n} value={n}>{n}{n === 1 ? ' · 쉬움' : n === 5 ? ' · 어려움' : ''}</option>)}</select></label>
       <label className="execution-label">메모<textarea name="note" maxLength={priorityChanged ? 1500 : 2000}/></label>
       {!priorityChanged && <label className="execution-label">다시 시도할 방법<input name="recoveryAction" maxLength={1000}/></label>}
-      {!priorityChanged && result !== 'completed' && <label className="execution-inline"><input type="checkbox" checked={sizingConsent} onChange={e => setSizingConsent(e.target.checked)}/>(선택) 작업 이름·시간·메모를 AI에 보내, 작업이 자꾸 끝나지 않을 때 한 번에 할 길이를 작업 내용까지 보고 판단받는 데 동의합니다.</label>}
+      {!priorityChanged && <label className="execution-inline"><input type="checkbox" checked={sizingConsent} onChange={e => setSizingConsent(e.target.checked)}/>(선택) 작업 이름·시간·메모를 AI에 보내, 기록에서 반복되는 패턴(한 번에 할 길이, 집중이 잘 되는 시간대)을 작업 내용까지 보고 판단받는 데 동의합니다.</label>}
       {priorityChanged && <>
         <p className="execution-help">우선순위 변경은 현재 계획을 바로 바꾸지 않고 새 주간 계획 초안을 만듭니다.</p>
         <label className="execution-inline"><input type="checkbox" checked={adaptiveConsent} onChange={e => setAdaptiveConsent(e.target.checked)}/>목표·프로필·기억·가용 시간·프로젝트·현재 계획·작업·체크인 정보를 LLM에 전송해 재계획 초안을 만드는 데 동의합니다.</label>
@@ -87,13 +97,14 @@ export function ExecutionLearning({ state, busy, run, approveProposal, events = 
       <button className="primary-button" disabled={priorityChanged && !adaptiveConsent}>{priorityChanged ? '재계획 초안 만들기' : '실행 결과 저장'}</button>
     </fieldset></form>}
     {(state.profileUpdateProposals ?? []).map(p => { const replan = replansCurrentPlan(state, p); return <article key={p.id}>
-      <h3>집중 구간 {p.proposedChanges.blockMinutes.from}분 → {p.proposedChanges.blockMinutes.to}분</h3>
+      <h3>{proposalTitle(p)}</h3>
       {p.projectId && <p className="execution-help">이 프로젝트에만 적용: {projectTitle(p.projectId)} · 다른 프로젝트와 기본 프로필은 그대로입니다.{!replan && p.status === 'pending' && ' 지금 계획은 그대로 두고 이 프로젝트의 다음 계획부터 반영합니다.'}</p>}
       <p>{p.reason}</p>
       {p.sizing && <p className="execution-help">{p.sizedBy === 'ai' ? '실제 기록과 작업 내용을 AI가 함께 보고 정했어요.' : p.sizing}</p>}
+      {p.focusStats && <p className="execution-help">{Object.entries(p.focusStats).map(([period, s]) => `${periodLabel(period)} ${s.planned}건 중 ${s.finished}건 완료`).join(' · ')}</p>}
       {p.aiReason && <p className="execution-help">AI 판단: {p.aiReason}</p>}
       <p>상태: {{ pending: '사용자 승인 대기', approved: '승인됨', rejected: '거절됨' }[p.status]}</p>
-      <ul>{p.evidenceRecordIds.map(id => { const r = records.find(r => r.id === id); return <li key={id}>{r ? `${r.taskTitle}: 예정 ${r.plannedMinutes}분 / 실제 ${r.actualMinutes ?? '미입력'}분 · ${r.reasonCode ? reasons[r.reasonCode] : ''}` : '실행 기록'}<small> · 근거 ID: {id}</small></li> })}</ul>
+      <details><summary>근거 기록 {p.evidenceRecordIds.length}건</summary><ul>{p.evidenceRecordIds.map(id => { const r = records.find(r => r.id === id); return <li key={id}>{r ? `${r.taskTitle}: ${r.result === 'completed' ? '완료' : `예정 ${r.plannedMinutes}분 / 실제 ${r.actualMinutes ?? '미입력'}분`}${r.reasonCode ? ` · ${reasons[r.reasonCode]}` : ''}` : '실행 기록'}<small> · 근거 ID: {id}</small></li> })}</ul></details>
       {(p.status === 'pending' || (p.status === 'approved' && replan && stillCurrent(p))) && <>
         {replan && <label className="execution-inline"><input type="checkbox" checked={replanConsent} onChange={e => setReplanConsent(e.target.checked)}/>목표·프로필·기억·가용 시간·프로젝트·기존 할 일·현재 계획·변경 근거를 LLM에 전송해 재계획 초안을 만드는 데 동의합니다.</label>}
         <div className="execution-actions">

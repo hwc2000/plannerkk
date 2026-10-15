@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from ..execution_api import BusyEvent, Slot
 from ..execution_service import save_execution_record, set_recovery_action
+from ..availability import busy_times
 from ..execution_scheduler import availability_windows
 from ..execution_store import ConflictError, ExecutionStore
 from .ports import PlanConflictError
@@ -115,10 +116,11 @@ def schedule_context(
     """Free time left in the plan for moving ``task_id``.
 
     Availability slots minus calendar events (sent by the client, which keeps
-    them) minus every plan entry, including the task's own slot: the user just
-    said that time did not work.  Times proposed by other tasks' waiting drafts
-    are held too, so two drafts never offer the same free time.  The plan's
-    buffer is not held back: it exists to absorb exactly this kind of recovery.
+    them), minus the user's fixed schedule and blocked hours, minus every plan
+    entry, including the task's own slot: the user just said that time did not
+    work.  Times proposed by other tasks' waiting drafts are held too, so two
+    drafts never offer the same free time.  The plan's buffer is not held back:
+    it exists to absorb exactly this kind of recovery.
     """
     plan = state["plan"]
     entry = next(e for e in plan["entries"] if e["id"] == task_id)
@@ -127,7 +129,7 @@ def schedule_context(
     within_plan = deadline is not None and deadline <= plan["endDate"]
     held = [t for other, d in drafts_for_plan(state).items() if other != task_id
             for t in d["draft"]["tasks"] if t.get("start")]
-    busy = list(events) + [
+    busy = list(events) + busy_times(state, date.fromisoformat(plan["startDate"])) + [
         BusyEvent(date=e["start"][:10], startTime=e["start"][11:], endTime=e["end"][11:])
         for e in [*plan["entries"], *held]
     ]

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { AvailabilityGrid } from './AvailabilityGrid'
-import { FixedSchedulePicker } from './FixedSchedulePicker'
+import { FixedScheduleEditor } from './FixedScheduleEditor'
 import { ProfileForm } from './ProfileForm'
 import { ProfileChat } from './ProfileChat'
 import { ExecutionView } from './ExecutionView'
@@ -37,14 +37,15 @@ it('preserves unknown duration and exclusive no-barrier answer', async () => {
   fireEvent.click(screen.getByLabelText('특별한 어려움 없음'))
   expect((screen.getByLabelText('시작이 어려움') as HTMLInputElement).checked).toBe(false)
   fireEvent.click(screen.getByText('다음'))
-  fireEvent.click(screen.getByLabelText('저녁·밤'))
+  // When the user focuses best is learned from records, not asked.
+  expect(screen.queryByLabelText('저녁·밤')).toBeNull()
   fireEvent.click(screen.getByText('다음'))
   fireEvent.click(screen.getByLabelText('할 일을 줄임'))
   fireEvent.click(screen.getByLabelText('시간 지정형 · 18:30~19:00 공부'))
   fireEvent.click(screen.getByText('프로필 생성'))
   await waitFor(() => expect(generate).toHaveBeenCalledWith(expect.objectContaining({
     roles: ['student'], barriers: ['none'], focusMinutes: null,
-    dailyMinutes: null, scheduleStyle: 'time_blocks',
+    dailyMinutes: null, scheduleStyle: 'time_blocks', energy: 'unknown',
   }), 'demo', false))
 })
 it('maps confirmed tasks once and omits breaks', () => {
@@ -143,37 +144,50 @@ describe('conversational onboarding', () => {
 })
 
 
-it('collects fixed weekly schedules without typing or sending on selection', async () => {
-  const send = vi.fn().mockResolvedValue(true)
-  render(<FixedSchedulePicker disabled={false} canSend={true} onSend={send}/>)
+it('collects fixed weekly schedules and saves them only on request', async () => {
+  const save = vi.fn().mockResolvedValue(true)
+  render(<FixedScheduleEditor items={[]} disabled={false} onSave={save}/>)
   expect(screen.queryByRole('textbox')).toBeNull()
   fireEvent.click(screen.getByText('평일 선택'))
   fireEvent.change(screen.getByLabelText('시작 시간'), {target:{value:'09:00'}})
   fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'18:00'}})
-  expect(send).not.toHaveBeenCalled()
   fireEvent.click(screen.getByText('일정 추가'))
   fireEvent.click(screen.getByText('토요일'))
   fireEvent.change(screen.getByLabelText('시작 시간'), {target:{value:'18:30'}})
-  fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'19:00'}})
+  fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'23:59'}})
   fireEvent.click(screen.getByText('일정 추가'))
-  fireEvent.click(screen.getByText('고정 일정 보내기 (2)'))
-  expect(send).toHaveBeenCalledWith('월요일·화요일·수요일·목요일·금요일 09:00~18:00; 토요일 18:30~19:00')
+  expect(screen.getByText(/토 18:30~24:00/)).toBeTruthy()
+  expect(save).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByText('고정 일정 저장'))
+  expect(save).toHaveBeenCalledWith([{ days: [0, 1, 2, 3, 4], start: '09:00', end: '18:00' }, { days: [5], start: '18:30', end: '23:59' }])
 })
 it('rejects invalid/overlapping fixed schedules and supports removal', () => {
-  render(<FixedSchedulePicker disabled={false} canSend={true} onSend={vi.fn()}/>)
+  const saved = [{ id: 'fixed-1', days: [0], start: '09:00', end: '18:00' }]
+  render(<FixedScheduleEditor items={saved} disabled={false} onSave={vi.fn()}/>)
+  expect((screen.getByText('고정 일정 저장') as HTMLButtonElement).disabled).toBe(true)
   fireEvent.click(screen.getByText('일정 추가'))
   expect(screen.getByRole('alert').textContent).toContain('요일')
-  fireEvent.click(screen.getByText('월요일'))
+  fireEvent.click(screen.getByText('화요일'))
   fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'08:00'}})
   fireEvent.click(screen.getByText('일정 추가'))
   expect(screen.getByRole('alert').textContent).toContain('종료 시간')
-  fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'18:00'}})
-  fireEvent.click(screen.getByText('일정 추가'))
+  fireEvent.click(screen.getByText('화요일'))
   fireEvent.click(screen.getByText('월요일'))
+  fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'12:00'}})
   fireEvent.click(screen.getByText('일정 추가'))
   expect(screen.getByRole('alert').textContent).toContain('겹치는')
-  fireEvent.click(screen.getByLabelText('월요일 09:00~18:00 삭제'))
-  expect(screen.queryByText('고정 일정 보내기 (1)')).toBeNull()
+  fireEvent.click(screen.getByText('월요일'))
+  fireEvent.click(screen.getByLabelText('월 09:00~18:00 삭제'))
+  expect((screen.getByText('고정 일정 저장') as HTMLButtonElement).disabled).toBe(false)
+  expect(screen.getByText('저장한 고정 일정이 없어요.')).toBeTruthy()
+})
+it('shows hours the fixed schedule takes as taken, not as choices', () => {
+  const fixed = [{ id: 'f', days: [0], start: '18:00', end: '19:30' }]
+  render(<AvailabilityGrid slots={[{ day: 0, hour: 18 }, { day: 0, hour: 19 }, { day: 1, hour: 18 }]} onChange={vi.fn()} fixed={fixed}/>)
+  expect(screen.getByLabelText('월요일 18시부터 19시 고정 일정')).toBeTruthy()
+  expect(screen.queryByRole('checkbox', { name: '월요일 18시부터 19시' })).toBeNull()
+  expect((screen.getByLabelText('월요일 19시부터 20시') as HTMLInputElement).checked).toBe(true)  // half of it is still free
+  expect(screen.getByRole('status').textContent).toBe('주 3시간 선택 · 고정 일정 1시간 제외')
 })
 
 it('submits checked survey answers without LLM interaction', async () => {
@@ -186,7 +200,6 @@ it('submits checked survey answers without LLM interaction', async () => {
   fireEvent.click(screen.getByLabelText('시작이 어려움'))
   fireEvent.click(screen.getByText('다음'))
   fireEvent.click(screen.getByLabelText('25분'))
-  fireEvent.click(screen.getByLabelText('오전'))
   fireEvent.click(screen.getByText('다음'))
   fireEvent.click(screen.getByLabelText('할 일을 줄임'))
   fireEvent.click(screen.getByLabelText('작업량 지정형 · 공부 1시간, 운동 30분'))
@@ -218,7 +231,7 @@ it('sends an unfinished task to the AI for sizing only when the user opts in', a
   fireEvent.change(screen.getByLabelText('실행 결과'), { target: { value: 'partial' } })
   fireEvent.change(screen.getByLabelText('실제 시간(분)'), { target: { value: '15' } })
   fireEvent.change(screen.getByLabelText('미완료·지연 이유'), { target: { value: 'time_shortage' } })
-  fireEvent.click(screen.getByLabelText(/한 번에 할 길이를 작업 내용까지 보고 판단받는 데 동의/))
+  fireEvent.click(screen.getByLabelText(/작업 내용까지 보고 판단받는 데 동의/))
   fireEvent.click(screen.getByText('실행 결과 저장'))
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
@@ -450,6 +463,33 @@ describe('conversational planner', () => {
     rerender(<PlannerChat state={{ ...state, revision: 5 }} busy={false} run={run} projects={[essay, app]} onApplyPlan={apply}/>)
     expect(screen.queryByText('확인하고 계획 초안 만들기')).toBeNull()
   })
+  it('asks before taking hours out of the week and replanning this project', async () => {
+    const card = { kind: 'adjust' as const, revision: 4, payload: {
+      blockedTimes: [{ date: '2030-01-09', startHour: 18, endHour: 21 }], goal: '에세이 초안, 분량 절반', startDate: '2030-01-07' } }
+    const adjust = vi.fn().mockResolvedValue(true)
+    render(<PlannerChat state={{ ...base, plannerThreads: { essay: { ...threads.essay, action: card, updatedAt: '2030-01-09T10:00:00' } } }}
+      busy={false} run={run} projects={[essay]} onApplyPlan={vi.fn()} onAdjust={adjust}/>)
+
+    expect(screen.getByRole('heading', { name: '이번 주 계획을 이렇게 바꿀까요?' })).toBeTruthy()
+    expect(screen.getByText('1/9(수) 18~21시')).toBeTruthy()
+    const confirm = screen.getByText('확인하고 계획 다시 짜기') as HTMLButtonElement
+    expect(confirm.disabled).toBe(true)  // replanning sends the goal to the AI
+    fireEvent.click(screen.getByLabelText(/OpenAI에 전송하는 데 동의/))
+    fireEvent.click(confirm)
+    expect(adjust).toHaveBeenCalledWith(card.payload.blockedTimes, '에세이 초안, 분량 절반', '2030-01-07', essay, true)
+  })
+  it('shows a weekly time change as what it adds', () => {
+    const card = { kind: 'settings' as const, revision: 4, payload: { slots: [{ day: 0, hour: 9 }, { day: 0, hour: 10 }, { day: 0, hour: 19 }], view: 'timeline' as const },
+      change: { added: [{ day: 0, hour: 9 }, { day: 0, hour: 10 }], removed: [] } }
+    render(<PlannerChat state={{ ...base, plannerThreads: { _free: { messages: [], action: card } } }} busy={false} run={run} projects={[]} onApplyPlan={vi.fn()}/>)
+    expect(screen.getByText('월 9~11시')).toBeTruthy()
+    expect(screen.getByText(/바꾼 뒤에는 주 3시간/)).toBeTruthy()
+  })
+  it('shows which skill answered and what it looked up', () => {
+    const answered = { messages: [{ id: 'm1', role: 'assistant' as const, content: '수요일은 1시간 남았어요.', skill: 'answer', lookups: ['week'] }], action: null }
+    render(<PlannerChat state={{ ...base, plannerThreads: { essay: answered } }} busy={false} run={run} projects={[essay]} onApplyPlan={vi.fn()}/>)
+    expect(screen.getByText('답하기 · 이번 주 시간표 확인')).toBeTruthy()
+  })
   it('opens a fresh conversation for a newly created project', () => {
     const { rerender } = render(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} projects={[essay, app]} onApplyPlan={vi.fn()}/>)
     const fresh = { ...essay, id: 'new', title: '새 공부' }
@@ -478,6 +518,44 @@ it('shows why the plan fits this user, with where each value came from', () => {
 it('renders nothing for plans made before reasons existed', () => {
   const { container } = render(<PlanReasons open reasons={[]}/>)
   expect(container.innerHTML).toBe('')
+})
+
+it('shows a learned focus time proposal with its numbers', () => {
+  const proposal = {
+    id: 'p1', profileId: 'profile1', projectId: null, status: 'pending', ruleVersion: 'focus-time-v1', createdAt: '', decidedAt: null,
+    proposedChanges: { focusTime: { from: 'unknown', to: 'evening' } }, sizedBy: 'evidence', sizing: '끝낸 비율이 가장 높은 저녁을 제안합니다.',
+    focusStats: { morning: { planned: 4, finished: 1 }, evening: { planned: 5, finished: 5 } },
+    reason: '최근 기록에서 오전 4건 중 1건, 저녁 5건 중 5건을 끝냈습니다.', evidenceRecordIds: ['r1'],
+  } as const
+  const state = { revision: 2, settings: { slots: [], view: 'timeline' }, plan: null, profile: { id: 'profile1' }, executionRecords: [], profileUpdateProposals: [proposal] } as unknown as ExecutionState
+  render(<ExecutionLearning state={state} busy={false} run={vi.fn()}/>)
+  expect(screen.getByRole('heading', { name: '집중이 잘 되는 시간대 모름 → 저녁' })).toBeTruthy()
+  expect(screen.getByText('오전 4건 중 1건 완료 · 저녁 5건 중 5건 완료')).toBeTruthy()
+})
+
+it('saves the fixed schedule and says which tasks moved', async () => {
+  const profile = { id: 'profile1', status: 'confirmed', source: 'demo', schemaVersion: '2.0', createdAt: '', learnedPatterns: [],
+    declaredFacts: { roles: ['student'], regularity: 'regular', barriers: ['none'], focusMinutes: 30, dailyMinutes: null, energy: 'unknown', recovery: 'reduce', constraints: '', context: '' },
+    planningPreferences: { blockMinutes: 30, breakMinutes: 5, bufferPercent: 25, dailyPlannedMinutes: null, scheduleStyle: 'time_blocks', recoveryPreference: 'reduce', starterMinutes: null, focusTime: 'unknown', status: 'confirmed' },
+    insights: { summary: '요약', strategies: [], followUpQuestions: [] } }
+  const state = { revision: 3, profile, profileDraft: null, settings: { slots: [{ day: 0, hour: 18 }], view: 'timeline' }, plan: null, planDraft: null,
+    llmAvailable: false, model: 'test', fixedSchedule: [] } as unknown as ExecutionState
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 4, relocated: { moved: ['개요 쓰기'], unplaced: [] } }) })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<ExecutionView state={state} onChange={vi.fn()} projects={[]} milestones={[]} events={[{ id: 'e', title: '병원', date: '2030-01-08', startTime: '10:00', endTime: '11:00', isFixed: true }]}/>)
+
+  expect(screen.getByText('아직 몰라요')).toBeTruthy()  // focus time is learned, not asked
+  expect(screen.queryByText(/집중이 잘되는 시간:/)).toBeNull()
+  fireEvent.click(screen.getByText('월요일'))
+  fireEvent.click(screen.getByText('일정 추가'))
+  fireEvent.click(screen.getByText('고정 일정 저장'))
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/fixed-schedule')
+  expect(fetchMock.mock.calls[0][1].method).toBe('PUT')
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ revision: 3, items: [{ days: [0], start: '09:00', end: '18:00' }],
+    events: [{ date: '2030-01-08', startTime: '10:00', endTime: '11:00' }] })
+  expect((await screen.findAllByText(/겹친 작업 1개를 빈 시간으로 옮겼어요/)).length).toBeGreaterThan(0)
 })
 
 describe('project settings', () => {

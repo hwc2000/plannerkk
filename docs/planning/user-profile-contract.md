@@ -19,7 +19,7 @@ API/DB는 camelCase, C 그래프 내부는 snake_case를 유지한다.
 |---|---|---|
 | 1. 생활의 리듬 | roles, regularity | 생활 형태 복수 선택, 생활 규칙성 단일 선택 |
 | 2. 막히는 순간 | barriers | 계획이 무너지는 이유 복수 선택 |
-| 3. 집중 습관 | focusMinutes, energy | 한 번의 집중 시간과 집중이 잘되는 시간대 각각 단일 선택 |
+| 3. 집중 습관 | focusMinutes | 한 번의 집중 시간 단일 선택 |
 | 4. 다시 시작하는 방법 | recovery, scheduleStyle | 계획이 틀어졌을 때 대응과 선호 계획 방식 각각 단일 선택 |
 
 - roles/barriers는 체크박스, 나머지는 라디오 버튼이다. barriers의 none/unknown은 다른 항목과 함께 선택할 수 없다.
@@ -27,6 +27,10 @@ API/DB는 camelCase, C 그래프 내부는 snake_case를 유지한다.
 - 단계별 필수 선택을 검사한 뒤 다음 단계로 이동한다. focusMinutes의 기본값은 null, scheduleStyle의 기본값은 unknown이다.
 - `dailyMinutes`는 현재 설문에서 받지 않고 제출 시 null로 설정한다. 타입/기존 데이터 호환을 위해 스키마에는 남긴다.
 - `constraints`, `context` 입력 UI는 없다. 신규 설문은 빈 문자열을 사용한다. 기존 프로필 수정 시 기존 값은 보존하되 새로운 자유 텍스트를 입력받지 않는다.
+- **묻지 않는 항목 (10/15)**: 설문(양식·대화 모두)은 `energy`(집중이 잘되는 시간대)와 `constraints`(고정 일정)를 묻지 않는다.
+  스키마는 그대로 두고 신규 답은 `energy=unknown`, `constraints=""`. 예전 프로필의 답은 다시 설문해도 그대로 둔다.
+  - 집중이 잘되는 시간대: 실행 기록으로 찾아 기본 프로필 `planningPreferences.focusTime`에 채운다(focus-time-v1, 승인 후 반영).
+  - 고정 일정: 설문이 아니라 계획할 시간 옆의 **고정 일정 편집기**에서 언제든 저장한다(`state.fixedSchedule`). 저장하면 배치에서 자동으로 빠진다.
 - 요약에서 dailyMinutes는 표시하지 않는다. 답변을 검토한 뒤 확정하며 언제든 설문 수정으로 돌아갈 수 있다.
 
 ## 가용시간과 계획 방식
@@ -37,7 +41,21 @@ API/DB는 camelCase, C 그래프 내부는 snake_case를 유지한다.
 
 프로필 확정 시 scheduleStyle에 따라 `settings.view`를 time_blocks → timeline, flexible_queue → checklist로 맞춘다.
 별도 화면에서 같은 계획 방식을 다시 선택하도록 요구하지 않는다.
-고정 일정 텍스트는 자동 차감하지 않는다. 배치할 수 없는 시간은 가용시간 선택에서 제외하거나 캘린더 일정으로 등록해야 한다.
+### 계획할 수 없는 시간 (10/15)
+
+가용시간(`settings.slots`)은 "계획할 수 있는 시간"이고, 아래 두 목록은 "계획할 수 없는 시간"이다. 둘 다 사용자 단위라 모든 프로젝트가 같이 쓴다.
+사용자가 가용시간 표에서 손으로 뺄 필요가 없다. 배치할 때마다 코드가 뺀다(`availability.py` `busy_times`: 새 계획·프로젝트 재계획·복구 재배치 모두).
+
+| 키 | 모양 | 바꾸는 곳 | 의미 |
+|---|---|---|---|
+| `fixedSchedule` | `[{id, days: [0~6], start: "HH:MM", end: "HH:MM"}]` (최대 30개) | `PUT /api/execution/fixed-schedule {revision, items, events}` | 매주 반복되는 고정 일정(수업·출근). 같은 요일끼리 겹치면 400 |
+| `blockedTimes` | `[{id, date, startHour, endHour}]` (최대 50개, endHour 미포함, 8~23시) | `PUT /api/execution/blocked-times {revision, items, events}` | 이번 주 특정 날짜에 비워 둔 시간. 지난 날짜는 저장할 때 지운다 |
+
+- 저장하면 지금 계획의 미완료 작업 중 새로 겹치는 것(모든 프로젝트)을 코드가 옮긴다(`relocate`): id·길이·프로젝트·마감은 그대로,
+  원래 시각 이후의 가장 이른 빈 시간 → 없으면 그 주의 앞쪽 빈 시간. 시작 행동은 혼자 옮기지 않고 뺀다.
+  어디에도 안 들어가면 `pendingTasks`에 이유와 함께 남긴다. 응답의 `relocated: {moved, unplaced}`로 화면이 알린다.
+- 기다리던 계획 초안은 버리고(예전 빈 시간 기준), 옮긴 작업이나 막힌 시간을 제안하던 복구 초안도 닫는다.
+- 고정 일정 표시: 가용시간 표에서 한 시간 전체가 고정 일정이면 "고정" 빗금 칸(선택 불가, 시간 수에서 제외), 일부만 겹치면 옅은 빗금.
 
 ## 스키마
 
@@ -122,6 +140,7 @@ execution_state / user_execution_state 의 JSON document
 | `scheduleStyleSource` | `user`, `rule`, `legacy` | "legacy" | — |
 | `recoveryPreference` | `replan`, `reduce`, `continue`, `abandon`, `unknown` | 필수 | — |
 | `starterMinutes` | integer / null | null | 최솟값 1, 최댓값 180 |
+| `focusTime` | `morning`, `afternoon`, `evening`, `variable`, `unknown` | "unknown" | 집중이 잘 되는 시간대. 실행 기록으로 학습(승인), 예전 프로필은 설문 `energy` 값 |
 | `status` | `provisional`, `confirmed` | 필수 | — |
 
 #### 항목 간 조건과 생성 규칙
@@ -430,6 +449,7 @@ state.projectProfileRevisions = [{projectId, version, projectProfileId, source, 
   (`plannerThreads[id].action.kind = "project_settings"`)를 만들고, 사용자가 누르면 위 API로 저장한다. 값은 사용자가 말한
   것만 쓰고 추측하지 않으며, 기본 프로필과 함께 쓸 수 없는 값이면 카드 없이 이유를 답에 붙인다.
 - 프로젝트 대화방 머리에는 기본 프로필(모든 프로젝트 공통)과 이 프로젝트만의 값을 나란히 보여 준다.
+- 대화 한 번은 기능 고르기 → 필요한 정보 꺼내기 → 기능 실행으로 처리한다: [planner-chat-skills.md](planner-chat-skills.md).
 - 프로젝트 실행 기록으로 배운 변경은 프로젝트 설정에만 적용한다(`apply_project_proposal`). 사용자 프로필의
   ID·버전은 그대로라 다른 프로젝트의 계획은 계속 유효하다.
 - 프로필 초기화는 프로젝트 설정과 그 이력도 지운다.

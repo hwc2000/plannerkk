@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ExecutionState } from '../../shared/types'
 import { answerLabels } from './profileLabels'
-import { FixedSchedulePicker } from './FixedSchedulePicker'
 import { executionApi } from './api'
 
 type Session = {
@@ -77,8 +76,7 @@ export function ProfileChat({ state, busy, run, onReviewed, onCancel }: {
       <div ref={end}/>
     </div>
     {!session ? <button className="primary-button" disabled={busy || loading || !!error} onClick={() => { void run(() => executionApi('/profile/chat/start', { revision: state.revision }), '대화를 시작했습니다.') }}>대화 시작</button> : <>
-      {session.question?.field === 'constraints' && <FixedSchedulePicker disabled={busy || loading} canSend={mode !== 'llm' || consent} onSend={value => send(value, 'constraints')}/>}
-      {session.question && session.question.field !== 'constraints' && <div>
+      {session.question && <div>
         <p className="execution-help">{multiple ? '여러 항목을 선택할 수 있어요. 선택을 마치면 아래 버튼으로 보내 주세요.' : '답변을 선택한 뒤 아래 버튼으로 보내 주세요.'}</p>
         <div className="profile-chat-choices" role="group" aria-label="답변 선택">{session.question.choices.map(c => <button type="button" className="secondary-button" aria-pressed={selected.includes(c.value)} key={c.label} disabled={busy || loading} onClick={() => toggleChoice(c.value)}>{c.label}</button>)}</div>
         <button type="button" className="primary-button" disabled={busy || loading || !selected.length || (mode === 'llm' && !consent)} onClick={() => {
@@ -86,7 +84,7 @@ export function ProfileChat({ state, busy, run, onReviewed, onCancel }: {
           void send(labels.join(', '), session.question!.field)
         }}>선택한 답변 보내기{selected.length > 0 ? ` (${selected.length})` : ''}</button>
       </div>}
-      {session.question?.field !== 'constraints' && (!session.ready || mode === 'llm') && <form onSubmit={e => { e.preventDefault(); void send(text) }}>
+      {(!session.ready || mode === 'llm') && <form onSubmit={e => { e.preventDefault(); void send(text) }}>
         <label className="execution-label">나의 답변<textarea maxLength={1500} value={text} disabled={busy || loading} onChange={e => setText(e.target.value)} placeholder={mode === 'llm' ? '예: 평일에는 회사에 다니고, 퇴근 후 공부는 30분 정도가 편해요.' : '선택지의 답변을 입력하거나 시간을 적어 주세요. 복수 선택은 쉼표로 구분해요.'}/></label>
         <button className="primary-button" disabled={busy || loading || !text.trim() || (mode === 'llm' && !consent)}>보내기</button>
       </form>}

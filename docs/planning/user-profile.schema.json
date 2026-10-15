@@ -115,6 +115,19 @@
           "default": null,
           "title": "Dailyplannedminutes"
         },
+        "focusTime": {
+          "default": "unknown",
+          "description": "집중이 잘 되는 시간대. 실행 기록으로 학습(focus-time-v1)해 승인 후 채운다.",
+          "enum": [
+            "morning",
+            "afternoon",
+            "evening",
+            "variable",
+            "unknown"
+          ],
+          "title": "Focustime",
+          "type": "string"
+        },
         "scheduleStyle": {
           "enum": [
             "time_blocks",

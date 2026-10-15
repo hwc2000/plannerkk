@@ -1,3 +1,5 @@
+import type { ExecutionProfile } from '../../shared/types'
+
 export const answerLabels: Record<string, string> = { roles: '생활 형태', regularity: '생활 규칙성', barriers: '계획이 무너지는 이유', focusMinutes: '한 번의 집중 시간', dailyMinutes: '하루 여유 시간', energy: '집중이 잘되는 시간', recovery: '계획이 틀어졌을 때', constraints: '고정 일정', context: '추가 설명', scheduleStyle: '선호하는 계획 방식' }
 export const options: Record<string, Array<[string,string]>> = {
   scheduleStyle: [['time_blocks','시간 지정형 · 18:30~19:00 공부'],['flexible_queue','작업량 지정형 · 공부 1시간, 운동 30분'],['unknown','아직 모르겠어요']],
@@ -15,4 +17,17 @@ export function formatAnswer(key: string, value: unknown): string {
   if (label) return label
   if (key === 'focusMinutes' || key === 'dailyMinutes') return `${String(value)}분`
   return String(value) || '없음'
+}
+
+/** Survey answers the questionnaire no longer asks; the profile keeps them for older answers only. */
+export const notAsked = ['dailyMinutes', 'energy', 'constraints']
+
+export const focusTimeLabels: Record<string, string> = { morning: '오전', afternoon: '오후', evening: '저녁', variable: '그때그때 다름' }
+
+/** When the user focuses best, and where that came from: learned from records, or an older survey answer. */
+export function focusTimeText(profile: ExecutionProfile): { value: string; source: string } {
+  const value = profile.planningPreferences.focusTime ?? 'unknown'
+  if (!(value in focusTimeLabels)) return { value: '아직 몰라요', source: '실행 기록이 쌓이면 찾아서 제안해요' }
+  const learned = profile.learnedPatterns?.some(p => p.status === 'active' && 'focusTime' in p.proposedChanges)
+  return { value: focusTimeLabels[value], source: learned ? '실행 기록으로 찾음' : '예전 설문 답' }
 }

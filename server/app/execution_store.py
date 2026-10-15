@@ -14,6 +14,8 @@ class ConflictError(ValueError):
 def empty_state():
     return {"revision": 0, "profile": None, "profileDraft": None,
             "settings": {"slots": [], "view": "timeline"}, "plan": None, "planDraft": None,
+            # User-level time that cannot be planned in, shared by every project (availability.py).
+            "fixedSchedule": [], "blockedTimes": [],
             "_planDraftRecordId": None,
             "recoveryDrafts": {}, "executionRecords": [], "profileUpdateProposals": [],
             "surveyResponses": [], "profileRevisions": [], "memories": [], "profileConversations": [],

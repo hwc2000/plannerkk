@@ -21,23 +21,29 @@ from server.tests.test_adaptive_api import PLAIN_ANSWERS
 ESSAY = {"id": "essay", "title": "에세이", "goal": "초안 제출", "startDate": "2030-01-01", "dueDate": "2030-01-31"}
 APP = {"id": "app", "title": "앱 개발", "goal": "로그인 화면", "startDate": "2030-01-01", "dueDate": "2030-01-31"}
 BASE_BLOCK = 30  # PLAIN_ANSWERS' focus block
-NO_CHAT_ACTION = {"reply": "좋아요", "action": "none", "goal": None, "startDate": None, "slots": None, "projectSettings": None}
+# A chat turn the router answers itself, without reading saved data.
+ANSWER_ROUTE = {"skill": "answer", "lookups": [], "reply": "좋아요"}
 
 
 class FakeLLM:
-    """Plans two tasks per project in the request; minutes per project, a second value after a retry."""
+    """Plans two tasks per project in the request; minutes per project, a second value after a retry.
+
+    A chat turn is routed by ``route``; each skill call answers from ``replies`` by call name.
+    """
 
     def __init__(self):
         self.plan_calls, self.chat_calls = [], []
         self.minutes, self.retry_minutes = {}, {}
-        self.chat_reply = NO_CHAT_ACTION
+        self.route, self.replies = ANSWER_ROUTE, {}
 
     async def generate(self, **kwargs):
         if kwargs["name"] == "execution_profile":
             return generate_profile(PLAIN_ANSWERS)["insights"]
-        if kwargs["name"] == "planner_conversation":
+        if kwargs["name"].startswith("planner_"):
             self.chat_calls.append(kwargs)
-            return self.chat_reply
+            if kwargs["name"] == "planner_route":
+                return self.route
+            return self.replies.get(kwargs["name"], {"reply": "좋아요"})
         self.plan_calls.append(kwargs)
         context = kwargs["context"]
         minutes = self.retry_minutes if context.get("previousErrors") else self.minutes
@@ -179,19 +185,22 @@ class ProjectIndependenceTests(unittest.TestCase):
 
     def test_chat_sees_only_its_own_project_and_the_shared_profile(self):
         self.set_project("essay", blockMinutes=15)
+        self.llm.route = {"skill": "answer", "lookups": ["profile"], "reply": None}
 
-        self.call("/api/execution/chat/message", text="에세이 얘기", consent=True, project=ESSAY)
-        self.call("/api/execution/chat/message", text="앱 얘기", consent=True, project=APP)
+        self.call("/api/execution/chat/message", text="에세이는 몇 분씩 해?", consent=True, project=ESSAY)
+        self.call("/api/execution/chat/message", text="앱은 몇 분씩 해?", consent=True, project=APP)
 
-        essay, app = (call["context"] for call in self.llm.chat_calls)
-        self.assertEqual((essay["preferences"]["blockMinutes"], essay["userPreferences"]["blockMinutes"]), (15, BASE_BLOCK))
-        self.assertEqual(essay["projectOverrides"]["blockMinutes"]["source"], "declared")
-        self.assertEqual((app["preferences"]["blockMinutes"], app["projectOverrides"]), (BASE_BLOCK, {}))
+        essay, app = (call["context"]["lookups"]["profile"]["settings"][0] for call in self.llm.chat_calls
+                      if call["name"] == "planner_answer")
+        self.assertEqual(essay, {"name": "한 번에 집중할 시간", "value": "15분", "source": "이 프로젝트에서 사용자가 정함",
+                                 "basicProfileValue": f"{BASE_BLOCK}분"})
+        self.assertEqual(app, {"name": "한 번에 집중할 시간", "value": f"{BASE_BLOCK}분", "source": "설문 답에서 정함"})
 
     def test_chat_turns_what_the_user_says_about_a_project_into_a_card(self):
         said = {"blockMinutes": 25, "dailyPlannedMinutes": None, "bufferPercent": None, "starterMinutes": None,
                 "recoveryPreference": None}
-        self.llm.chat_reply = {**NO_CHAT_ACTION, "action": "project_settings", "projectSettings": said}
+        self.llm.route = {"skill": "project_settings", "lookups": [], "reply": None}
+        self.llm.replies = {"planner_project_settings": {"reply": "좋아요", "projectSettings": said}}
 
         state = self.call("/api/execution/chat/message", text="에세이는 25분씩만 할래요", consent=True, project=ESSAY)
 
@@ -204,8 +213,8 @@ class ProjectIndependenceTests(unittest.TestCase):
         self.assertEqual(self.state()["projectProfiles"]["essay"]["overrides"]["blockMinutes"]["value"], 25)
 
         # A value equal to what already applies is not stored: the project keeps following the user profile there.
-        self.llm.chat_reply = {**NO_CHAT_ACTION, "action": "project_settings",
-                               "projectSettings": {**said, "blockMinutes": 20, "bufferPercent": self.state()["profile"]["planningPreferences"]["bufferPercent"]}}
+        self.llm.replies = {"planner_project_settings": {"reply": "좋아요", "projectSettings": {
+            **said, "blockMinutes": 20, "bufferPercent": self.state()["profile"]["planningPreferences"]["bufferPercent"]}}}
         state = self.call("/api/execution/chat/message", text="20분으로 바꿀래요", consent=True, project=ESSAY)
         self.assertEqual(state["plannerThreads"]["essay"]["action"]["payload"]["overrides"], {"blockMinutes": 20})
         self.assertEqual(list(state["plannerThreads"]["essay"]["action"]["payload"]["changes"]), ["blockMinutes"])
@@ -217,15 +226,17 @@ class ProjectIndependenceTests(unittest.TestCase):
         self.assertIn("이미 이 프로젝트에 적용돼 있어요", state["plannerThreads"]["essay"]["messages"][-1]["content"])
 
         # A value that cannot work with the profile gets no card, and the reply says why.
-        self.llm.chat_reply = {**NO_CHAT_ACTION, "action": "project_settings", "projectSettings": {**said, "blockMinutes": None, "starterMinutes": 40}}
+        self.llm.replies = {"planner_project_settings": {"reply": "좋아요", "projectSettings": {
+            **said, "blockMinutes": None, "starterMinutes": 40}}}
         state = self.call("/api/execution/chat/message", text="시작 행동은 40분", consent=True, project=ESSAY)
         self.assertIsNone(state["plannerThreads"]["essay"]["action"])
         self.assertIn("적용 카드를 만들지 않았어요", state["plannerThreads"]["essay"]["messages"][-1]["content"])
 
-        # Free planning has no project to set.
-        self.llm.chat_reply = {**NO_CHAT_ACTION, "action": "project_settings", "projectSettings": said}
+        # Free planning has no project to set: the turn is answered instead.
+        self.llm.replies = {"planner_project_settings": {"reply": "좋아요", "projectSettings": said}}
         state = self.call("/api/execution/chat/message", text="25분씩", consent=True)
         self.assertIsNone(state["plannerThreads"]["_free"]["action"])
+        self.assertEqual(state["plannerThreads"]["_free"]["messages"][-1]["skill"], "answer")
 
 
 if __name__ == "__main__":

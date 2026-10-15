@@ -13,12 +13,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
-from ..execution_profile import generate_profile
+from ..execution_profile import FOCUS_PERIODS, generate_profile
 from ..execution_scheduler import schedule
 from .state import PREFERENCE_STRATEGY
 
 # System boundaries for "when I focus best"; not user traits.
-PERIODS = {"morning": (5, 12), "afternoon": (12, 18), "evening": (18, 24)}
+PERIODS = FOCUS_PERIODS
 MIN_HINT_PIECE = 10  # a day's leftover shorter than this is not worth a task
 PERIOD_LABELS = {"morning": "오전", "afternoon": "오후", "evening": "저녁"}
 
@@ -38,13 +38,13 @@ class PlanPolicy:
 
 def plan_policy(user_profile: Mapping[str, Any]) -> PlanPolicy:
     prefs = user_profile["planningPreferences"]
-    energy = user_profile["declaredFacts"].get("energy")
+    focus = prefs.get("focusTime")
     return PlanPolicy(
         block_minutes=prefs["blockMinutes"],
         buffer_percent=prefs["bufferPercent"],
         daily_cap_minutes=prefs.get("dailyPlannedMinutes"),
         starter_minutes=prefs.get("starterMinutes"),
-        preferred_period=energy if energy in PERIODS else None,
+        preferred_period=focus if focus in PERIODS else None,
     )
 
 
@@ -211,16 +211,23 @@ def _buffer(facts, prefs, survey) -> dict[str, Any]:
     return _reason("buffer", applied, f"확정한 프로필의 여유분 {percent}%를 따랐습니다.", "profile", ["bufferPercent"])
 
 
-def _period(period: str, placement: Placement) -> dict[str, Any]:
+def _period(prefs, patterns, placement: Placement) -> dict[str, Any]:
+    period = prefs["focusTime"]
     label = PERIOD_LABELS[period]
-    because = f"{label}에 집중이 잘 된다고 답했습니다."
+    learned = next((p for p in patterns if ((p.get("proposedChanges") or {}).get("focusTime") or {}).get("to") == period), None)
+    if learned:
+        count = len(learned.get("evidenceRecordIds") or [])
+        because, source, fields = (f"실행 기록 {count}건에서 {label}에 계획한 작업을 더 잘 끝내 승인한 시간대입니다.",
+                                   "learned", ["learnedPatterns"])
+    else:
+        because, source, fields = f"{label}에 집중이 잘 된다고 답했습니다.", "declared", ["energy"]
     if placement == "preferred":
-        return _reason("period", f"작업을 {label} 시간에 배치했습니다.", because, "declared", ["energy"])
+        return _reason("period", f"작업을 {label} 시간에 배치했습니다.", because, source, fields)
     if placement == "mixed":
         return _reason("period", f"{label} 시간에 먼저 배치하려 했지만 부족해 다른 시간대도 함께 썼습니다.",
-                       because, "declared", ["energy"])
+                       because, source, fields)
     return _reason("period", f"선택한 가용 시간에 {label} 시간이 없어 시간대 선호는 적용하지 못했습니다.",
-                   because, "declared", ["energy"])
+                   because, source, fields)
 
 
 REGULARITY_ANSWERS = {
@@ -281,7 +288,7 @@ def personalization_reasons(
     reasons.append(project_or("buffer", f"선택한 가용 시간의 {prefs['bufferPercent']}% 이상을 여유분으로 비워 두었습니다.",
                               "bufferPercent", "여유분", lambda: _buffer(facts, prefs, survey)))
     if placement is not None:
-        reasons.append(_period(facts["energy"], placement))
+        reasons.append(_period(prefs, patterns, placement))
     style = _schedule_style(facts, prefs, survey)
     recovery = _recovery(prefs)
     if recovery and "recoveryPreference" in overrides:
