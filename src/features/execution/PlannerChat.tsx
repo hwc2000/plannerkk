@@ -4,6 +4,7 @@ import type { ExecutionState, Project } from '../../shared/types'
 import { projectColor } from '../../shared/projectColors'
 import { dateKey } from '../../shared/constants'
 import { executionApi, projectContext } from './api'
+import { settingLabel, settingValue } from './ProjectSettings'
 
 const days = '월화수목금토일'
 const FREE = '_free'
@@ -84,7 +85,7 @@ export function PlannerChat({ state, busy, run, projects, onCreateProject, onApp
         {!messages.length && <div className="profile-chat-message assistant"><small>플래너</small><p>{!state.settings.slots.length
           ? '먼저 이번 주에 계획을 넣을 수 있는 요일과 시간을 알려 주세요. 예: 평일 저녁 7시부터 9시까지 가능해요.'
           : project
-            ? `‘${project.title}’에서 이번 주에 하고 싶은 일을 알려 주세요. 마감이나 우선순위도 말해 주시면 계획 초안을 준비할게요.`
+            ? opening(state, project)
             : '프로젝트와 상관없는 할 일을 알려 주세요. 언제부터 시작할지도 말해 주시면 계획 초안을 준비할게요.'}</p></div>}
         {messages.map(m => <div key={m.id} className={`profile-chat-message ${m.role}`}><small>{m.role === 'user' ? '나' : '플래너'}</small><p>{m.content}</p></div>)}
         {busy && <p role="status">플래너가 생각하고 있어요…</p>}
@@ -99,6 +100,13 @@ export function PlannerChat({ state, busy, run, projects, onCreateProject, onApp
           {week && <p className="execution-help">이번 주 계획에서 이 {project ? '프로젝트' : '자유 계획'}의 남은 작업만 바꿔요. 다른 프로젝트 작업과 완료한 작업은 그대로 둬요.</p>}
           {!state.settings.slots.length && <p className="form-error">계획할 시간이 아직 없어요. 가능한 요일과 시간을 먼저 알려 주세요.</p>}
           <button className="primary-button" disabled={busy || !consent || !state.settings.slots.length} onClick={() => { void onApplyPlan(action.payload.goal, action.payload.startDate, project, consent) }}>확인하고 계획 초안 만들기</button>
+        </> : action.kind === 'project_settings' ? <>
+          <h3>‘{project?.title}’ 프로젝트를 이렇게 맞출까요?</h3>
+          <ul>{Object.entries(action.payload.changes).map(([key, change]) =>
+            <li key={key}>{settingLabel(key)}: {settingValue(key, change.from)} → {settingValue(key, change.to)}</li>)}</ul>
+          <p className="execution-help">이 프로젝트에만 적용돼요. 기본 프로필과 다른 프로젝트는 그대로예요.{weekTasks.some(t => !t.completed) ? ' 이번 주 이 프로젝트의 남은 작업은 다시 계획하면 반영돼요.' : ''}</p>
+          <button className="primary-button" disabled={busy} onClick={() => { void run(() => executionApi(`/projects/${encodeURIComponent(action.payload.projectId)}/profile`,
+            { revision: state.revision, overrides: action.payload.overrides }, 'PUT'), `‘${project?.title}’ 프로젝트에 맞췄어요.`) }}>확인하고 이 프로젝트에 적용</button>
         </> : <>
           <h3>계획할 시간을 이렇게 바꿀까요?</h3>
           <p>{action.payload.slots.length ? action.payload.slots.map(s => `${days[s.day]} ${s.hour}~${s.hour + 1}시`).join(', ') : '선택한 시간 없음'}</p>
@@ -118,6 +126,16 @@ export function PlannerChat({ state, busy, run, projects, onCreateProject, onApp
       </form>
     </div>
   </section>
+}
+
+/** A new project's first words: what it plans with now, and an invitation to make it its own. */
+function opening(state: ExecutionState, project: Project) {
+  const overrides = state.projectProfiles?.[project.id]?.overrides ?? {}
+  const block = overrides.blockMinutes?.value ?? state.profile?.planningPreferences.blockMinutes
+  const now = Object.keys(overrides).length
+    ? `이 프로젝트만의 값으로 계획해요: ${Object.entries(overrides).map(([key, item]) => `${settingLabel(key)} ${settingValue(key, item.value)}`).join(', ')}. `
+    : block ? `지금은 기본 프로필대로 한 번에 ${block}분씩 계획해요. ` : ''
+  return `‘${project.title}’ 대화를 시작해요. ${now}이 프로젝트만 다르게 하고 싶은 점(예: 한 번에 25분씩, 하루 1시간만)이 있으면 먼저 알려 주세요. 없으면 이번 주에 하고 싶은 일과 마감을 말해 주세요.`
 }
 
 function mostRecentThread(threads: NonNullable<ExecutionState['plannerThreads']>, projects: Project[]) {

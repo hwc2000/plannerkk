@@ -51,7 +51,7 @@ type ReasonCode =
 | `profileId` | 계획 생성에 사용한 프로필 ID |
 | `profileVersion` | 계획 생성에 사용한 프로필 버전. 계획에서 복사. 이 필드 추가 전 기록·버전 없는 계획은 없거나 null |
 | `projectId` | 계획의 프로젝트 ID. 계획에서 복사. 프로젝트 없는 계획·추가 전 기록은 없거나 null |
-| `projectProfileId` | 계획이 쓴 프로젝트 설정 버전. 계획에서 복사. 프로젝트 설정이 없었으면 null |
+| `projectProfileId` | 그 작업이 계획될 때 쓴 그 프로젝트의 설정 버전. 작업(entry)에서 복사(이전 작업은 계획의 값). 프로젝트 설정이 없었으면 null |
 | `taskTitle` | 기록 시점의 작업 이름 |
 | `plannedMinutes` | 기록 시점의 예정 시간 |
 | `actualMinutes` | 실제 시간. 정수 0~1440 또는 null |

@@ -110,6 +110,8 @@ export type PlannerSettings = { slots: AvailabilitySlot[]; view: 'timeline' | 'c
 export type ExecutionTask = { title: string; minutes: number; doneWhen: string; dueDate: string | null; projectId?: string | null }
 export type ExecutionEntry = ExecutionTask & {
   id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean; starter?: boolean
+  /** The settings version of this entry's own project when it was planned. Absent on older entries. */
+  projectProfileId?: string | null
 }
 /** Why the plan looks the way it does for this user; built by code from the values it applied. */
 export type PlanReason = {
@@ -150,6 +152,10 @@ export type PlannerThread = { messages: PlannerMessage[]; action: PlannerAction 
 export type PlannerAction =
   | { kind: 'plan'; revision: number; payload: { goal: string; startDate: string } }
   | { kind: 'settings'; revision: number; payload: PlannerSettings }
+  /** What the user said about how to work on this project, waiting for a click to apply. */
+  | { kind: 'project_settings'; revision: number; payload: {
+      projectId: string; overrides: Record<string, number | string | null>
+      changes: Record<string, { from: number | string | null; to: number | string | null }> } }
 
 export type ExecutionRecord = {
   id: string; planId: string; taskId: string; profileId: string; taskTitle: string

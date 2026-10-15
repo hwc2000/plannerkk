@@ -15,7 +15,9 @@ from uuid import uuid4
 from ..execution_llm import ExecutionLLM, LLMUnavailableError
 from ..execution_profile import object_schema
 from ..execution_scheduler import TASK_SCHEMA, validate_tasks
-from .personalization import day_task_minutes, personalization_reasons, place_tasks, plan_policy
+from .personalization import (
+    day_task_minutes, personalization_reasons, place_tasks, plan_policy, project_task_length_reasons,
+)
 from .ports import GenerationUnavailableError, PlanValidationError
 from .state import PlannerState
 
@@ -33,24 +35,36 @@ STARTER_SCHEMA = object_schema({"tasks": {"type": "array", "items": object_schem
 })}})
 
 
-def _too_long(payload: Any, block: int) -> list[str]:
-    """Name every task over the focus block; a bare "out of range" makes the retry repeat it."""
+def _cap_for(task: dict[str, Any], block: int, caps: dict[str, int], projects: list[dict[str, Any]]) -> int:
+    """The focus block of the project a task belongs to (the user's for work outside projects)."""
+    if len(projects) == 1:
+        return caps.get(projects[0]["id"], block)
+    return caps.get(task.get("projectId"), block)
+
+
+def _too_long(payload: Any, block: int, caps: dict[str, int] | None = None,
+              projects: list[dict[str, Any]] = ()) -> list[str]:
+    """Name every task over its focus block; a bare "out of range" makes the retry repeat it."""
     tasks = payload.get("tasks") if isinstance(payload, dict) else None
-    return [
-        f"'{t.get('title')}' {t['minutes']}분은 작업당 최대 {block}분을 넘습니다. {block}분 이하 작업 여러 개로 나누세요."
-        for t in (tasks if isinstance(tasks, list) else [])
-        if isinstance(t, dict) and type(t.get("minutes")) is int and t["minutes"] > block
-    ]
+    errors = []
+    for t in tasks if isinstance(tasks, list) else []:
+        if not isinstance(t, dict) or type(t.get("minutes")) is not int:
+            continue
+        cap = _cap_for(t, block, caps or {}, list(projects))
+        if t["minutes"] > cap:
+            errors.append(f"'{t.get('title')}' {t['minutes']}분은 작업당 최대 {cap}분을 넘습니다. {cap}분 이하 작업 여러 개로 나누세요.")
+    return errors
 
 
 def _validated_tasks(payload: Any, block: int, starter_minutes: int | None,
-                     projects: list[dict[str, Any]] = ()) -> list[dict[str, Any]]:
+                     projects: list[dict[str, Any]] = (), caps: dict[str, int] | None = None) -> list[dict[str, Any]]:
     """Rule check of the LLM tasks; a failure is retried by the graph with these errors."""
-    too_long = _too_long(payload, block)
+    too_long = _too_long(payload, block, caps, projects)
     if too_long:
         raise PlanValidationError(too_long)
     try:
-        tasks = validate_tasks(payload, block, projects)
+        # Each task was checked against its own project's block above.
+        tasks = validate_tasks(payload, max([block, *(caps or {}).values()]), projects)
     except ValueError as exc:
         raise PlanValidationError([str(exc)]) from None
     if starter_minutes:
@@ -90,6 +104,8 @@ class LLMFullPlanGenerator:
         ]
         planning = context["source_planning_context"]
         policy = plan_policy(planning["userProfile"])
+        settings = context.get("project_settings") or {}
+        caps = {pid: item["max_block_minutes"] for pid, item in settings.items()}
         llm_context = {
             "goal": context["goal"],
             "profile": context["profile"],
@@ -101,7 +117,8 @@ class LLMFullPlanGenerator:
             "endDate": context["end_date"],
             "availableWindows": context["available_windows"],
             "project": context.get("project"),
-            "projects": context.get("projects", []),
+            "projects": [{**p, "maxBlockMinutes": caps[p["id"]]} if p["id"] in caps else p
+                         for p in context.get("projects", [])],
             "existingTasks": context.get("existing_tasks", []),
             "currentPlan": context.get("current_plan"),
             "completedTasks": context.get("completed_tasks", []),
@@ -128,6 +145,7 @@ class LLMFullPlanGenerator:
             "projects가 여러 개면 한 주 계획 안에 모든 프로젝트를 함께 배치한다. 각 작업의 projectId는 해당 프로젝트의 id로 하고, "
             "프로젝트 기간(startDate~dueDate)과 마감·우선순위를 고려해 분량을 나눈다. 프로젝트와 무관한 작업은 projectId를 null로 한다. "
             "projects가 하나 이하이면 projectId는 그 프로젝트 id 또는 null이다. existingTasks의 projectId로 어느 프로젝트의 할 일인지 구분한다. "
+            "projects의 maxBlockMinutes는 그 프로젝트 작업의 길이 상한이며 프로젝트마다 다를 수 있다. 프로젝트와 무관한 작업은 maxBlockMinutes를 따른다. "
             "completedTasks는 이미 끝난 작업이므로 다시 만들지 않는다. pendingTasks는 이전 계획에서 배치되지 않은 작업이므로 "
             "누락하지 말고 이번 주에 배치하거나 다시 pending으로 남긴다. currentPlan과 profileChange가 있으면 변경된 설정의 영향을 받는 "
             "남은 작업만 조정하고, 변경과 무관한 목표·마감·프로젝트 범위는 유지한다. "
@@ -147,8 +165,15 @@ class LLMFullPlanGenerator:
         except LLMUnavailableError as exc:
             raise GenerationUnavailableError from exc
 
-        tasks = _validated_tasks(payload, context["max_block_minutes"], policy.starter_minutes, context.get("projects", []))
+        projects = context.get("projects", [])
+        tasks = _validated_tasks(payload, context["max_block_minutes"], policy.starter_minutes, projects, caps)
         entries, pending, placement = place_tasks(tasks, windows, policy)
+        for entry in entries:
+            if entry["kind"] == "task":
+                # Each entry remembers the settings of its own project, so learning and
+                # staleness stay per project inside a shared week.
+                owner = projects[0]["id"] if len(projects) == 1 else entry.get("projectId")
+                entry["projectProfileId"] = (settings.get(owner) or {}).get("project_profile_id")
         if pending and state.get("retry_count", 0) < state.get("retry_limit", 0):
             # Overflow is a soft rule: ask again with numbers, keep the last attempt's pending list.
             cap = f"하루 최대 {policy.daily_cap_minutes}분, " if policy.daily_cap_minutes else ""
@@ -198,7 +223,7 @@ class LLMFullPlanGenerator:
                 placement=placement,
                 starter_used=any(entry.get("starter") for entry in entries),
                 memory_count=len(planning.get("memories") or []),
-            ),
+            ) + (project_task_length_reasons(projects, settings) if len(projects) > 1 else []),
             "status": "draft",
             "timezone": "Asia/Seoul",
         }

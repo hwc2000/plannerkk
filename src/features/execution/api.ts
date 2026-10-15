@@ -28,17 +28,39 @@ export async function adaptiveApi(path: string, body: unknown): Promise<Executio
   return requestState(`/api/adaptive${path}`, body)
 }
 
-/** A user-profile change replans the current plan; a project's change only replans that project's plan. */
-export function replansCurrentPlan(state: ExecutionState, proposal: ProfileUpdateProposal | undefined): boolean {
-  if (!state.plan) return false
-  return !proposal?.projectId || proposal.projectId === state.plan.projectId
+function entryOwner(plan: ExecutionPlan, entry: ExecutionPlan['entries'][number]): string | null {
+  return entry.projectId ?? plan.projectId ?? null
 }
 
-/** The plan was made with settings that have since changed: the user profile or this project's own settings. */
+/** The settings version an entry's own project had when it was planned (older entries share the plan's). */
+function entrySettings(plan: ExecutionPlan, entry: ExecutionPlan['entries'][number]): string | null {
+  if (entry.projectProfileId !== undefined) return entry.projectProfileId ?? null
+  return entryOwner(plan, entry) === plan.projectId ? plan.projectProfileId ?? null : null
+}
+
+/**
+ * A user-profile change replans the current week; a project's change replans only that
+ * project's open tasks, and only when this week has some.
+ */
+export function replansCurrentPlan(state: ExecutionState, proposal: ProfileUpdateProposal | undefined): boolean {
+  const plan = state.plan
+  if (!plan) return false
+  if (!proposal?.projectId) return true
+  return plan.entries.some(e => e.kind === 'task' && !e.completed && entryOwner(plan, e) === proposal.projectId)
+}
+
+/** Projects whose open tasks were planned with settings that changed since; the rest of the week is still current. */
+export function staleProjectIds(state: ExecutionState, plan: ExecutionPlan): Array<string | null> {
+  const current = (id: string | null) => (id ? state.projectProfiles?.[id]?.id ?? null : null)
+  const ids = plan.entries
+    .filter(e => e.kind === 'task' && !e.completed && entrySettings(plan, e) !== current(entryOwner(plan, e)))
+    .map(e => entryOwner(plan, e))
+  return [...new Set(ids)]
+}
+
+/** The plan was made with a user profile that has since changed, or some project's settings did. */
 export function planIsStale(state: ExecutionState, plan: ExecutionPlan): boolean {
-  if (state.profile?.id !== plan.profileId) return true
-  const current = plan.projectId ? state.projectProfiles?.[plan.projectId]?.id ?? null : null
-  return (plan.projectProfileId ?? null) !== current
+  return state.profile?.id !== plan.profileId || staleProjectIds(state, plan).length > 0
 }
 
 export async function approveProposalAndReplan(

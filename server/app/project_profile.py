@@ -14,6 +14,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .execution_store import ConflictError
+from .plan_merge import entry_owner
 from .user_profile import LearnedPattern, PlanningPreferences
 
 # Planning preferences a project may override.  Anything else stays a user trait.
@@ -118,6 +119,35 @@ def current_project_profile_id(state, project_id):
     if not project_id:
         return None
     return ((state.get("projectProfiles") or {}).get(project_id) or {}).get("id")
+
+
+def project_preferences(state, user_id, project_id):
+    """One project's preferences: the user's, with only this project's own values on top."""
+    return effective_preferences(state["profile"], load_project_profile(state, user_id, project_id))
+
+
+def entry_settings_version(plan, entry):
+    """The project settings version an entry was planned with.
+
+    A shared week holds several projects, so each entry carries its own.
+    Entries saved before that share the plan's single project version.
+    """
+    if "projectProfileId" in entry:
+        return entry["projectProfileId"]
+    return plan.get("projectProfileId") if entry_owner(plan, entry) == plan.get("projectId") else None
+
+
+def stale_project_ids(state, plan, entries=None):
+    """Projects with open tasks planned under settings that have changed since.
+
+    Only those projects need replanning; the rest of the week stays valid.
+    """
+    entries = plan["entries"] if entries is None else entries
+    return {
+        entry_owner(plan, e) for e in entries
+        if e["kind"] == "task" and not e.get("completed")
+        and entry_settings_version(plan, e) != current_project_profile_id(state, entry_owner(plan, e))
+    }
 
 
 def _save(state, current, user_id, project_id, overrides, patterns, source, source_id):

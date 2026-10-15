@@ -162,7 +162,7 @@ class ProjectProfileTests(unittest.TestCase):
         task = next(e for e in plan["entries"] if e["kind"] == "task")
         stale = self.call("/api/adaptive/check-in", 400, taskId=task["id"], consent=True,
                           checkIn={"completed": False, "actualMinutes": 5, "reasonCode": "task_too_large"})
-        self.assertIn("프로젝트 설정이 바뀌었습니다", stale["detail"])
+        self.assertIn("‘토익’ 설정이 바뀌었습니다", stale["detail"])
         self.llm.plan_minutes = 20
         draft = self.call("/api/execution/plan", goal=plan["goal"], startDate=plan["startDate"], consent=True,
                           project=PROJECT_A, profileChangeProposalId=proposal["id"])["planDraft"]
@@ -189,7 +189,7 @@ class ProjectProfileTests(unittest.TestCase):
         self.assertEqual(self.state()["planDraft"], draft_b)  # project B's draft is still valid
         data = self.call("/api/execution/plan", 400, goal=plan_b["goal"], startDate=plan_b["startDate"], consent=True,
                          project=PROJECT_B, profileChangeProposalId=proposal["id"])
-        self.assertIn("다른 프로젝트", data["detail"])
+        self.assertIn("지금 계획에 없는 프로젝트", data["detail"])
         self.assertEqual(self.state()["plan"], plan_b)
         task = next(e for e in plan_b["entries"] if e["kind"] == "task")
         recovery = self.call("/api/adaptive/check-in", taskId=task["id"], consent=True,

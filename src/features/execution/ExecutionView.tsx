@@ -9,7 +9,7 @@ import { AvailabilityGrid } from './AvailabilityGrid'
 import { PlanReasons } from './PlanReasons'
 import { ProjectSettings } from './ProjectSettings'
 import { answerLabels, formatAnswer } from './profileLabels'
-import { approveProposalAndReplan, downloadJson, executionApi, existingTasksFor, planIsStale, planProjectIds, projectContext, replansCurrentPlan } from './api'
+import { approveProposalAndReplan, downloadJson, executionApi, existingTasksFor, planIsStale, planProjectIds, projectContext, replansCurrentPlan, staleProjectIds } from './api'
 import { projectColor } from '../../shared/projectColors'
 
 export function ExecutionView({ state, onChange, projects, milestones, events, memories = [], onCreateProject }: {
@@ -73,6 +73,13 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
     return `${title ? `${title} 설정에` : '프로필에'} 변경을 적용하고 재계획 초안을 만들었습니다. 검토 후 확정해 주세요.`
   }
 
+  /** Name what changed: the shared profile means the whole week, a project's settings only that project. */
+  function staleNotice(plan: ExecutionPlan) {
+    if (state.profile?.id !== plan.profileId) return '이 계획을 만든 뒤 기본 프로필이 바뀌었습니다. 새 프로필로 적용하려면 다시 계획해 주세요.'
+    const names = staleProjectIds(state, plan).map(id => `‘${projects.find(p => p.id === id)?.title ?? (id ? '삭제된 프로젝트' : '자유 계획')}’`)
+    return `${names.join(', ')} 설정이 바뀌었습니다. 그 프로젝트 대화에서 다시 계획하면 반영돼요. 다른 프로젝트 작업은 그대로예요.`
+  }
+
   function planCard(plan: ExecutionPlan, draft: boolean) {
     const projectTitle = (id?: string | null) => id ? (projects.find(p => p.id === id)?.title ?? plan.projects?.find(p => p.id === id)?.title ?? plan.project?.title) : undefined
     const timed = (plan.scheduleStyle ?? state.profile?.planningPreferences.scheduleStyle) !== 'flexible_queue' && state.settings.view === 'timeline'
@@ -82,7 +89,7 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
     return <section className="execution-card" key={plan.id} aria-label={draft?'주간 계획 초안':'확정한 주간 계획'}>
       <p className="section-kicker">{draft?'REVIEW DRAFT':'MY WEEK'}</p><h2>{draft?'주간 계획 초안':'확정한 주간 계획'}</h2>
       <p>{plan.goal}</p><p className="execution-help">{plan.project && `${plan.project.title} · `}{plan.startDate} ~ {plan.endDate} · 한국 시간{!draft && ` · ${completed}개 완료`}</p>
-      {!draft && planIsStale(state, plan) && <p className="execution-help">이 계획을 만든 뒤 프로필이나 이 프로젝트 설정이 바뀌었습니다. 새 설정으로 적용하려면 다시 생성해 주세요.</p>}
+      {!draft && planIsStale(state, plan) && <p className="execution-help">{staleNotice(plan)}</p>}
       <PlanReasons reasons={plan.personalization ?? []} open={draft}/>
       {dates.map(day => <div key={day}><h3>{day} · {new Intl.DateTimeFormat('ko-KR',{ weekday:'long' }).format(new Date(`${day}T12:00:00`))}</h3>
         {entries.filter(e => e.start.startsWith(day)).map(e => e.kind==='break'?<div className="execution-break" key={e.id}>{e.start.slice(11)} ~ {e.end.slice(11)} · 휴식</div>:

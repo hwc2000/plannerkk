@@ -20,12 +20,14 @@ from .execution_service import (
     resolve_plan_draft,
     set_task_completion,
 )
-from .project_profile import current_project_profile_id, set_declared_overrides
+from .project_profile import (
+    current_project_profile_id, entry_settings_version, set_declared_overrides, stale_project_ids,
+)
 from .user_profile import save_profile_draft, confirm_profile_draft
 from .planning_context import get_planning_context, MemoryInput
 from .execution_scheduler import availability_windows, daily_budgets
 from .planner import ProjectContext, ExistingTask
-from .plan_merge import active_plan, kept_entries, merge_into
+from .plan_merge import active_plan, entry_owner, kept_entries, merge_into, thread_key
 
 class Mutation(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -117,6 +119,21 @@ def build_full_plan_context(
     block = min(policy.block_minutes, longest - starter, max(budgets.values()) - starter)
     if block < 1:
         raise ValueError("작업을 배치할 여유 시간이 부족합니다.")
+    # Each project's tasks follow that project's own settings on top of the user
+    # profile; one project's settings never reach another project's tasks.
+    project_settings = {}
+    for item in selected:
+        item_planning = planning if item is project else get_planning_context(
+            user_id, item, state=state, memories=memories or [])
+        item_block = min(plan_policy(item_planning["userProfile"]).block_minutes, longest - starter,
+                         max(budgets.values()) - starter)
+        if item_block < 1:
+            raise ValueError(f"‘{item.title}’ 작업을 배치할 여유 시간이 부족합니다.")
+        project_settings[item.id] = {
+            "max_block_minutes": item_block,
+            "project_profile_id": (item_planning.get("projectProfile") or {}).get("id"),
+            "user_profile": item_planning["userProfile"],
+        }
     serialized_project = project.model_dump(mode="json") if project else None
     return {
         "goal": goal,
@@ -134,6 +151,7 @@ def build_full_plan_context(
         "project": serialized_project,
         "project_id": project.id if project else None,
         "projects": [p.model_dump(mode="json") for p in selected],
+        "project_settings": project_settings,
         "existing_tasks": [task.model_dump(mode="json") for task in (existing_tasks or [])],
         "current_plan": [
             {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate", "completed")}
@@ -167,6 +185,32 @@ class WeeklyRequest(Mutation):
 
 def plan_projects(plan: dict) -> list[dict]:
     return plan.get("projects") or ([plan["project"]] if plan.get("project") else [])
+
+
+def project_scope(plan: dict, project_id: str | None) -> tuple[dict | None, dict, list[BusyEvent], str]:
+    """One project's part of a shared week (None: work outside projects).
+
+    Returns the project, a plan holding only its tasks and pending work, the time
+    the rest of the week keeps, and the goal the project was planned with.
+    Replanning one project goes through this, so the others are never touched.
+    """
+    project = next((p for p in plan_projects(plan) if p["id"] == project_id), None)
+    scoped = {
+        **plan,
+        "entries": [e for e in plan["entries"] if e["kind"] == "task" and entry_owner(plan, e) == project_id],
+        "pendingTasks": [t for t in plan.get("pendingTasks", [])
+                         if (t.get("projectId") or plan.get("projectId")) == project_id],
+    }
+    held = [BusyEvent(date=e["start"][:10], startTime=e["start"][11:], endTime=e["end"][11:])
+            for e in kept_entries(plan, project_id)]
+    goal = (plan.get("projectGoals") or {}).get(thread_key(project_id)) or plan["goal"]
+    return project, scoped, held, goal
+
+
+def stale_message(plan: dict, project_ids: set, when: str = "계획을 만든 뒤") -> str:
+    titles = {p["id"]: p["title"] for p in plan_projects(plan)}
+    names = ", ".join(f"‘{titles.get(pid, '자유 계획')}’" for pid in sorted(project_ids, key=str))
+    return f"{when} {names} 설정이 바뀌었습니다. 그 프로젝트를 다시 계획해 주세요."
 
 
 class ConfirmPlan(Mutation):
@@ -331,15 +375,18 @@ def execution_router(store=None, llm=None):
                 raise ValueError("현재 프로필에 적용된 변경 제안이 아닙니다.")
             if profile_change_context["source_profile_id"] != current_plan["profileId"]:
                 raise ValueError("현재 계획을 만든 프로필에 대한 변경 제안이 아닙니다.")
-            if profile_change_context["scope"] == "project":
-                # A project's change replans that project's plan; other plans keep theirs.
-                plan_project_id = current_plan.get("projectId")
-                if profile_change_context["project_id"] != plan_project_id:
-                    raise ValueError("이 변경은 다른 프로젝트에 적용됩니다. 그 프로젝트의 다음 계획부터 반영됩니다.")
-                if profile_change_context["applied_project_profile_id"] != current_project_profile_id(state, plan_project_id):
-                    raise ValueError("현재 프로젝트 설정에 적용된 변경 제안이 아닙니다.")
-                if profile_change_context["source_project_profile_id"] != current_plan.get("projectProfileId"):
-                    raise ValueError("현재 계획을 만든 프로젝트 설정에 대한 변경 제안이 아닙니다.")
+        scope = None
+        if replan and profile_change_context["scope"] == "project":
+            # A project's change replans only that project's tasks; the rest of the week stays.
+            project_id = profile_change_context["project_id"]
+            scope = project_scope(current_plan, project_id)
+            if scope[0] is None or not scope[1]["entries"]:
+                raise ValueError("이 변경은 지금 계획에 없는 프로젝트에 적용됩니다. 그 프로젝트의 다음 계획부터 반영됩니다.")
+            if profile_change_context["applied_project_profile_id"] != current_project_profile_id(state, project_id):
+                raise ValueError("현재 프로젝트 설정에 적용된 변경 제안이 아닙니다.")
+            planned_with = {entry_settings_version(current_plan, e) for e in scope[1]["entries"] if not e.get("completed")}
+            if planned_with - {profile_change_context["source_project_profile_id"]}:
+                raise ValueError("현재 계획을 만든 프로젝트 설정에 대한 변경 제안이 아닙니다.")
 
         effective_goal = current_plan["goal"] if current_plan else request.goal
         effective_start_date = date.fromisoformat(current_plan["startDate"]) if current_plan else request.startDate
@@ -352,7 +399,10 @@ def execution_router(store=None, llm=None):
             scope_id = request.project.id if request.project else None
             held = [BusyEvent(date=e["start"][:10], startTime=e["start"][11:], endTime=e["end"][11:])
                     for e in kept_entries(merge_base, scope_id)]
-        if current_plan:
+        if scope:
+            effective_goal, held = scope[3], scope[2]
+            effective_projects = [ProjectContext.model_validate(scope[0])]
+        elif current_plan:
             effective_projects = [ProjectContext.model_validate(p) for p in plan_projects(current_plan)]
         else:
             effective_projects = request.projects or ([request.project] if request.project else [])
@@ -364,7 +414,7 @@ def execution_router(store=None, llm=None):
             start_date=effective_start_date,
             project=effective_project,
             projects=effective_projects,
-            current_plan=current_plan,
+            current_plan=scope[1] if scope else current_plan,
             events=[*request.events, *held],
             existing_tasks=request.existingTasks,
             memories=[memory.model_dump() for memory in request.memories],
@@ -383,6 +433,8 @@ def execution_router(store=None, llm=None):
         if merge_base:
             draft = merge_into(merge_base, draft, effective_project.model_dump(mode="json") if effective_project else None,
                                request.goal)
+        elif scope:
+            draft = merge_into(current_plan, draft, scope[0], scope[3])
         return change(request.revision, lambda doc: replace_plan_draft(doc, draft))
 
     @router.post("/plan/confirm")
@@ -393,8 +445,11 @@ def execution_router(store=None, llm=None):
                 raise ValueError("초안이 변경되었습니다. 다시 생성해 주세요.")
             if not state.get("profile") or value["profileId"] != state["profile"]["id"]:
                 raise ValueError("초안 생성 후 프로필이 변경되었습니다. 계획을 다시 생성해 주세요.")
-            if value.get("projectProfileId") != current_project_profile_id(state, value.get("projectId")):
-                raise ValueError("초안 생성 후 이 프로젝트 설정이 바뀌었습니다. 계획을 다시 생성해 주세요.")
+            # Only the tasks this draft adds were planned now; kept tasks of other projects keep their own state.
+            known = {e["id"] for e in (state.get("plan") or {}).get("entries", [])}
+            stale = stale_project_ids(state, value, [e for e in value["entries"] if e["id"] not in known])
+            if stale:
+                raise ValueError(stale_message(value, stale, when="초안 생성 후"))
             current_project = request.project.model_dump(mode="json") if request.project else None
             if current_project != value["project"]:
                 raise ValueError("프로젝트가 변경되었습니다. 다시 생성해 주세요.")

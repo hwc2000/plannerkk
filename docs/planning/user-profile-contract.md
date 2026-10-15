@@ -422,6 +422,10 @@ state.projectProfileRevisions = [{projectId, version, projectProfileId, source, 
   `dailyPlannedMinutes`·`starterMinutes`의 null은 "이 프로젝트에서는 없음"이다. 키가 없으면 사용자 프로필 값을 쓴다.
 - `PUT /api/execution/projects/{projectId}/profile` `{revision, overrides}`: 사용자가 정한 값(declared) 전체를 바꾼다.
   같은 키의 학습값은 사용자가 정한 값으로 대체하고 그 패턴은 superseded, 다른 키의 학습값은 유지한다.
+- 프로젝트 대화에서 사용자가 이 프로젝트를 하는 방식을 직접 말하면(예: "에세이는 25분씩") 대화방이 확인 카드
+  (`plannerThreads[id].action.kind = "project_settings"`)를 만들고, 사용자가 누르면 위 API로 저장한다. 값은 사용자가 말한
+  것만 쓰고 추측하지 않으며, 기본 프로필과 함께 쓸 수 없는 값이면 카드 없이 이유를 답에 붙인다.
+- 프로젝트 대화방 머리에는 기본 프로필(모든 프로젝트 공통)과 이 프로젝트만의 값을 나란히 보여 준다.
 - 프로젝트 실행 기록으로 배운 변경은 프로젝트 설정에만 적용한다(`apply_project_proposal`). 사용자 프로필의
   ID·버전은 그대로라 다른 프로젝트의 계획은 계속 유효하다.
 - 프로필 초기화는 프로젝트 설정과 그 이력도 지운다.

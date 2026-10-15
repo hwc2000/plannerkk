@@ -22,6 +22,17 @@ function show(field: Field, value: unknown) {
   return `${String(value)}${field.unit}`
 }
 
+/** The label of a project setting, for cards that propose one. */
+export function settingLabel(key: string) {
+  return FIELDS.find(f => f.key === key)?.label ?? key
+}
+
+/** A project setting's value as the user reads it ("25분", "할 일을 줄임"). */
+export function settingValue(key: string, value: unknown) {
+  const field = FIELDS.find(f => f.key === key)
+  return field ? show(field, value) : String(value ?? '없음')
+}
+
 /**
  * What this project plans with, read-only: the planner adapts on its own and the
  * user only approves learned changes.  ``editable`` adds a form to set project
@@ -50,12 +61,14 @@ export function ProjectSettings({ state, project, busy, run, editable = false }:
   ]))
   const summary = FIELDS.filter(f => f.key in overrides).map(f =>
     `${f.label} ${show(f, overrides[f.key].value)}${learned(f.key) ? '(기록으로 학습)' : ''}`)
-  const applied = <p className="execution-help execution-project-applied" role="note">
-    {summary.length
-      ? `이 프로젝트에 맞춰 적용 중: ${FIELDS.filter(f => f.key in overrides).map(f =>
-        `${f.label} ${show(f, overrides[f.key].value)} (${learned(f.key) ? '이 프로젝트 실행 기록으로 학습' : '이 프로젝트에서 정함'}, 기본 ${show(f, base[f.key])})`).join(' · ')}`
-      : '이 프로젝트는 아직 기본 프로필대로 계획해요. 실행 기록이 쌓이면 이 프로젝트에 맞춘 변경을 제안합니다.'}
-  </p>
+  // Both layers, side by side: what every project shares, and what only this one changed.
+  const applied = <div className="execution-project-applied" role="note">
+    <p className="execution-help"><b>기본 프로필</b> · 모든 프로젝트 공통 · {FIELDS.slice(0, 3).map(f => `${f.label} ${show(f, base[f.key])}`).join(' · ')}</p>
+    <p className="execution-help"><b>이 프로젝트만</b> · {summary.length
+      ? FIELDS.filter(f => f.key in overrides).map(f =>
+        `${f.label} ${show(f, overrides[f.key].value)} (${learned(f.key) ? '이 프로젝트 실행 기록으로 학습' : '이 프로젝트에서 정함'}, 기본 ${show(f, base[f.key])})`).join(' · ')
+      : '아직 기본 프로필과 같아요. 대화에서 이 프로젝트만 다르게 하고 싶은 점을 말하거나, 실행 기록이 쌓이면 맞춰 드려요.'}</p>
+  </div>
   if (!editable) return applied
 
   function save(next: Values) {
@@ -68,7 +81,7 @@ export function ProjectSettings({ state, project, busy, run, editable = false }:
     if (daily !== null && block > daily) return setError('한 번에 집중할 시간은 하루 계획량보다 길 수 없습니다.')
     if (starter !== null && starter > block) return setError('시작 행동은 한 번에 집중할 시간보다 길 수 없습니다.')
     setError(''); setSaved('')
-    const message = state.plan?.projectId === project.id
+    const message = state.plan?.entries.some(e => e.kind === 'task' && !e.completed && (e.projectId ?? state.plan?.projectId) === project.id)
       ? `${project.title} 설정을 저장했습니다. 지금 계획은 이전 설정으로 만들었으니 다시 생성하면 반영됩니다.`
       : `${project.title} 설정을 저장했습니다. 이 프로젝트의 다음 계획부터 반영됩니다.`
     void run(() => executionApi(`/projects/${encodeURIComponent(project.id)}/profile`, { revision: state.revision, overrides: next }, 'PUT'), message)

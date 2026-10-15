@@ -4,7 +4,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .execution_learning import REASON_CODES, propose_update
 from .execution_store import ConflictError
-from .project_profile import apply_project_proposal
+from .plan_merge import entry_owner
+from .project_profile import apply_project_proposal, entry_settings_version
 from .user_profile import apply_profile_proposal
 
 
@@ -137,13 +138,11 @@ def save_execution_record(state, payload, *, allow_follow_up=False):
 
 
 def _new_record(plan, task, request):
-    # The plan's project and settings versions travel with the record, so
-    # learning can group records by project after the plan itself is replaced.
-    project_id = task.get('projectId') or plan.get('projectId')
+    # The task's project and the settings version it was planned with travel with
+    # the record, so learning counts it for that project only, even in a shared week.
     record = request.model_dump()
     record.update(id=str(uuid4()), profileId=plan['profileId'], profileVersion=plan.get('profileVersion'),
-                  projectId=project_id,
-                  projectProfileId=plan.get('projectProfileId') if project_id == plan.get('projectId') else None,
+                  projectId=entry_owner(plan, task), projectProfileId=entry_settings_version(plan, task),
                   taskTitle=task['title'], plannedMinutes=task['minutes'],
                   createdAt=datetime.now(timezone.utc).isoformat())
     return record
@@ -167,7 +166,7 @@ def set_task_completion(state, plan_id, task_id, completed):
         request = ExecutionRecordInput(planId=plan_id, taskId=task_id, result='completed')
         state['executionRecords'].append(_new_record(plan, task, request))
         task['completed'] = True
-        propose_update(state, task.get('projectId') or plan.get('projectId'))
+        propose_update(state, entry_owner(plan, task))
         return
     matches = [r for r in state['executionRecords'] if r['planId'] == plan_id and r['taskId'] == task_id]
     if matches and matches[-1]['result'] == 'completed':

@@ -283,3 +283,18 @@ def personalization_reasons(
         reasons.append(_reason("memories", f"저장한 기억 {memory_count}개를 계획 생성에 참고 자료로 넘겼습니다.",
                                "사용자가 저장을 승인한 기억만 사용합니다.", "memory", ["memories"]))
     return reasons
+
+
+def project_task_length_reasons(projects: Sequence[Mapping[str, Any]],
+                                settings: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """In a week of several projects, name each project whose tasks follow its own focus block."""
+    reasons = []
+    for project in projects:
+        profile = (settings.get(project["id"]) or {}).get("user_profile")
+        overrides = (profile or {}).get("projectOverrides") or {}
+        if "blockMinutes" not in overrides:
+            continue
+        facts, prefs = profile["declaredFacts"], profile["planningPreferences"]
+        reason = _task_length(facts, prefs, _survey_preferences(facts), profile.get("learnedPatterns") or [], overrides)
+        reasons.append({**reason, "key": f"taskLength:{project['id']}", "applied": f"‘{project['title']}’ {reason['applied']}"})
+    return reasons

@@ -15,7 +15,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..execution_api import BusyEvent, build_full_plan_context, plan_projects
+from ..execution_api import BusyEvent, build_full_plan_context, plan_projects, project_scope, stale_message
 from ..execution_llm import ExecutionLLM
 from ..execution_store import ConflictError, ExecutionStore
 from ..execution_service import replace_plan_draft
@@ -23,7 +23,8 @@ from ..planner import ProjectContext
 from .context import to_execution_context
 from .full_plan_generator import LLMFullPlanGenerator
 from ..planning_context import MemoryInput, get_planning_context
-from ..project_profile import current_project_profile_id
+from ..plan_merge import entry_owner, merge_into
+from ..project_profile import stale_project_ids
 from .graph import build_adaptive_planner_graph
 from .llm_generator import LLMRecoveryGenerator
 from .local import (
@@ -93,9 +94,10 @@ def to_snake(value: Any) -> Any:
 
 
 def _public(result: dict[str, Any]) -> dict[str, Any]:
-    keys = ("route", "strategy", "approval_status", "draft", "plan_draft", "fallback",
+    keys = ("route", "strategy", "approval_status", "draft", "fallback",
             "validation_errors", "retry_count", "revision_count", "error")
-    return to_camel({k: result.get(k) for k in keys})
+    # The plan draft is already an API object; converting it would rename data keys such as "_free".
+    return {**to_camel({k: result.get(k) for k in keys}), "planDraft": result.get("plan_draft")}
 
 
 def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | None = None) -> APIRouter:
@@ -116,41 +118,59 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
         if needs_current_profile and state["plan"]["profileId"] != state["profile"]["id"]:
             # Recovering with a newer profile's values would mix two profiles in one plan.
             raise ValueError("계획을 만든 뒤 실행 프로필이 바뀌었습니다. 새 프로필로 주간 계획을 다시 생성해 주세요.")
-        plan_project_id = state["plan"].get("projectId")
-        if needs_current_profile and state["plan"].get("projectProfileId") != current_project_profile_id(state, plan_project_id):
-            raise ValueError("계획을 만든 뒤 이 프로젝트 설정이 바뀌었습니다. 새 설정으로 주간 계획을 다시 생성해 주세요.")
         return state
+
+    def ensure_task_current(state: dict[str, Any], task_id: str) -> None:
+        """Recover a task only with the settings its own project has now.
+
+        Another project's settings changing does not matter: each project stands alone.
+        """
+        plan = state["plan"]
+        entry = next((e for e in plan["entries"] if e["id"] == task_id), None)
+        stale = stale_project_ids(state, plan, [entry]) if entry else set()
+        if stale:
+            raise ValueError(stale_message(plan, stale))
 
     def graph_input(
         state: dict[str, Any], task_id: str, events: list[BusyEvent], memories=None, *, needs_full_plan: bool = False,
     ) -> dict[str, Any]:
+        """The graph input for one task, built from that task's own project only."""
         plan = state["plan"]
-        project = ProjectContext.model_validate(plan["project"]) if plan.get("project") else None
+        entry = next((e for e in plan["entries"] if e["id"] == task_id), None)
+        owner = entry_owner(plan, entry) if entry else plan.get("projectId")
+        scoped_project, scoped_plan, held, goal = project_scope(plan, owner)
+        project = ProjectContext.model_validate(scoped_project) if scoped_project else None
         if needs_full_plan:
+            # A replan from one task's check-in redoes that task's project only.
             planning_context = build_full_plan_context(
                 state=state,
                 user_id=store.user_id,
-                goal=plan["goal"],
+                goal=goal,
                 start_date=date.fromisoformat(plan["startDate"]),
                 project=project,
-                projects=[ProjectContext.model_validate(p) for p in plan_projects(plan)],
-                current_plan=plan,
-                events=events,
+                current_plan=scoped_plan,
+                events=[*events, *held],
                 memories=memories,
                 now=local_now(),
             )
             planning = planning_context["source_planning_context"]
         else:
             planning = get_planning_context(store.user_id, project, state=state, memories=memories)
-            planning_context = {**planning, "goal": plan["goal"]}
+            planning_context = {**planning, "goal": goal}
         return {
             "user_id": store.user_id,
-            "project_id": plan.get("projectId"),
+            "project_id": owner,
             "execution_context": to_execution_context(planning["userProfile"], [], converter=execution_context_from_profile),
             "planning_context": planning_context,
             "current_task": current_task(plan, task_id),
             "schedule_context": schedule_context(state, task_id, events, local_now()),
         }
+
+    def merged(state: dict[str, Any], task_input: dict[str, Any], plan_draft: dict[str, Any]) -> dict[str, Any]:
+        """Put a replanned project back into the shared week, leaving the other projects as they are."""
+        plan = state["plan"]
+        scoped_project, _, _, goal = project_scope(plan, task_input["project_id"])
+        return merge_into(plan, plan_draft, scoped_project, goal)
 
     def respond(saved: dict[str, Any], task_id: str, result: dict[str, Any], **extra: Any) -> dict[str, Any]:
         public_state = {key: value for key, value in saved.items() if not key.startswith("_")}
@@ -186,6 +206,8 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
                 )
             raise HTTPException(400, "작업·체크인 정보의 LLM 전송에 동의해 주세요.")
         state = load(request.revision, needs_current_profile=not completed)
+        if not completed:
+            ensure_task_current(state, request.taskId)
         task_input = graph_input(
             state,
             request.taskId,
@@ -200,6 +222,8 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             "check_in": to_snake(check_in),
             "strategy": effective_strategy,
         })
+        if result.get("plan_draft") is not None:
+            result = {**result, "plan_draft": merged(state, task_input, result["plan_draft"])}
         record_ids: list[str] = []
 
         def save(doc: dict[str, Any]) -> None:
@@ -238,18 +262,20 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
 
         if stored["planId"] != state["plan"]["id"]:
             raise ValueError("계획이 바뀌어 이 초안을 쓸 수 없습니다. 다시 생성해 주세요.")
+        ensure_task_current(state, task_id)
         if request.decision == "approve" and request.strategy not in (None, stored["strategy"]):
             # The approved strategy is recorded on the check-in, so it must be the draft's own.
             raise ValueError("승인할 때는 복구 방법을 바꿀 수 없습니다. 다른 방법은 수정(revise)으로 요청해 주세요.")
+        review_input = graph_input(
+            state,
+            task_id,
+            request.events,
+            [memory.model_dump() for memory in request.memories],
+            needs_full_plan=(request.strategy == "replan"),
+        )
         result = graph.invoke({
             "request": "review",
-            **graph_input(
-                state,
-                task_id,
-                request.events,
-                [memory.model_dump() for memory in request.memories],
-                needs_full_plan=(request.strategy == "replan"),
-            ),
+            **review_input,
             "check_in": to_snake(stored["checkIn"]),
             "decision": request.decision,
             "strategy": request.strategy or stored["strategy"],
@@ -258,6 +284,8 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
             "revision_count": stored["revisionCount"],
             "base_revision": request.revision,
         })
+        if result.get("plan_draft") is not None:
+            result = {**result, "plan_draft": merged(state, review_input, result["plan_draft"])}
         if request.decision == "revise" and result["approval_status"] == "waiting":
             if result.get("plan_draft") is not None:
                 def save_full_plan(doc: dict[str, Any]) -> None:
