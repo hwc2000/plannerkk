@@ -203,6 +203,19 @@ class ProjectIndependenceTests(unittest.TestCase):
         self.set_project("essay", **action["payload"]["overrides"])
         self.assertEqual(self.state()["projectProfiles"]["essay"]["overrides"]["blockMinutes"]["value"], 25)
 
+        # A value equal to what already applies is not stored: the project keeps following the user profile there.
+        self.llm.chat_reply = {**NO_CHAT_ACTION, "action": "project_settings",
+                               "projectSettings": {**said, "blockMinutes": 20, "bufferPercent": self.state()["profile"]["planningPreferences"]["bufferPercent"]}}
+        state = self.call("/api/execution/chat/message", text="20분으로 바꿀래요", consent=True, project=ESSAY)
+        self.assertEqual(state["plannerThreads"]["essay"]["action"]["payload"]["overrides"], {"blockMinutes": 20})
+        self.assertEqual(list(state["plannerThreads"]["essay"]["action"]["payload"]["changes"]), ["blockMinutes"])
+
+        # Saying again what already applies makes no card; the reply says it is already set.
+        self.set_project("essay", blockMinutes=20)
+        state = self.call("/api/execution/chat/message", text="20분으로 바꿀래요", consent=True, project=ESSAY)
+        self.assertIsNone(state["plannerThreads"]["essay"]["action"])
+        self.assertIn("이미 이 프로젝트에 적용돼 있어요", state["plannerThreads"]["essay"]["messages"][-1]["content"])
+
         # A value that cannot work with the profile gets no card, and the reply says why.
         self.llm.chat_reply = {**NO_CHAT_ACTION, "action": "project_settings", "projectSettings": {**said, "blockMinutes": None, "starterMinutes": 40}}
         state = self.call("/api/execution/chat/message", text="시작 행동은 40분", consent=True, project=ESSAY)
