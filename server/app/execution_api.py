@@ -12,6 +12,7 @@ from .adaptive.personalization import plan_policy
 from .execution_store import ExecutionStore, ConflictError, empty_state
 from .execution_profile import generate_profile, validate_insights, SCHEMA
 from .execution_llm import ExecutionLLM
+from .execution_learning import refine_new_proposals
 from .execution_service import (
     ExecutionRecordInput,
     ExecutionService,
@@ -226,7 +227,8 @@ class CheckTask(Mutation):
 
 
 class ExecutionRecordRequest(ExecutionRecordInput, Mutation):
-    pass
+    # Optional: lets the AI read the tasks and notes to size a proposed change.
+    consent: bool = False
 
 
 class ProjectProfileRequest(Mutation):
@@ -481,7 +483,9 @@ def execution_router(store=None, llm=None):
 
     @router.post("/records")
     def record_execution(request: ExecutionRecordRequest):
-        return envelope(service.record_execution(request.revision, request.model_dump(exclude={"revision"})))
+        before = {p["id"] for p in store.read()["profileUpdateProposals"]}
+        state = service.record_execution(request.revision, request.model_dump(exclude={"revision", "consent"}))
+        return envelope(refine_new_proposals(store, llm, state, before, consent=request.consent))
 
     @router.get("/summary")
     def execution_summary(days: int = Query(default=14, ge=1, le=365),

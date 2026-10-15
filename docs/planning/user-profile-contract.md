@@ -127,7 +127,9 @@ execution_state / user_execution_state 의 JSON document
 #### 항목 간 조건과 생성 규칙
 
 - blockMinutes ≤ dailyPlannedMinutes(하루 예산이 있는 경우), starterMinutes ≤ blockMinutes(시작 작업이 있는 경우).
-- 초기 blockMinutes = min(focusMinutes 또는 15, dailyMinutes 또는 180, 50). distraction 응답이면 최대 20분이다.
+- 초기 blockMinutes = 사용자가 답한 focusMinutes 그대로(고정 상한 없음). 모른다고 답했을 때만 시작값 15분(`UNKNOWN_FOCUS_START`, 근거 출처 `default`).
+  dailyMinutes가 있으면 그 값과 하루 계획량을 넘지 않는다. distraction 응답은 길이를 바꾸지 않고 전략 문장으로만 반영한다.
+  이후 길이는 실행 기록으로 학습해 조정한다.
 - breakMinutes=5. 불규칙/모름 또는 overplanning이면 bufferPercent=40, 나머지는 25다.
 - dailyMinutes가 있으면 dailyPlannedMinutes=int(dailyMinutes × (100-bufferPercent)/100), 없으면 null이다. 예산이 있으면 집중 구간과 시작 작업을 그 안으로 줄인다.
 - starting 응답이 있으면 starterMinutes=min(5, blockMinutes), 없으면 null이다.

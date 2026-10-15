@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from server.app.execution_store import ExecutionStore, ConflictError
-from server.app.execution_profile import generate_profile
+from server.app.execution_profile import UNKNOWN_FOCUS_START, generate_profile
 from server.app.main import create_app
 from server.app.planning_context import get_planning_context
 from server.app.user_profile import apply_profile_proposal, confirm_profile_draft, save_profile_draft
@@ -418,3 +418,24 @@ class RepeatedQuestionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         session = self.client.get('/api/execution/profile/chat').json()['session']
         self.assertEqual(session['evidence']['roles']['messageId'], session['messages'][-2]['id'])
+
+
+class SurveyFocusTests(unittest.TestCase):
+    """The onboarding answer becomes the user's focus block as given."""
+
+    def prefs(self, **answers):
+        return generate_profile({**ANSWERS, "barriers": ["none"], "dailyMinutes": None, **answers})["planningPreferences"]
+
+    def test_the_answer_is_used_as_is_without_a_fixed_cap(self):
+        for minutes in (15, 25, 45, 60, 90):
+            self.assertEqual(self.prefs(focusMinutes=minutes)["blockMinutes"], minutes)
+
+    def test_a_distraction_answer_does_not_override_the_stated_focus(self):
+        self.assertEqual(self.prefs(focusMinutes=60, barriers=["distraction"])["blockMinutes"], 60)
+
+    def test_only_an_unknown_answer_uses_the_start_value(self):
+        self.assertEqual(self.prefs(focusMinutes=None)["blockMinutes"], UNKNOWN_FOCUS_START)
+
+    def test_a_daily_amount_still_bounds_the_block(self):
+        prefs = self.prefs(focusMinutes=90, dailyMinutes=60)
+        self.assertEqual(prefs["blockMinutes"], prefs["dailyPlannedMinutes"])

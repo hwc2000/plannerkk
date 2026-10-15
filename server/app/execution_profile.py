@@ -68,6 +68,10 @@ def validate_insights(data):
         raise ValueError("LLM 후속 질문이 올바르지 않습니다.")
     return data
 
+# Start value when the user does not know their focus time yet (a default, shown as such).
+UNKNOWN_FOCUS_START = 15
+
+
 def generate_profile(raw):
     mode = "demo"
     a = validate_answers(raw)
@@ -75,9 +79,11 @@ def generate_profile(raw):
         raise ValueError("지원하지 않는 생성 방식입니다.")
     focus = a["focusMinutes"]
     daily = a["dailyMinutes"]
-    block = min(focus or 15, daily or 180, 50)
-    if "distraction" in a["barriers"]:
-        block = min(block, 20)
+    # The focus block is the user's own answer, never capped by a fixed number.  Only an
+    # unknown answer starts from a short block; execution records adjust it from there.
+    block = focus or UNKNOWN_FOCUS_START
+    if daily:
+        block = min(block, daily)
     buffer = 40 if a["regularity"] in ("irregular", "unknown") or "overplanning" in a["barriers"] else 25
     prefs = {
         "blockMinutes": block, "breakMinutes": 5,
@@ -93,7 +99,7 @@ def generate_profile(raw):
         prefs["blockMinutes"] = min(block, prefs["dailyPlannedMinutes"])
         if prefs["starterMinutes"] is not None:
             prefs["starterMinutes"] = min(prefs["starterMinutes"], prefs["blockMinutes"])
-    strategies = [{"action": f"첫 집중 구간을 {prefs['blockMinutes']}분으로 시도해 보세요.", "reason": "응답한 집중 시간과 하루 여유 시간을 상한으로 둔 초기 제안입니다. 모르는 경우 15분부터 탐색합니다.", "evidence": ["focusMinutes", "dailyMinutes"]}]
+    strategies = [{"action": f"첫 집중 구간을 {prefs['blockMinutes']}분으로 시도해 보세요.", "reason": f"답한 집중 시간을 그대로 첫 집중 구간으로 씁니다. 모르는 경우 {UNKNOWN_FOCUS_START}분부터 시작하고, 실행 기록이 쌓이면 맞춰 조정합니다.", "evidence": ["focusMinutes", "dailyMinutes"]}]
     actions = {
         "starting": ("첫 행동을 5분 이내로 줄이기", "시작이 어렵다는 응답에 맞춰 준비와 첫 행동을 분리합니다."),
         "overplanning": ("하루 여유 시간의 40%를 비워 두기", "계획량이 많다는 응답을 반영한 초기 여유분입니다."),

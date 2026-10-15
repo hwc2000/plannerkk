@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..execution_api import BusyEvent, build_full_plan_context, plan_projects, project_scope, stale_message
+from ..execution_learning import refine_new_proposals
 from ..execution_llm import ExecutionLLM
 from ..execution_store import ConflictError, ExecutionStore
 from ..execution_service import replace_plan_draft
@@ -102,6 +103,7 @@ def _public(result: dict[str, Any]) -> dict[str, Any]:
 
 def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | None = None) -> APIRouter:
     store = store or ExecutionStore()
+    sizing_llm = llm or ExecutionLLM()
     graph = build_adaptive_planner_graph(
         LLMRecoveryGenerator(llm),
         plan_writer=LocalPlanWriter(store),
@@ -242,6 +244,9 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
                 replace_plan_draft(doc, plan_draft, source_record_id=record_id)
 
         saved = store.change(request.revision, save)
+        # The check-in already has the user's consent to send this work to the AI.
+        before = {p["id"] for p in state["profileUpdateProposals"]}
+        saved = refine_new_proposals(store, sizing_llm, saved, before, consent=request.consent)
         return respond(saved, request.taskId, result, recordId=record_ids[0])
 
     @router.post("/review")

@@ -195,6 +195,37 @@ it('submits checked survey answers without LLM interaction', async () => {
   expect(screen.queryByRole('textbox')).toBeNull()
 })
 
+it('sends an unfinished task to the AI for sizing only when the user opts in', async () => {
+  const settings = { slots: [{ day: 0, hour: 18 }], view: 'timeline' as const }
+  const plan = {
+    id: 'week1', profileId: 'profile1', projectId: null, project: null, goal: '시험 공부',
+    startDate: '2030-01-07', endDate: '2030-01-13', timezone: 'Asia/Seoul', status: 'confirmed',
+    slots: settings.slots, pendingTasks: [], entries: [{
+      id: 'task1', kind: 'task', title: '문제 풀기', minutes: 30, doneWhen: '10문제 풀이', dueDate: null,
+      start: '2030-01-07T18:00', end: '2030-01-07T18:30', completed: false,
+    }],
+  } as ExecutionPlan
+  const state = {
+    revision: 4, profile: null, profileDraft: null, settings, plan, planDraft: null,
+    llmAvailable: true, model: 'test', executionRecords: [], profileUpdateProposals: [],
+  } as ExecutionState
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 5 }) })
+  vi.stubGlobal('fetch', fetchMock)
+  const run = vi.fn(async (action: () => Promise<ExecutionState>) => { await action(); return true })
+  render(<ExecutionLearning state={state} busy={false} run={run}/>)
+
+  fireEvent.change(screen.getByLabelText('작업'), { target: { value: 'task1' } })
+  fireEvent.change(screen.getByLabelText('실행 결과'), { target: { value: 'partial' } })
+  fireEvent.change(screen.getByLabelText('실제 시간(분)'), { target: { value: '15' } })
+  fireEvent.change(screen.getByLabelText('미완료·지연 이유'), { target: { value: 'time_shortage' } })
+  fireEvent.click(screen.getByLabelText(/한 번에 할 길이를 작업 내용까지 보고 판단받는 데 동의/))
+  fireEvent.click(screen.getByText('실행 결과 저장'))
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/records')
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ taskId: 'task1', result: 'partial', consent: true })
+})
+
 it('sends priority-change check-ins through adaptive full replanning with explicit consent', async () => {
   const settings = { slots: [{ day: 0, hour: 18 }], view: 'timeline' as const }
   const plan = {

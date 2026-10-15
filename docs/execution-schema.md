@@ -115,7 +115,10 @@ type ProfileUpdateProposal = {
 | `proposedChanges` | 변경 전후 값. 현재 planningPreferences.blockMinutes만 지원 |
 | `reason` | 변경 제안 이유 |
 | `evidenceRecordIds` | 근거 실행 기록 ID 목록 |
-| `ruleVersion` | 후보 생성 규칙 버전 |
+| `ruleVersion` | 후보 생성 규칙 버전 (`long-task-v2`) |
+| `sizedBy` | 새 값을 정한 방법. `evidence`(실제 집중 시간의 가운데 값) 또는 `ai`(LLM이 작업 내용까지 보고 정함) |
+| `sizing` | 실제 기록으로 정한 근거 문장 |
+| `aiReason` | AI가 정했을 때 그 이유(기록에 있는 사실만, 최대 300자) |
 | `status` | 승인 대기 / 승인 / 거절 |
 | `createdAt` | 후보 생성 시각 |
 | `decidedAt` | 승인·거절 시각. 대기 중이면 null |

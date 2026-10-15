@@ -171,6 +171,8 @@ export type ProfileUpdateProposal = {
   // Set when the change was learned from one project's records and applies to that project only.
   projectId?: string | null; projectProfileId?: string | null; appliedProjectProfileId?: string
   proposedChanges: { blockMinutes: { from: number; to: number } }
+  /** How the new value was sized: from the minutes the user managed, or by the AI reading the tasks too. */
+  sizedBy?: 'evidence' | 'ai'; sizing?: string; aiReason?: string
   reason: string; evidenceRecordIds: string[]; ruleVersion: string
   status: 'pending' | 'approved' | 'rejected'; createdAt: string; decidedAt: string | null
 }
