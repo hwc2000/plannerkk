@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+.venv
+.git
+.github
+.claude
+.env
+.env.*
+**/__pycache__
+*.pptx
+docs
