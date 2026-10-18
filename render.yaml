@@ -1,5 +1,3 @@
-# Render Blueprint: New → Blueprint → this repository.
-# Deploys main on every merge; secrets are entered once in the Render dashboard.
 services:
   - type: web
     name: replan-demo

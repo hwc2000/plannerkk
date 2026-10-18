@@ -55,8 +55,6 @@ def create_app(generator: PlanGenerator | None = None, execution_store=None, exe
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
         return JSONResponse(status_code=400, content={"detail": str(exc)})
-    # A public demo URL would let anyone spend the OpenAI key; DEMO_PASSWORD puts
-    # every page and API call behind the browser's own login prompt. Unset = open (local use).
     demo_password = os.getenv("DEMO_PASSWORD", "")
 
     @app.middleware("http")

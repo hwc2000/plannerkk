@@ -1,12 +1,6 @@
-"""Project-scoped planning inside one shared weekly plan.
-
-Each project chat plans only its own part of the week.  Tasks of other projects
-and every completed task stay exactly where they are, and the new tasks are
-placed into the time they leave free.
-"""
 from datetime import date
 
-FREE = "_free"  # thread and goal key for work that belongs to no project
+FREE = "_free"
 
 
 def thread_key(project_id: str | None) -> str:
@@ -14,7 +8,6 @@ def thread_key(project_id: str | None) -> str:
 
 
 def entry_owner(plan: dict, entry: dict) -> str | None:
-    # Entries saved before multi-project weeks carry the plan's single project.
     return entry.get("projectId") or plan.get("projectId")
 
 
@@ -24,7 +17,6 @@ def active_plan(state: dict, today: date) -> dict | None:
 
 
 def kept_entries(plan: dict, scope_id: str | None) -> list[dict]:
-    """Entries a project-scoped plan must not touch: other projects' tasks and finished work."""
     tasks = [{**e, "projectId": entry_owner(plan, e)} for e in plan["entries"]
              if e["kind"] == "task" and (entry_owner(plan, e) != scope_id or e["completed"])]
     ends = {e["end"] for e in tasks}

@@ -45,41 +45,6 @@ def availability_windows(start, slots, events, project=None, now=None):
     return result
 
 
-MAX_TASK_MINUTES = 600
-MIN_PIECE_MINUTES = 10
-BREAK_MINUTES = 5
-
-
-def validate_tasks(payload, block, projects=()):
-    """Accept the LLM's task list; long tasks are split later instead of failing the plan."""
-    tasks = payload.get("tasks") if isinstance(payload, dict) else None
-    if not isinstance(tasks, list) or not tasks:
-        raise ValueError("AI 작업 목록이 비어 있습니다. 다시 생성해 주세요.")
-    result = []
-    for t in tasks[:40]:
-        if not isinstance(t, dict) or type(t.get("minutes")) is not int or not 1 <= t["minutes"] <= MAX_TASK_MINUTES:
-            raise ValueError("AI 작업 시간이 올바르지 않습니다. 다시 생성해 주세요.")
-        if any(not isinstance(t.get(k), str) or not 1 <= len(t[k].strip()) <= 500 for k in ("title", "doneWhen")):
-            raise ValueError("AI 작업 내용이 올바르지 않습니다.")
-        due = t.get("dueDate")
-        if due is not None:
-            try:
-                due = date.fromisoformat(due).isoformat()
-            except (TypeError, ValueError):
-                due = None  # an unreadable deadline must not block placing the task
-        task = {"title": t["title"].strip(), "minutes": t["minutes"], "doneWhen": t["doneWhen"].strip(), "dueDate": due}
-        if projects:
-            # One project owns every task; with several, an unknown id falls back to "no project".
-            by_id = {p["id"]: p for p in projects}
-            owner = projects[0] if len(projects) == 1 else by_id.get(t.get("projectId"))
-            task["projectId"] = owner["id"] if owner else None
-            if owner:
-                task["dueDate"] = min(filter(None, (due, owner["dueDate"])))
-                task["notBefore"] = owner["startDate"]
-        result.append(task)
-    return result
-
-
 MIN_PIECE_MINUTES = 10
 BREAK_MINUTES = 5
 
@@ -102,7 +67,6 @@ def validate_tasks(payload, block, projects=()):
                 raise ValueError("AI 마감일 형식이 올바르지 않습니다.") from None
         task = {"title": t["title"].strip(), "minutes": t["minutes"], "doneWhen": t["doneWhen"].strip(), "dueDate": due}
         if projects:
-            # One project owns every task; with several, an unknown id falls back to "no project".
             by_id = {p["id"]: p for p in projects}
             owner = projects[0] if len(projects) == 1 else by_id.get(t.get("projectId"))
             task["projectId"] = owner["id"] if owner else None
@@ -135,15 +99,7 @@ def _starter_entry(task, start, minutes):
 
 
 def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=None):
-    """Place tasks in order into the earliest free time.
-
-    A task goes whole into the first window that holds it, so focus-sized work
-    stays one block.  Only when no window holds it whole is it split across
-    windows (never into pieces shorter than MIN_PIECE_MINUTES), instead of being
-    left out while free time remains.  A task is either placed completely or
-    left pending whole.  With ``starter_minutes`` each day's first task gets a
-    short starter before it.
-    """
+    """Place tasks in order; with ``starter_minutes`` each day's first task gets a short starter before it."""
     cursors = [begin for begin, _ in windows]
     # Daily work budget leaves the rest for breaks and interruptions.
     budgets = daily_budgets(windows, buffer_percent, daily_cap)
@@ -171,9 +127,9 @@ def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=
                     piece = min(left, room, budget)
                     if not split and piece < left:
                         capped = capped or (budget < min(left, room) and day in cap_binds)
-                        break  # first pass: whole tasks only
+                        break
                     if 0 < left - piece < MIN_PIECE_MINUTES:
-                        piece -= MIN_PIECE_MINUTES - (left - piece)  # leave a workable remainder, not a sliver
+                        piece -= MIN_PIECE_MINUTES - (left - piece)
                     if piece < min(left, MIN_PIECE_MINUTES):
                         capped = capped or (budget < min(left, room) and day in cap_binds)
                         break
@@ -208,7 +164,6 @@ def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=
             entries.append({**task, "title": title, "minutes": int((finish-begin).total_seconds()//60), "id": str(uuid4()),
                             "kind": "task", "start": begin.isoformat(timespec="minutes"),
                             "end": finish.isoformat(timespec="minutes"), "completed": False})
-        # Later tasks never start before this one, so the suggested order survives.
         not_before = pieces[0][0]
     entries.sort(key=lambda e: (e["start"], e["kind"] != "task"))
     return entries, pending

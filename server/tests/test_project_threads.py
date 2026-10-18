@@ -69,7 +69,6 @@ class ProjectThreadTests(unittest.TestCase):
         self.assertEqual(threads["essay"]["messages"][0]["content"], "에세이 얘기")
         self.assertEqual(threads["app"]["messages"][0]["content"], "앱 얘기")
         self.assertEqual(threads["_free"]["messages"][0]["content"], "자유 얘기")
-        # The model only sees the selected project's history.
         self.call("/api/execution/chat/message", text="이어서", consent=True, project=APP)
         self.assertEqual([m["content"] for m in self.llm.chat_calls[-1]["context"]["messages"]], ["앱 얘기", "좋아요"])
 
@@ -82,7 +81,6 @@ class ProjectThreadTests(unittest.TestCase):
         essay_tasks = [e for e in essay_plan["entries"] if e["kind"] == "task"]
         self.call("/api/execution/task", planId=essay_plan["id"], taskId=essay_tasks[0]["id"], completed=True)
 
-        # A different start date is ignored: the active week is shared.
         merged = self.plan(APP, "로그인 화면", start="2030-01-09")
         self.assertEqual(merged["startDate"], "2030-01-07")
         tasks = [e for e in merged["entries"] if e["kind"] == "task"]
@@ -96,7 +94,6 @@ class ProjectThreadTests(unittest.TestCase):
         self.assertIsNone(merged["project"])
         self.assertIn("[에세이] 에세이 초안", merged["goal"])
 
-        # Replanning the essay replaces its unfinished task only.
         replanned = self.plan(ESSAY, "에세이 퇴고")
         ids = {e["id"] for e in replanned["entries"] if e["kind"] == "task"}
         self.assertIn(essay_tasks[0]["id"], ids)

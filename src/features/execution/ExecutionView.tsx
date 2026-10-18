@@ -27,7 +27,6 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
   const busyEvents = events.map(({ date, startTime, endTime }) => ({ date, startTime, endTime }))
   const savedSlots = JSON.stringify(state.settings.slots)
   const slotsDirty = JSON.stringify(slots) !== savedSlots
-  // The chat can save availability too; follow the server whenever the saved slots change.
   useEffect(() => { setSlots(JSON.parse(savedSlots)) }, [savedSlots])
 
   async function run(action: () => Promise<ExecutionState>, message: string) {
@@ -42,7 +41,6 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
     } finally { setBusy(false) }
   }
 
-  // Plans only this project's part of the shared week; other projects keep their tasks.
   async function generatePlan(goal: string, startDate: string, project: Project | null, consent: boolean) {
     return run(async () => {
       let current = state

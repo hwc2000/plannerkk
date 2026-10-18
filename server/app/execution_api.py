@@ -88,11 +88,7 @@ def build_full_plan_context(
     now: datetime | None = None,
     projects: list[ProjectContext] | None = None,
 ) -> dict:
-    """Build C's full-plan input from the persisted A/B execution state.
-
-    One project limits the week to its period, as before.  Several projects share
-    the week; each task is then kept inside its own project's period.
-    """
+    """Build C's full-plan input from the persisted A/B execution state."""
     selected = list({p.id: p for p in (projects or ([project] if project else []))}.values())
     project = selected[0] if len(selected) == 1 else None
     settings = PlannerSettings.model_validate(state["settings"])
@@ -166,12 +162,10 @@ class WeeklyRequest(Mutation):
     existingTasks: list[ExistingTask] = Field(default_factory=list, max_length=100)
     events: list[BusyEvent] = Field(default_factory=list, max_length=500)
     profileChangeProposalId: str | None = Field(default=None, min_length=1)
-    # Plan only ``project`` (or free work when it is null) inside the active weekly plan.
     merge: bool = False
 
 
 def plan_projects(plan: dict) -> list[dict]:
-    """Projects a stored plan covers; plans saved before multi-project weeks keep one."""
     return plan.get("projects") or ([plan["project"]] if plan.get("project") else [])
 
 
@@ -351,10 +345,9 @@ def execution_router(store=None, llm=None):
         effective_start_date = date.fromisoformat(current_plan["startDate"]) if current_plan else request.startDate
         merge_base, held = None, []
         if request.merge and not replan:
-            from .adaptive.local import local_now  # adaptive.local imports this module
+            from .adaptive.local import local_now
             merge_base = active_plan(state, local_now().date())
         if merge_base:
-            # The week is shared: plan into it and keep other projects' tasks where they are.
             effective_start_date = date.fromisoformat(merge_base["startDate"])
             scope_id = request.project.id if request.project else None
             held = [BusyEvent(date=e["start"][:10], startTime=e["start"][11:], endTime=e["end"][11:])
@@ -426,7 +419,6 @@ def execution_router(store=None, llm=None):
     def check_task(request: CheckTask):
         def update(state):
             set_task_completion(state, request.planId, request.taskId, request.completed)
-            # A waiting draft keeps this entry; confirming it must not undo the check.
             for entry in (state.get("planDraft") or {}).get("entries", []):
                 if entry["id"] == request.taskId:
                     entry["completed"] = request.completed

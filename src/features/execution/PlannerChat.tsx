@@ -9,13 +9,11 @@ const days = '월화수목금토일'
 const FREE = '_free'
 const FREE_COLOR = '#5855d6'
 
-/** One conversation per project, like separate chats; the weekly plan stays shared. */
 export function PlannerChat({ state, busy, run, projects, onCreateProject, onApplyPlan, projectInfo }: {
   state: ExecutionState; busy: boolean
   run: (action: () => Promise<ExecutionState>, message: string) => Promise<boolean>
   projects: Project[]; onCreateProject?: () => void
   onApplyPlan: (goal: string, startDate: string, project: Project | null, consent: boolean) => Promise<boolean>
-  /** What this project adapted on top of the user profile, shown under its chat header. */
   projectInfo?: (project: Project) => ReactNode
 }) {
   const threads = state.plannerThreads ?? {}
@@ -28,14 +26,12 @@ export function PlannerChat({ state, busy, run, projects, onCreateProject, onApp
   const key = project?.id ?? FREE
   const thread = threads[key]
   const messages = thread?.messages ?? []
-  // A card is stale once anything else has changed the saved state.
   const action = thread?.action?.revision === state.revision ? thread.action : null
   const text = drafts[key] ?? ''
   const color = project ? projectColor(project.id) : FREE_COLOR
   const week = state.plan && state.plan.endDate >= dateKey(new Date()) ? state.plan : null
   const weekTasks = week?.entries.filter(e => e.kind === 'task' && (e.projectId ?? week.projectId ?? null) === (project?.id ?? null)) ?? []
 
-  // A newly created project opens its own fresh conversation, like starting a new chat.
   useEffect(() => {
     const added = projects.find(p => !known.current.has(p.id))
     known.current = new Set(projects.map(p => p.id))

@@ -1,8 +1,3 @@
-"""Conversational weekly planner, one thread per project.
-
-The LLM proposes; the user confirms with a card.  Every project keeps its own
-messages and card, like separate chats, while the weekly plan is shared.
-"""
 import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
@@ -129,7 +124,6 @@ def planner_chat_router(store, llm):
             messages = [*current["messages"],
                         {"id": str(uuid4()), "role": "user", "content": request.text},
                         {"id": str(uuid4()), "role": "assistant", "content": value.reply}]
-            # The card is only valid for the revision this change produces.
             threads[key] = {"messages": messages[-HISTORY_LIMIT:],
                             "action": {**action, "revision": request.revision + 1} if action else None,
                             "updatedAt": datetime.now(KST).isoformat(timespec="seconds")}

@@ -146,7 +146,6 @@ export type ProjectProfile = {
   learnedPatterns: LearnedPattern[]; createdAt: string; updatedAt: string
 }
 export type PlannerMessage = { id: string; role: 'user' | 'assistant'; content: string }
-/** One conversation per project; the key is the project id, or '_free' for work without a project. */
 export type PlannerThread = { messages: PlannerMessage[]; action: PlannerAction | null; updatedAt?: string }
 export type PlannerAction =
   | { kind: 'plan'; revision: number; payload: { goal: string; startDate: string } }

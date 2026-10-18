@@ -139,7 +139,6 @@ def save_execution_record(state, payload, *, allow_follow_up=False):
 def _new_record(plan, task, request):
     # The plan's project and settings versions travel with the record, so
     # learning can group records by project after the plan itself is replaced.
-    # A shared week holds several projects; each task carries its own.
     project_id = task.get('projectId') or plan.get('projectId')
     record = request.model_dump()
     record.update(id=str(uuid4()), profileId=plan['profileId'], profileVersion=plan.get('profileVersion'),

@@ -63,11 +63,9 @@ export async function approveProposalAndReplan(
 export function projectContext(project: Project | undefined) {
   if (!project) return null
   const { id, title, goal, startDate, dueDate } = project
-  // The server requires a goal; a project saved without one is described by its title.
   return { id, title, goal: goal.trim() || title, startDate, dueDate }
 }
 
-/** Project ids a plan covers; plans saved before multi-project weeks have one. */
 export function planProjectIds(plan: ExecutionPlan | null | undefined): string[] {
   if (!plan) return []
   if (plan.projects?.length) return plan.projects.map(p => p.id)
