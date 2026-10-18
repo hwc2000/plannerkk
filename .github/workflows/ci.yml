@@ -1,8 +1,5 @@
 name: CI
 
-# Every pull request (and every push to main) runs the same checks as `npm run build`,
-# `npm test` and the Python unit tests. The tests use fake LLM responses, so no
-# OpenAI key or secret is needed here.
 on:
   pull_request:
   push:
