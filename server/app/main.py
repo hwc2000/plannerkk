@@ -1,11 +1,13 @@
+import base64
 import os
+import secrets
 from pathlib import Path
 from typing import Protocol
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from .adaptive.api import adaptive_router
 from .execution_api import execution_router
@@ -53,6 +55,25 @@ def create_app(generator: PlanGenerator | None = None, execution_store=None, exe
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+    # A public demo URL would let anyone spend the OpenAI key; DEMO_PASSWORD puts
+    # every page and API call behind the browser's own login prompt. Unset = open (local use).
+    demo_password = os.getenv("DEMO_PASSWORD", "")
+
+    @app.middleware("http")
+    async def demo_login(request, call_next):
+        if not demo_password or request.url.path == "/api/health":
+            return await call_next(request)
+        try:
+            scheme, _, token = request.headers.get("authorization", "").partition(" ")
+            _, _, given = base64.b64decode(token).decode().partition(":")
+        except (ValueError, UnicodeDecodeError):
+            scheme, given = "", ""
+        if scheme.lower() == "basic" and secrets.compare_digest(given.encode(), demo_password.encode()):
+            return await call_next(request)
+        return Response("Re:plan 시연용 비밀번호가 필요합니다.", status_code=401,
+                        headers={"WWW-Authenticate": 'Basic realm="replan-demo", charset="UTF-8"'},
+                        media_type="text/plain; charset=utf-8")
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[

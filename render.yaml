@@ -1,0 +1,17 @@
+# Render Blueprint: New → Blueprint → this repository.
+# Deploys main on every merge; secrets are entered once in the Render dashboard.
+services:
+  - type: web
+    name: replan-demo
+    runtime: docker
+    plan: free
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: DEMO_PASSWORD
+        sync: false
+      - key: OPENAI_PLAN_MODEL
+        value: gpt-4o-mini
