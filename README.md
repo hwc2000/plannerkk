@@ -6,6 +6,15 @@
 
 **추가 기능과 간편 실행: [INTEGRATION.md](INTEGRATION.md)** — `python run_local.py`로 빌드된 화면과 API를 `http://127.0.0.1:8010`에서 함께 실행합니다.
 
+## 시스템 구조
+
+![Re:plan 시스템 구조](docs/system-architecture.png)
+
+- **웹 애플리케이션**: React + Vite 화면과 FastAPI 서버가 Docker 이미지 하나로 Render에서 함께 실행됩니다. FastAPI는 로그인 세션을 확인하고, 화면이 쓰는 API와 빌드된 정적 파일을 제공합니다.
+- **데이터**: 계정, 세션, 사용자별 설문·프로필·계획·일정을 SQLite 파일 하나에 저장합니다. 비밀번호는 해시로만 저장합니다.
+- **AI 계획 파이프라인**: LangGraph가 단계 흐름을 제어합니다. 경로 분기 → 개인화 정책(설문으로 작업 길이·하루 작업량·시간대 결정) → 계획 생성(LLM) → 검증·일정 배치 → 사용자 승인 순서이며, 검증에 실패하면 최대 2회 다시 생성합니다.
+- **외부 서비스**: OpenAI `gpt-4o-mini`를 계획 생성과 대화형 설문·플래너 대화에 씁니다. GitHub에 푸시하면 Actions가 테스트를 돌리고, `main`은 Render에 자동 배포됩니다.
+
 ## 기술 스택
 
 - React + TypeScript + Vite
