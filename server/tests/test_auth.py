@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -104,7 +105,7 @@ class AuthApiTests(unittest.TestCase):
         self.assertEqual(b.get("/api/workspace").json()["projects"], [])
 
     def test_first_account_inherits_legacy_single_user_data(self):
-        with sqlite3.connect(self.db) as db:
+        with closing(sqlite3.connect(self.db)) as db, db:
             db.execute("CREATE TABLE execution_state (id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL)")
             db.execute("INSERT INTO execution_state VALUES (1, ?)", (json.dumps({
                 "revision": 3, "settings": {"slots": [{"day": 1, "hour": 10}], "view": "timeline"},
@@ -141,7 +142,7 @@ class AuthStoreTests(unittest.TestCase):
         user = store.create_user("x@example.com", "long-password", "엑스")
         token = store.create_session(user["id"])
         self.assertEqual(store.session_user(token), user["id"])
-        with sqlite3.connect(store.path) as db:
+        with closing(sqlite3.connect(store.path)) as db, db:
             db.execute("UPDATE sessions SET expires_at = 0")
         self.assertIsNone(store.session_user(token))
         self.assertIsNone(store.session_user("unknown"))
