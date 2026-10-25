@@ -125,7 +125,10 @@ def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=
                     room = int((end - cursor).total_seconds()//60) - lead
                     budget = budgets.get(day, 0) - lead
                     piece = min(left, room, budget)
-                    if not split and piece < left:
+                    # A task longer than what is left of today's plan is split so today is used up
+                    # instead of skipped; otherwise later tasks fall out of the week.
+                    budget_bound = budget < min(left, room) and budget >= MIN_PIECE_MINUTES
+                    if not split and piece < left and not budget_bound:
                         capped = capped or (budget < min(left, room) and day in cap_binds)
                         break
                     if 0 < left - piece < MIN_PIECE_MINUTES:
@@ -166,5 +169,4 @@ def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=
                             "end": finish.isoformat(timespec="minutes"), "completed": False})
         not_before = pieces[0][0]
     entries.sort(key=lambda e: (e["start"], e["kind"] != "task"))
-    return entries, pending
     return entries, pending
