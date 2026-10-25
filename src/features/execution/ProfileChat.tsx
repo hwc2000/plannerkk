@@ -57,7 +57,7 @@ export function ProfileChat({ state, busy, run, onReviewed, onCancel }: {
       revision: state.revision, sessionId: session.id, text: value, mode, consent, field,
     }), '답변을 대화에 저장했습니다.')
     if (ok) { setText(''); setSelected([]) }
-    else setError('답변을 저장하지 못했어. 입력한 내용은 그대로 남아 있어. 화면 위의 오류 안내를 확인하고 다시 보내 줘.')
+    else setError('답변을 저장하지 못했습니다. 입력한 내용은 그대로 남아 있습니다. 화면 위의 오류 안내를 확인하고 다시 보내 주세요.')
     return ok
     } finally { sending.current = false }
   }

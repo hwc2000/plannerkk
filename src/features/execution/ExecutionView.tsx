@@ -113,7 +113,7 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
     {error && <p className="form-error" role="alert">{error}</p>}{notice && <p className="execution-notice" role="status">{notice}</p>}
     {busy && <p role="status">요청을 처리하고 있습니다. 잠시 기다려 주세요.</p>}
     {editing ? <ProfileForm key={chatKey} initial={shownProfile?.declaredFacts ?? shownProfile?.facts} busy={busy} requestError={error} onCancel={shownProfile ? () => setEditing(false) : undefined} onGenerate={async answers => {
-      const ok = await run(() => executionApi('/profile', { revision: state.revision, answers, mode: 'demo', consent: false }), '설문을 반영한 프로필 초안을 만들었어. 검토 후 확정해 줘.')
+      const ok = await run(() => executionApi('/profile', { revision: state.revision, answers, mode: 'demo', consent: false }), '설문을 반영한 프로필 초안을 만들었습니다. 검토 후 확정해 주세요.')
       if (ok) setEditing(false)
     }}/> : shownProfile &&
       <section className="execution-card"><p className="section-kicker">MY PROFILE · {shownProfile.status==='draft'?'확정 전 초안':'확정됨'}</p><h2>나의 실행 프로필</h2><p className="execution-help">{shownProfile.source==='llm'?'LLM 분석':'답변에서 계산한 계획 선호'}</p><p>{shownProfile.insights.summary}</p>
@@ -122,15 +122,15 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
         <p><strong>계획 방식: </strong>{shownProfile.planningPreferences.scheduleStyle === 'time_blocks' ? '시간 지정형 · 18:30~19:00' : '작업량 지정형 · A 1시간, B 2시간'}</p>
         <details open={shownProfile.status === 'draft'}><summary>설문 답변 확인</summary>{Object.entries(shownProfile.declaredFacts ?? shownProfile.facts).filter(([key]) => key !== 'dailyMinutes').map(([key,value]) => <p key={key}><strong>{answerLabels[key] ?? key}: </strong>{formatAnswer(key, value)}</p>)}<p className="execution-help">다르게 정리된 내용은 ‘설문 수정’에서 고친 뒤 확정해 주세요.</p></details>
         <details><summary>추천 근거와 추가 질문</summary>{shownProfile.insights.strategies.map((s,i)=><div key={i}><h3>{s.action}</h3><p>{s.reason}</p><small>답변 근거: {s.evidence.map(k=>answerLabels[k]??k).join(', ')}</small></div>)}{shownProfile.insights.followUpQuestions.map(q=><p key={q}>{q}</p>)}<p className="execution-help">선택한 답변은 ‘설문 수정’에서 바꿀 수 있어요. 추천값은 실행 후 조정할 초기 가설입니다.</p></details>
-        <div className="execution-actions"><button className="secondary-button" disabled={busy} onClick={()=>{setEditing(true)}}>설문 수정</button><button className="secondary-button" onClick={()=>downloadJson(shownProfile,'replan-profile.json')}>프로필 JSON 다운로드</button>{state.profileDraft && <button type="button" className="primary-button" disabled={busy} onClick={()=>{void run(()=>executionApi('/profile/confirm',{revision:state.revision}),'프로필을 저장했어. 아래에서 계획할 시간을 고르고 이번 주 목표를 알려 줘.') }}>{busy?'프로필 저장 중…':'프로필 확정'}</button>}</div>
+        <div className="execution-actions"><button className="secondary-button" disabled={busy} onClick={()=>{setEditing(true)}}>설문 수정</button><button className="secondary-button" onClick={()=>downloadJson(shownProfile,'replan-profile.json')}>프로필 JSON 다운로드</button>{state.profileDraft && <button type="button" className="primary-button" disabled={busy} onClick={()=>{void run(()=>executionApi('/profile/confirm',{revision:state.revision}),'프로필을 저장했습니다. 아래에서 계획할 시간을 고르고 이번 주 목표를 알려 주세요.') }}>{busy?'프로필 저장 중…':'프로필 확정'}</button>}</div>
         {error && <p className="form-error" role="alert">{error}</p>}
         {notice && <p className="execution-notice" role="status">{notice}</p>}
-        {shownProfile.status==='confirmed' && <div className="execution-next"><strong>프로필이 DB에 저장되었습니다.</strong><p>프로필 설정이 끝났어. 아래 플래너와 대화하면서 이번 주 계획을 세워 봐.</p><a className="primary-button" href="#weekly-goal">플래너와 대화하기 →</a></div>}
+        {shownProfile.status==='confirmed' && <div className="execution-next"><strong>프로필이 DB에 저장되었습니다.</strong><p>프로필 설정이 끝났습니다. 아래 플래너와 대화하면서 이번 주 계획을 세워 보세요.</p><a className="primary-button" href="#weekly-goal">플래너와 대화하기 →</a></div>}
       </section>}
     {state.profile && !editing && <>
       <details id="weekly-setup" className="execution-card" open={slots.length === 0 || slotsDirty ? true : undefined}><summary>계획할 시간 · 주 {slots.length}시간</summary>
-        <p className="execution-help">하루 작업량은 계획의 분량이고, 여기서는 실제로 배치할 요일과 시간을 골라 줘. 저장한 시간은 다음에도 그대로 사용할게. 고정 일정과 겹치는 시간은 선택에서 빼 줘.</p><AvailabilityGrid slots={slots} onChange={setSlots} disabled={busy}/>
-        <button className="secondary-button" disabled={busy||!slotsDirty} onClick={()=>{void run(()=>executionApi('/settings',{revision:state.revision,settings:{...state.settings,slots}},'PUT'),'계획할 시간을 저장했어.') }}>시간 변경 저장</button>
+        <p className="execution-help">하루 작업량은 계획의 분량이고, 여기서는 실제로 배치할 요일과 시간을 골라 주세요. 저장한 시간은 다음에도 그대로 사용합니다. 고정 일정과 겹치는 시간은 선택에서 빼 주세요.</p><AvailabilityGrid slots={slots} onChange={setSlots} disabled={busy}/>
+        <button className="secondary-button" disabled={busy||!slotsDirty} onClick={()=>{void run(()=>executionApi('/settings',{revision:state.revision,settings:{...state.settings,slots}},'PUT'),'계획할 시간을 저장했습니다.') }}>시간 변경 저장</button>
       </details>
       <PlannerChat state={state} busy={busy} run={run} projects={projects} onCreateProject={onCreateProject} onApplyPlan={generatePlan}
         projectInfo={project => state.profile && <ProjectSettings key={project.id} state={state} project={project} busy={busy} run={run} editable={import.meta.env.DEV}/>}/>
