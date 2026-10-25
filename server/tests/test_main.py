@@ -61,13 +61,13 @@ class PlanDraftApiTests(unittest.TestCase):
         "existingTasks": [],
     }
     def test_health_endpoint(self):
-        client = TestClient(create_app(generator=FakeGenerator()))
+        client = TestClient(create_app(auth=False, generator=FakeGenerator()))
         response = client.get("/api/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
 
     def test_project_overview_endpoint_survives_execution_integration(self):
-        with TestClient(create_app(generator=FakeGenerator())) as client:
+        with TestClient(create_app(auth=False, generator=FakeGenerator())) as client:
             response = client.get("/api/projects/project-1/overview")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["projectId"], "project-1")
@@ -75,7 +75,7 @@ class PlanDraftApiTests(unittest.TestCase):
         self.assertEqual(response.json()["progressPercent"], 43)
 
     def test_returns_structured_plan_without_persisting_it(self):
-        client = TestClient(create_app(generator=FakeGenerator()))
+        client = TestClient(create_app(auth=False, generator=FakeGenerator()))
         response = client.post(
             "/api/ai/plan-draft",
             json={
@@ -95,7 +95,7 @@ class PlanDraftApiTests(unittest.TestCase):
         self.assertNotIn("saved", response.json())
 
     def test_rejects_generated_tasks_outside_project_period(self):
-        client = TestClient(create_app(generator=OutOfRangeGenerator()))
+        client = TestClient(create_app(auth=False, generator=OutOfRangeGenerator()))
         response = client.post(
             "/api/ai/plan-draft",
             json={
@@ -121,7 +121,7 @@ class PlanDraftApiTests(unittest.TestCase):
                     "server.app.openai_planner.OpenAIPlanGenerator.from_env",
                     return_value=generator,
                 ):
-                    response = TestClient(create_app()).post(
+                    response = TestClient(create_app(auth=False)).post(
                         "/api/ai/plan-draft",
                         json=self.request_payload,
                     )
@@ -130,7 +130,7 @@ class PlanDraftApiTests(unittest.TestCase):
 
     def test_does_not_close_injected_generator(self):
         generator = ClosableGenerator()
-        response = TestClient(create_app(generator=generator)).post(
+        response = TestClient(create_app(auth=False, generator=generator)).post(
             "/api/ai/plan-draft",
             json=self.request_payload,
         )
@@ -145,11 +145,11 @@ if __name__ == "__main__":
 class LegacyProjectRequestTests(unittest.TestCase):
     def test_full_project_from_older_client_is_accepted(self):
         payload = {**PlanDraftApiTests.request_payload, "project": {**PlanDraftApiTests.request_payload["project"], "priority":"high", "status":"active"}}
-        response = TestClient(create_app(generator=FakeGenerator())).post("/api/ai/plan-draft", json=payload)
+        response = TestClient(create_app(auth=False, generator=FakeGenerator())).post("/api/ai/plan-draft", json=payload)
         self.assertEqual(response.status_code, 200)
 
     def test_invalid_input_has_readable_detail(self):
         payload = {**PlanDraftApiTests.request_payload, "goal":"a"}
-        response = TestClient(create_app(generator=FakeGenerator())).post("/api/ai/plan-draft", json=payload)
+        response = TestClient(create_app(auth=False, generator=FakeGenerator())).post("/api/ai/plan-draft", json=payload)
         self.assertEqual(response.status_code, 422)
         self.assertIsInstance(response.json()["detail"], str)

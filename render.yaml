@@ -13,3 +13,5 @@ services:
         sync: false
       - key: OPENAI_PLAN_MODEL
         value: gpt-4o-mini
+      - key: REPLAN_SECURE_COOKIES
+        value: "1"

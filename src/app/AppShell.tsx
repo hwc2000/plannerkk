@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import {
   Brain,
   CalendarDays,
+  LogOut,
   Menu,
   MoreHorizontal,
   Plus,
@@ -10,7 +11,7 @@ import {
   Target,
   X,
 } from 'lucide-react'
-import type { View } from '../shared/types'
+import type { AuthUser, View } from '../shared/types'
 
 type AppShellProps = {
   activeView: View
@@ -18,6 +19,8 @@ type AppShellProps = {
   onCreateProject: () => void
   onShowSettingsNotice: () => void
   projectCount: number
+  user?: AuthUser
+  onLogout?: () => void
   notice: string
   onCloseNotice: () => void
   children: ReactNode
@@ -44,6 +47,8 @@ export function AppShell({
   onCreateProject,
   onShowSettingsNotice,
   projectCount,
+  user,
+  onLogout,
   notice,
   onCloseNotice,
   children,
@@ -77,9 +82,14 @@ export function AppShell({
             <Settings2 size={18} />설정
           </button>
           <div className="profile">
-            <div className="avatar">H</div>
-            <div><strong>현우</strong><span>프로젝트 {projectCount}개</span></div>
-            <MoreHorizontal size={17} />
+            <div className="avatar">{(user?.displayName ?? '나').slice(0, 1).toUpperCase()}</div>
+            <div>
+              <strong>{user?.displayName ?? '로컬 사용자'}</strong>
+              <span className="profile-email" title={user?.email}>{user ? user.email : `프로젝트 ${projectCount}개`}</span>
+            </div>
+            {onLogout
+              ? <button className="profile-logout" onClick={onLogout} aria-label="로그아웃" title="로그아웃"><LogOut size={16} /></button>
+              : <MoreHorizontal size={17} />}
           </div>
         </div>
       </aside>

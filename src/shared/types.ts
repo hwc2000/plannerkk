@@ -200,3 +200,19 @@ export type PlanningContext = {
   projectContext: Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'> | null
   availability: { timezone: string; slots: AvailabilitySlot[] }; memories: Memory[]; warnings: string[]
 }
+
+export type AuthUser = {
+  id: string
+  email: string
+  displayName: string
+  createdAt: string
+  claimedLegacyData?: boolean
+}
+
+/** Per-user copy of the four browser collections, stored on the server when login is enabled. */
+export type WorkspaceData = {
+  projects: Project[]
+  milestones: Milestone[]
+  events: CalendarEvent[]
+  memories: Memory[]
+}

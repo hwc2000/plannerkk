@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from .adaptive.api import adaptive_router
+from .auth import SESSION_COOKIE, AuthStore, UserScopedStore, auth_router, current_user_id, workspace_router
 from .execution_api import execution_router
 from .execution_store import ConflictError, ExecutionStore
 from .profile_chat import profile_chat_router
@@ -30,9 +31,33 @@ class PlanGenerator(Protocol):
     async def generate(self, request: PlanDraftRequest) -> object: ...
 
 
-def create_app(generator: PlanGenerator | None = None, execution_store=None, execution_llm=None) -> FastAPI:
+PUBLIC_API_PATHS = {"/api/health", "/api/auth/signup", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
+
+
+def _auth_enabled(explicit, execution_store):
+    if explicit is not None:
+        return explicit
+    env = os.getenv("REPLAN_AUTH", "").strip().lower()
+    if env in {"0", "false", "off", "no"}:
+        return False
+    # Tests that inject their own single-user store keep the old open behaviour.
+    return execution_store is None
+
+
+def create_app(generator: PlanGenerator | None = None, execution_store=None, execution_llm=None,
+               *, auth: bool | None = None, db_path=None) -> FastAPI:
     app = FastAPI(title="PlannerKK API")
-    store = execution_store or ExecutionStore()
+    auth_enabled = _auth_enabled(auth, execution_store)
+    auth_store = AuthStore(db_path or (execution_store.path if execution_store is not None else None))
+    if auth_enabled:
+        store = UserScopedStore(auth_store.path)
+    else:
+        store = execution_store or ExecutionStore(db_path)
+    app.state.auth_enabled = auth_enabled
+    app.state.auth_store = auth_store
+    app.include_router(auth_router(auth_store, secure_cookies=os.getenv("REPLAN_SECURE_COOKIES", "") == "1"))
+    if auth_enabled:
+        app.include_router(workspace_router(auth_store))
     app.include_router(execution_router(store, execution_llm))
     app.include_router(profile_chat_router(store, execution_llm or ExecutionLLM()))
     app.include_router(adaptive_router(store, execution_llm))
@@ -55,6 +80,26 @@ def create_app(generator: PlanGenerator | None = None, execution_store=None, exe
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+    @app.get("/api/auth/config")
+    async def auth_config():
+        return {"enabled": auth_enabled}
+
+    PUBLIC_API_PATHS.add("/api/auth/config")
+
+    @app.middleware("http")
+    async def require_login(request, call_next):
+        path = request.url.path
+        if not auth_enabled or not path.startswith("/api/") or path in PUBLIC_API_PATHS:
+            return await call_next(request)
+        user_id = auth_store.session_user(request.cookies.get(SESSION_COOKIE))
+        if not user_id:
+            return JSONResponse(status_code=401, content={"detail": "로그인이 필요합니다."})
+        token = current_user_id.set(user_id)
+        try:
+            return await call_next(request)
+        finally:
+            current_user_id.reset(token)
+
     demo_password = os.getenv("DEMO_PASSWORD", "")
 
     @app.middleware("http")

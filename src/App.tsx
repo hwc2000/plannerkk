@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './styles.css'
 import { AppShell } from './app/AppShell'
 import { CalendarView } from './features/calendar/CalendarView'
@@ -7,14 +7,7 @@ import { MemoryForm } from './features/memories/MemoryForm'
 import { MemoryView } from './features/memories/MemoryView'
 import { ProjectForm } from './features/projects/ProjectForm'
 import { ProjectsView } from './features/projects/ProjectsView'
-import {
-  seedEvents,
-  seedMemories,
-  seedMilestones,
-  seedProjects,
-  TODAY,
-} from './shared/constants'
-import { useStoredState } from './shared/storage'
+import { TODAY } from './shared/constants'
 import { ExecutionView } from './features/execution/ExecutionView'
 import { executionApi, planCalendarEvents } from './features/execution/api'
 import type {
@@ -27,13 +20,31 @@ import type {
   Project,
   View,
   ExecutionState,
+  AuthUser,
+  WorkspaceData,
 } from './shared/types'
 
-function App() {
-  const [projects, setProjects] = useStoredState<Project[]>('replan-projects-v1', seedProjects)
-  const [milestones, setMilestones] = useStoredState<Milestone[]>('replan-milestones-v1', seedMilestones)
-  const [events, setEvents] = useStoredState<CalendarEvent[]>('replan-events-v1', seedEvents)
-  const [memories, setMemories] = useStoredState<Memory[]>('replan-memories-v1', seedMemories)
+type AppProps = {
+  initial: WorkspaceData
+  onPersist: (workspace: WorkspaceData) => void
+  user?: AuthUser
+  onLogout?: () => void
+  saveError?: string
+}
+
+function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
+  const [projects, setProjects] = useState<Project[]>(initial.projects)
+  const [milestones, setMilestones] = useState<Milestone[]>(initial.milestones)
+  const [events, setEvents] = useState<CalendarEvent[]>(initial.events)
+  const [memories, setMemories] = useState<Memory[]>(initial.memories)
+  const persistRef = useRef(onPersist)
+  persistRef.current = onPersist
+  const firstRender = useRef(true)
+  useEffect(() => {
+    if (firstRender.current && user) { firstRender.current = false; return }
+    firstRender.current = false
+    persistRef.current({ projects, milestones, events, memories })
+  }, [projects, milestones, events, memories, user])
   const [activeView, setActiveView] = useState<View>('portfolio')
   const [selectedDate, setSelectedDate] = useState(TODAY)
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '')
@@ -113,7 +124,9 @@ function App() {
       onCreateProject={() => setEditor({ kind: 'project' })}
       onShowSettingsNotice={() => setActiveView('execution')}
       projectCount={projects.length}
-      notice={notice}
+      user={user}
+      onLogout={onLogout}
+      notice={notice || saveError || ''}
       onCloseNotice={() => setNotice('')}
       editor={entityForm}
     >
