@@ -15,6 +15,7 @@ async function requestState(url: string, body?: unknown, method = 'POST'): Promi
     method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   })
   const data = await response.json().catch(() => ({}))
+  if (response.status === 401) window.dispatchEvent(new Event('replan:unauthorized'))
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '입력값 또는 서버 연결을 확인해 주세요.')
   if (!Number.isInteger(data.revision) || !data.settings) throw new Error('서버 응답 형식이 올바르지 않습니다.')
   return data

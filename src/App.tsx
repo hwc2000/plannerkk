@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './styles.css'
 import { AppShell } from './app/AppShell'
 import { CalendarView } from './features/calendar/CalendarView'
@@ -9,7 +9,6 @@ import { ProjectForm } from './features/projects/ProjectForm'
 import { ProjectsView } from './features/projects/ProjectsView'
 import { TODAY } from './shared/constants'
 import { SEED_CLEANUP_KEY, withoutOldSeeds } from './shared/oldSeeds'
-import { useStoredState } from './shared/storage'
 import { ExecutionView } from './features/execution/ExecutionView'
 import { executionApi, planCalendarEvents } from './features/execution/api'
 import type {
@@ -22,14 +21,31 @@ import type {
   Project,
   View,
   ExecutionState,
+  AuthUser,
+  WorkspaceData,
 } from './shared/types'
 
-function App() {
-  // A new user starts empty: sample projects, events or memories would reach the AI as if they were the user's.
-  const [projects, setProjects] = useStoredState<Project[]>('replan-projects-v1', [])
-  const [milestones, setMilestones] = useStoredState<Milestone[]>('replan-milestones-v1', [])
-  const [events, setEvents] = useStoredState<CalendarEvent[]>('replan-events-v1', [])
-  const [memories, setMemories] = useStoredState<Memory[]>('replan-memories-v1', [])
+type AppProps = {
+  initial: WorkspaceData
+  onPersist: (workspace: WorkspaceData) => void
+  user?: AuthUser
+  onLogout?: () => void
+  saveError?: string
+}
+
+function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
+  const [projects, setProjects] = useState<Project[]>(initial.projects)
+  const [milestones, setMilestones] = useState<Milestone[]>(initial.milestones)
+  const [events, setEvents] = useState<CalendarEvent[]>(initial.events)
+  const [memories, setMemories] = useState<Memory[]>(initial.memories)
+  const persistRef = useRef(onPersist)
+  persistRef.current = onPersist
+  const firstRender = useRef(true)
+  useEffect(() => {
+    if (firstRender.current && user) { firstRender.current = false; return }
+    firstRender.current = false
+    persistRef.current({ projects, milestones, events, memories })
+  }, [projects, milestones, events, memories, user])
   // The planner is where the workflow starts: survey, weekly time, then the project conversations.
   const [activeView, setActiveView] = useState<View>('execution')
   const [selectedDate, setSelectedDate] = useState(TODAY)
@@ -44,15 +60,16 @@ function App() {
     catch (error) { setExecutionError(error instanceof Error ? error.message : '실행 프로필을 불러오지 못했습니다.') }
   }
   useEffect(() => { void loadExecution() }, [])
-  // Once per browser: drop the sample data older versions saved, now that the planner can tell what was used.
+  // Once per browser and account: drop the sample data older versions saved, now that the planner can tell what was used.
+  const cleanupKey = user ? `${SEED_CLEANUP_KEY}:${user.id}` : SEED_CLEANUP_KEY
   useEffect(() => {
-    if (!execution || localStorage.getItem(SEED_CLEANUP_KEY)) return
+    if (!execution || localStorage.getItem(cleanupKey)) return
     const clean = withoutOldSeeds({ projects, milestones, events, memories }, execution)
-    localStorage.setItem(SEED_CLEANUP_KEY, new Date().toISOString())
+    localStorage.setItem(cleanupKey, new Date().toISOString())
     if (!clean.removed.length) return
     setProjects(clean.projects); setMilestones(clean.milestones); setEvents(clean.events); setMemories(clean.memories)
     setNotice(`예전 버전이 넣어 둔 ${clean.removed.join(', ')}을 지웠어요. 계획에 더는 쓰이지 않아요.`)
-  }, [execution, projects, milestones, events, memories, setProjects, setMilestones, setEvents, setMemories])
+  }, [execution, cleanupKey, projects, milestones, events, memories])
   const generatedEvents = planCalendarEvents(execution?.plan ?? null, projects)
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0]
 
@@ -119,7 +136,9 @@ function App() {
       onCreateProject={() => setEditor({ kind: 'project' })}
       onShowSettingsNotice={() => setActiveView('execution')}
       projectCount={projects.length}
-      notice={notice}
+      user={user}
+      onLogout={onLogout}
+      notice={notice || saveError || ''}
       onCloseNotice={() => setNotice('')}
       editor={entityForm}
     >

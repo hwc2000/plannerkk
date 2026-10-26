@@ -89,6 +89,49 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(slots(("2030-01-07T19:00", "2030-01-07T22:00"), PlanPolicy(60, 90, None, None), 60), [60, 30])
         self.assertEqual(day_slots(windows(("2030-01-07T19:00", "2030-01-07T19:05")), PlanPolicy(60, None, None, None), 60), [])
 
+    def test_tasks_longer_than_the_days_rest_are_split_to_fill_the_cap(self):
+        # Real gpt-4o-mini output for a 50-minute / 90-minute-a-day user: every task 50 minutes.
+        # Placed whole, each day used 50 of its 90 minutes and the rehearsals fell out of the week.
+        week = windows(*[(f"2030-01-{d:02d}T09:00", f"2030-01-{d:02d}T12:00") for d in range(7, 12)])
+        titles = ["구성", "작성 1", "작성 2", "작성 3", "작성 4", "디자인", "연습 1", "연습 2", "연습 3"]
+        entries, pending = schedule([task(t, 50) for t in titles], week, daily_cap=90)
+        work = [e for e in entries if e["kind"] == "task"]
+        self.assertEqual(pending, [])
+        for day in {e["start"][:10] for e in work}:
+            self.assertEqual(sum(e["minutes"] for e in work if e["start"].startswith(day)), 90)
+        self.assertTrue(all(10 <= e["minutes"] <= 50 for e in work))
+        self.assertEqual([e["title"] for e in work][:3], ["구성", "작성 1 (1/2)", "작성 1 (2/2)"])
+        self.assertEqual(sum(e["minutes"] for e in work if e["title"].startswith("작성 1")), 50)
+        starts = [e["start"] for e in work]
+        self.assertEqual(starts, sorted(starts))  # the given order is kept
+
+    def test_split_to_fill_the_cap_keeps_the_starter_and_minimum_piece(self):
+        week = windows(*[(f"2030-01-{d:02d}T19:00", f"2030-01-{d:02d}T22:00") for d in range(7, 10)])
+        entries, pending = schedule([task(f"작업 {i}", 20, starter="열기") for i in range(4)], week,
+                                    daily_cap=36, starter_minutes=5)
+        work = [e for e in entries if e["kind"] == "task"]
+        self.assertEqual(pending, [])
+        for day in {e["start"][:10] for e in work}:
+            today = [e for e in work if e["start"].startswith(day)]
+            self.assertTrue(today[0].get("starter"))
+            self.assertEqual(sum(e.get("starter", False) for e in today), 1)
+            self.assertLessEqual(sum(e["minutes"] for e in today), 36)
+        self.assertTrue(all(e["minutes"] >= 10 for e in work if not e.get("starter")))
+
+    def test_a_leftover_shorter_than_a_piece_is_not_split_into(self):
+        week = windows(("2030-01-07T09:00", "2030-01-07T12:00"), ("2030-01-08T09:00", "2030-01-08T12:00"))
+        entries, pending = schedule([task("A", 50), task("B", 50)], week, daily_cap=55)
+        work = [e for e in entries if e["kind"] == "task"]
+        self.assertEqual([(e["title"], e["start"]) for e in work],
+                         [("A", "2030-01-07T09:00"), ("B", "2030-01-08T09:00")])  # 5 minutes left: B waits a day
+
+    def test_a_window_too_short_still_waits_for_a_whole_block(self):
+        # Without a daily cap a short window does not chop a task; it goes whole into the next window.
+        week = windows(("2030-01-07T09:00", "2030-01-07T09:30"), ("2030-01-07T19:00", "2030-01-07T21:00"))
+        entries, pending = schedule([task("A", 50)], week)
+        work = [e for e in entries if e["kind"] == "task"]
+        self.assertEqual([(e["title"], e["start"], e["minutes"]) for e in work], [("A", "2030-01-07T19:00", 50)])
+
     def test_without_policy_values_the_schedule_is_unchanged(self):
         week = windows(("2030-01-07T09:00", "2030-01-07T12:00"))
         entries, pending = schedule([task("작업", 30)], week)
@@ -426,7 +469,11 @@ class TwoUsersApiTests(unittest.TestCase):
         b_tasks = [e for e in b["entries"] if e["kind"] == "task" and not e.get("starter")]
         b_starters = [e for e in b["entries"] if e.get("starter")]
 
-        self.assertEqual({e["minutes"] for e in a_tasks}, {50})
+        self.assertEqual(max(e["minutes"] for e in a_tasks), 50)
+        self.assertTrue(all(e["minutes"] <= 50 for e in a_tasks))
+        self.assertEqual(a["pendingTasks"], [])
+        for day in {e["start"][:10] for e in a_tasks}:
+            self.assertLessEqual(sum(e["minutes"] for e in a_tasks if e["start"].startswith(day)), 120)
         self.assertTrue(all(e["start"][11:13] < "12" for e in a_tasks))
         self.assertFalse(any(e.get("starter") for e in a["entries"]))
         self.assertTrue(b_tasks and all(e["minutes"] <= 20 for e in b_tasks))

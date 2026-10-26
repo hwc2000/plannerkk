@@ -37,7 +37,7 @@ export function ProfileForm({ initial, busy, onGenerate, onCancel, requestError 
   }
   return <form className="execution-card" onSubmit={e => { e.preventDefault(); void submit() }}><fieldset disabled={busy} className="execution-fieldset">
     <div className="execution-step">STEP {step+1} / 4 · {stepNames[step]}</div><progress max={4} value={step+1} />
-    <h2>{stepNames[step]}</h2><p className="execution-help">최근 2주를 떠올리며 선택해 줘. 가용시간은 프로필을 확정한 다음 고를 수 있어.</p>
+    <h2>{stepNames[step]}</h2><p className="execution-help">최근 2주를 떠올리며 선택해 주세요. 가용 시간은 프로필을 확정한 다음 고를 수 있습니다.</p>
     {step===0 && <>{choice('roles',true)}{choice('regularity')}</>}
     {step===1 && <>{choice('barriers',true)}</>}
     {step===2 && <><fieldset className="execution-fieldset"><legend>쉬지 않고 한 번에 집중하기 편한 시간은?</legend><div className="execution-options">{[15,25,30,45,50,60,90,null].map(value => <label className="execution-option" key={String(value)}><input type="radio" name="focusMinutes" checked={answers.focusMinutes===value} onChange={()=>setAnswers(a=>({...a,focusMinutes:value}))}/>{value===null?'아직 모르겠어요':`${value}분`}</label>)}</div></fieldset><p className="execution-help">언제 집중이 잘 되는지는 묻지 않아요. 실행 기록이 쌓이면 잘 끝내는 시간대를 찾아 제안할게요.</p></>}

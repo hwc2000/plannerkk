@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import tempfile
 import unittest
@@ -83,7 +84,7 @@ class ProfileTests(unittest.TestCase):
         p.update(id='legacy', status='confirmed')
         old = {'revision': 4, 'profile': p, 'profileDraft': {**deepcopy(p), 'id': 'draft', 'status': 'draft'},
                'settings': {'slots': [], 'view': 'timeline'}, 'plan': None, 'planDraft': None}
-        with self.store.connect() as db:
+        with closing(self.store.connect()) as db, db:
             db.execute('INSERT INTO execution_state VALUES (1, ?)', (json.dumps(old),))
         state = self.store.read()
         self.assertEqual(state['profile']['id'], 'legacy')

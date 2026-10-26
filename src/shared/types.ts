@@ -243,3 +243,19 @@ export type LearnedPattern = {
   evidenceRecordIds: string[]; approvedProposalId: string; projectId: string | null
   status: 'active' | 'revoked' | 'superseded'; approvedAt: string; expiresAt: string | null
 }
+
+export type AuthUser = {
+  id: string
+  email: string
+  displayName: string
+  createdAt: string
+  claimedLegacyData?: boolean
+}
+
+/** Per-user copy of the four browser collections, stored on the server when login is enabled. */
+export type WorkspaceData = {
+  projects: Project[]
+  milestones: Milestone[]
+  events: CalendarEvent[]
+  memories: Memory[]
+}
