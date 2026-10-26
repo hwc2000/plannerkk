@@ -5,7 +5,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from server.app.main import create_app
 from server.app.execution_store import ExecutionStore
-from server.app.execution_api import SCHEDULE_STYLE_INSTRUCTIONS, Slot, BusyEvent
+from server.app.adaptive.full_plan_generator import SCHEDULE_STYLE_INSTRUCTIONS
+from server.app.execution_api import Slot, BusyEvent
 from server.app.execution_scheduler import availability_windows, schedule
 from server.app.execution_profile import generate_profile
 
@@ -260,7 +261,7 @@ class SchedulerTests(unittest.TestCase):
         windows=availability_windows(date(2030,1,7),slots,events,now=datetime(2030,1,7,18,4))
         self.assertEqual(windows,[(datetime(2030,1,7,18,5),datetime(2030,1,7,18,20)),(datetime(2030,1,7,18,50),datetime(2030,1,7,20))])
         task={'title':'공부','minutes':15,'doneWhen':'완료','dueDate':None}
-        entries,pending=schedule([task,task,{**task,'dueDate':'2030-01-06'}],windows,40)
+        entries,pending=schedule([task,task,{**task,'dueDate':'2030-01-06'}],windows)
         self.assertEqual(len(pending),1)
         for e in entries:
             self.assertTrue(any(a.isoformat(timespec='minutes')<=e['start']<e['end']<=b.isoformat(timespec='minutes') for a,b in windows))
@@ -273,18 +274,19 @@ class SchedulerTests(unittest.TestCase):
                 BusyEvent(date=date(2030,1,7),startTime='20:30',endTime='21:00')]
         windows=availability_windows(date(2030,1,7),slots,events,now=datetime(2030,1,1))
         task=lambda m:{'title':'보고서','minutes':m,'doneWhen':'완료','dueDate':None}
-        entries,pending=schedule([task(30)],windows,0)
+        entries,pending=schedule([task(30)],windows)
         self.assertEqual([(e['title'],e['start']) for e in entries if e['kind']=='task'],[('보고서','2030-01-07T19:00')])
-        entries,pending=schedule([task(40)],windows,0)
+        entries,pending=schedule([task(40)],windows)
         self.assertEqual(pending,[])
+        # Each part is at least half of the task: 20 + 20, not 30 + a 10-minute sliver.
         self.assertEqual([(e['title'],e['minutes'],e['start']) for e in entries if e['kind']=='task'],
-                         [('보고서 (1/2)',30,'2030-01-07T19:00'),('보고서 (2/2)',10,'2030-01-07T20:00')])
+                         [('보고서 (1/2)',20,'2030-01-07T19:00'),('보고서 (2/2)',20,'2030-01-07T20:00')])
 
     def test_a_task_that_cannot_finish_before_its_deadline_stays_whole(self):
         windows=availability_windows(date(2030,1,7),[Slot(day=0,hour=19),Slot(day=1,hour=19)],[],now=datetime(2030,1,1))
         report={'title':'보고서','minutes':80,'doneWhen':'제출','dueDate':'2030-01-07'}
         memo={'title':'메모','minutes':40,'doneWhen':'정리','dueDate':None}
-        entries,pending=schedule([report,memo],windows,0)
+        entries,pending=schedule([report,memo],windows)
         self.assertEqual([(p['title'],p['minutes']) for p in pending],[('보고서',80)])
         self.assertIn('마감일', pending[0]['reason'])
         self.assertEqual([(e['title'],e['start']) for e in entries if e['kind']=='task'],[('메모','2030-01-07T19:00')])

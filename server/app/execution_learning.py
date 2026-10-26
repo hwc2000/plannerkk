@@ -1,8 +1,9 @@
 """Learning from execution records: changes to the user's settings, proposed for approval.
 
-Two rules run after every record:
+Three rules run after every record:
 
 - long-task-v2: a shorter focus block when it keeps proving too long.
+- focus-grow-v1: a longer focus block when block-sized work keeps getting done.
 - focus-time-v1: the part of the day the user finishes work best.
 
 When to propose is a rule, so it is testable and never loops.  The value comes
@@ -70,12 +71,7 @@ def propose_update(state, project_id=None):
     if block <= MIN_BLOCK_MINUTES:
         return
     project_profile_id = (project_profile or {}).get('id')
-    cutoff = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
-    records = [r for r in state['executionRecords']
-               if r.get('profileId') == profile['id'] and r.get('projectId') == project_id
-               and r.get('projectProfileId') == project_profile_id
-               and r['plannedMinutes'] >= block * FULL_BLOCK_SHARE
-               and datetime.fromisoformat(r['createdAt']) >= cutoff][-EVIDENCE_COUNT:]
+    records = _scope_records(state, profile, project_id, project_profile_id, block, FULL_BLOCK_SHARE)[-EVIDENCE_COUNT:]
     if len(records) != EVIDENCE_COUNT or any(r['result'] == 'completed' for r in records):
         return
     size_reasons = sum(r['reasonCode'] in SIZE_REASONS for r in records)
@@ -100,6 +96,82 @@ def propose_update(state, project_id=None):
         'sizing': f'그 작업들에서 실제로 집중한 시간({managed}분)의 가운데 값에 맞춰 {to}분을 제안합니다.',
         'sizedBy': 'evidence',
         'evidenceRecordIds': ids, 'ruleVersion': RULE_VERSION,
+        'status': 'pending', 'createdAt': datetime.now(timezone.utc).isoformat(), 'decidedAt': None,
+    })
+
+
+# focus-grow-v1 rule parameters (system rule; the size comes from the user's own block).
+GROW_RULE_VERSION = 'focus-grow-v1'
+GROW_EVIDENCE_COUNT = 4   # the last block-sized tasks, all finished
+GROW_FULL_SHARE = 0.8     # a task of at least this share of the block used the whole block
+GROW_STEP_SHARE = 0.2     # grow by a fifth of the block, in 5-minute steps
+MAX_BLOCK_MINUTES = 180   # the profile's upper bound
+
+
+def _scope_records(state, profile, project_id, project_profile_id, block, share):
+    """Records of one scope made under its current settings, of tasks at least ``share`` of the block."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
+    return [r for r in state['executionRecords']
+            if r.get('profileId') == profile['id'] and r.get('projectId') == project_id
+            and r.get('projectProfileId') == project_profile_id
+            and r['plannedMinutes'] >= block * share
+            and datetime.fromisoformat(r['createdAt']) >= cutoff]
+
+
+def grow_ceiling(state, profile_id, project_id, prefs):
+    """How long the block may grow, and why: the profile bound, the day's cap, or a size it was cut from.
+
+    A block once cut from 50 to 30 minutes in this scope does not climb back to
+    50: it stops a step short, so learning never swings between the two.
+    """
+    ceiling, why = MAX_BLOCK_MINUTES, ''
+    daily = prefs.get('dailyPlannedMinutes')
+    if daily and daily < ceiling:
+        ceiling, why = daily, f'하루 계획량 {daily}분을 넘지 않게 {daily}분까지만 늘립니다.'
+    for p in state['profileUpdateProposals']:
+        change = p['proposedChanges'].get('blockMinutes')
+        if (p['status'] == 'approved' and p.get('projectId') == project_id and p['profileId'] == profile_id
+                and change and change['to'] < change['from'] and change['from'] - STEP_MINUTES < ceiling):
+            ceiling = change['from'] - STEP_MINUTES
+            why = f'예전에 {change["from"]}분에서 줄였으니 그보다 짧은 {ceiling}분까지만 늘립니다.'
+    return ceiling, why
+
+
+def propose_growth(state, project_id=None):
+    """A longer focus block for one scope, after its block-sized tasks keep getting finished."""
+    profile = state['profile']
+    if not profile:
+        return
+    project_profile = (state.get('projectProfiles') or {}).get(project_id) if project_id else None
+    try:
+        prefs, _ = effective_preferences(profile, project_profile)
+    except ValueError:
+        return
+    block = prefs['blockMinutes']
+    project_profile_id = (project_profile or {}).get('id')
+    records = _scope_records(state, profile, project_id, project_profile_id, block, GROW_FULL_SHARE)[-GROW_EVIDENCE_COUNT:]
+    if len(records) != GROW_EVIDENCE_COUNT or any(r['result'] != 'completed' for r in records):
+        return
+    ids = [r['id'] for r in records]
+    if any(p['profileId'] == profile['id'] and 'blockMinutes' in p['proposedChanges'] and
+           ((p['status'] == 'pending' and p.get('projectId') == project_id) or set(p['evidenceRecordIds']) & set(ids))
+           for p in state['profileUpdateProposals']):
+        return
+    step = max(STEP_MINUTES, int(block * GROW_STEP_SHARE) // STEP_MINUTES * STEP_MINUTES)
+    ceiling, why = grow_ceiling(state, profile['id'], project_id, prefs)
+    to = min(block + step, ceiling)
+    if to <= block:
+        return
+    scope = '이 프로젝트에서 ' if project_id else ''
+    limited = f' {why}' if to < block + step else ''
+    state['profileUpdateProposals'].append({
+        'id': str(uuid4()), 'profileId': profile['id'],
+        'projectId': project_id, 'projectProfileId': project_profile_id,
+        'proposedChanges': {'blockMinutes': {'from': block, 'to': to}},
+        'reason': f'{scope}최근 {block}분짜리 작업 {GROW_EVIDENCE_COUNT}건을 연달아 끝냈습니다.',
+        'sizing': f'한 번에 {to - block}분 늘린 {to}분을 제안합니다. 승인한 뒤 끝내지 못하는 일이 이어지면 다시 줄이자고 제안합니다.{limited}',
+        'sizedBy': 'evidence',
+        'evidenceRecordIds': ids, 'ruleVersion': GROW_RULE_VERSION,
         'status': 'pending', 'createdAt': datetime.now(timezone.utc).isoformat(), 'decidedAt': None,
     })
 
@@ -252,8 +324,10 @@ def refine_new_proposals(store, llm, state, before_ids, *, consent):
         records = [r for r in state['executionRecords'] if r['id'] in proposal['evidenceRecordIds']]
         if 'focusTime' in proposal['proposedChanges']:
             judge, apply = ai_focus_time(llm, proposal, records), apply_ai_focus_time
-        else:
+        elif proposal.get('ruleVersion') == RULE_VERSION:
             judge, apply = ai_size(llm, proposal, records, titles.get(proposal.get('projectId'))), apply_ai_size
+        else:
+            continue
         try:
             judged = asyncio.run(judge)
         except Exception:  # noqa: BLE001 - model or network trouble keeps the evidence-based value

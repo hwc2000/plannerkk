@@ -7,13 +7,8 @@ import { MemoryForm } from './features/memories/MemoryForm'
 import { MemoryView } from './features/memories/MemoryView'
 import { ProjectForm } from './features/projects/ProjectForm'
 import { ProjectsView } from './features/projects/ProjectsView'
-import {
-  seedEvents,
-  seedMemories,
-  seedMilestones,
-  seedProjects,
-  TODAY,
-} from './shared/constants'
+import { TODAY } from './shared/constants'
+import { SEED_CLEANUP_KEY, withoutOldSeeds } from './shared/oldSeeds'
 import { useStoredState } from './shared/storage'
 import { ExecutionView } from './features/execution/ExecutionView'
 import { executionApi, planCalendarEvents } from './features/execution/api'
@@ -30,11 +25,13 @@ import type {
 } from './shared/types'
 
 function App() {
-  const [projects, setProjects] = useStoredState<Project[]>('replan-projects-v1', seedProjects)
-  const [milestones, setMilestones] = useStoredState<Milestone[]>('replan-milestones-v1', seedMilestones)
-  const [events, setEvents] = useStoredState<CalendarEvent[]>('replan-events-v1', seedEvents)
-  const [memories, setMemories] = useStoredState<Memory[]>('replan-memories-v1', seedMemories)
-  const [activeView, setActiveView] = useState<View>('portfolio')
+  // A new user starts empty: sample projects, events or memories would reach the AI as if they were the user's.
+  const [projects, setProjects] = useStoredState<Project[]>('replan-projects-v1', [])
+  const [milestones, setMilestones] = useStoredState<Milestone[]>('replan-milestones-v1', [])
+  const [events, setEvents] = useStoredState<CalendarEvent[]>('replan-events-v1', [])
+  const [memories, setMemories] = useStoredState<Memory[]>('replan-memories-v1', [])
+  // The planner is where the workflow starts: survey, weekly time, then the project conversations.
+  const [activeView, setActiveView] = useState<View>('execution')
   const [selectedDate, setSelectedDate] = useState(TODAY)
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '')
   const [editor, setEditor] = useState<Editor>(null)
@@ -47,6 +44,15 @@ function App() {
     catch (error) { setExecutionError(error instanceof Error ? error.message : '실행 프로필을 불러오지 못했습니다.') }
   }
   useEffect(() => { void loadExecution() }, [])
+  // Once per browser: drop the sample data older versions saved, now that the planner can tell what was used.
+  useEffect(() => {
+    if (!execution || localStorage.getItem(SEED_CLEANUP_KEY)) return
+    const clean = withoutOldSeeds({ projects, milestones, events, memories }, execution)
+    localStorage.setItem(SEED_CLEANUP_KEY, new Date().toISOString())
+    if (!clean.removed.length) return
+    setProjects(clean.projects); setMilestones(clean.milestones); setEvents(clean.events); setMemories(clean.memories)
+    setNotice(`예전 버전이 넣어 둔 ${clean.removed.join(', ')}을 지웠어요. 계획에 더는 쓰이지 않아요.`)
+  }, [execution, projects, milestones, events, memories, setProjects, setMilestones, setEvents, setMemories])
   const generatedEvents = planCalendarEvents(execution?.plan ?? null, projects)
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0]
 
@@ -120,6 +126,7 @@ function App() {
       {activeView === 'execution' && (execution ? <ExecutionView
         state={execution} onChange={setExecution} projects={projects} milestones={milestones} events={events} memories={memories}
         onCreateProject={() => setEditor({ kind: 'project' })}
+        onProjectStatus={(projectId, status) => setProjects(items => items.map(item => item.id === projectId ? { ...item, status } : item))}
       /> : <section className="execution-card"><h1>실행 프로필과 주간 계획</h1>
         <p role={executionError ? 'alert' : 'status'}>{executionError || '저장된 프로필을 불러오는 중입니다…'}</p>
         {executionError && <button className="primary-button" onClick={() => { void loadExecution() }}>다시 불러오기</button>}

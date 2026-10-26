@@ -22,7 +22,7 @@ ESSAY = {"id": "essay", "title": "에세이", "goal": "초안 제출", "startDat
 APP = {"id": "app", "title": "앱 개발", "goal": "로그인 화면", "startDate": "2030-01-01", "dueDate": "2030-01-31"}
 BASE_BLOCK = 30  # PLAIN_ANSWERS' focus block
 # A chat turn the router answers itself, without reading saved data.
-ANSWER_ROUTE = {"skill": "answer", "lookups": [], "reply": "좋아요"}
+ANSWER_ROUTE = {"skill": "small_talk", "lookups": [], "reply": "좋아요"}
 
 
 class FakeLLM:
@@ -114,6 +114,22 @@ class ProjectIndependenceTests(unittest.TestCase):
             task = self.tasks(week, project_id)[0]
             record = self.call("/api/execution/task", planId=week["id"], taskId=task["id"], completed=True)["executionRecords"][-1]
             self.assertEqual((record["projectId"], record["projectProfileId"]), (project_id, expected))
+
+    def test_a_recovered_task_stays_in_its_own_project(self):
+        essay_settings = self.set_project("essay", blockMinutes=20)
+        self.plan(ESSAY, "에세이 초안")
+        week = self.plan(APP, "로그인 화면")
+        task = self.tasks(week, "essay")[0]
+
+        data = self.call("/api/adaptive/check-in", taskId=task["id"], strategy="reschedule", consent=True,
+                         checkIn={"completed": False, "actualMinutes": 0, "reasonCode": "time_shortage"})
+        self.call("/api/adaptive/review", draftId=data["recoveryDraft"]["id"], decision="approve")
+
+        entries = self.state()["plan"]["entries"]
+        moved = [e for e in entries if e["kind"] == "task" and e["title"] == task["title"]]
+        self.assertTrue(moved)
+        self.assertNotIn(task["id"], [e["id"] for e in moved])
+        self.assertEqual({(e["projectId"], e["projectProfileId"]) for e in moved}, {("essay", essay_settings)})
 
     def test_a_project_change_replans_only_that_project_in_a_shared_week(self):
         self.plan(ESSAY, "에세이 초안")
@@ -214,7 +230,7 @@ class ProjectIndependenceTests(unittest.TestCase):
 
         # A value equal to what already applies is not stored: the project keeps following the user profile there.
         self.llm.replies = {"planner_project_settings": {"reply": "좋아요", "projectSettings": {
-            **said, "blockMinutes": 20, "bufferPercent": self.state()["profile"]["planningPreferences"]["bufferPercent"]}}}
+            **said, "blockMinutes": 20, "recoveryPreference": self.state()["profile"]["planningPreferences"]["recoveryPreference"]}}}
         state = self.call("/api/execution/chat/message", text="20분으로 바꿀래요", consent=True, project=ESSAY)
         self.assertEqual(state["plannerThreads"]["essay"]["action"]["payload"]["overrides"], {"blockMinutes": 20})
         self.assertEqual(list(state["plannerThreads"]["essay"]["action"]["payload"]["changes"]), ["blockMinutes"])
@@ -223,7 +239,7 @@ class ProjectIndependenceTests(unittest.TestCase):
         self.set_project("essay", blockMinutes=20)
         state = self.call("/api/execution/chat/message", text="20분으로 바꿀래요", consent=True, project=ESSAY)
         self.assertIsNone(state["plannerThreads"]["essay"]["action"])
-        self.assertIn("이미 이 프로젝트에 적용돼 있어요", state["plannerThreads"]["essay"]["messages"][-1]["content"])
+        self.assertIn("이미 이 프로젝트에 적용돼 있어", state["plannerThreads"]["essay"]["messages"][-1]["content"])
 
         # A value that cannot work with the profile gets no card, and the reply says why.
         self.llm.replies = {"planner_project_settings": {"reply": "좋아요", "projectSettings": {

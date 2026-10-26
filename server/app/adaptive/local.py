@@ -185,11 +185,14 @@ def close_all_drafts(state: dict[str, Any], recovery_action: str) -> None:
 
 
 def _entry(entry: Mapping[str, Any], task: Mapping[str, Any], start: datetime, end: datetime, depth: int) -> dict[str, Any]:
+    # The pieces stay in the task's project with the settings it was planned with, so a
+    # shared week keeps them apart and their records still count for that project.
+    owner = {key: entry[key] for key in ("projectId", "projectProfileId", "notBefore") if key in entry}
     return {
         "id": str(uuid4()), "kind": "task", "title": task["title"], "minutes": task["minutes"],
         "doneWhen": task["done_when"], "dueDate": entry["dueDate"],
         "start": start.isoformat(timespec="minutes"), "end": end.isoformat(timespec="minutes"),
-        "completed": False, "recoveryDepth": depth,
+        "completed": False, "recoveryDepth": depth, **owner,
     }
 
 
@@ -230,6 +233,7 @@ class LocalPlanWriter:
                 plan.setdefault("pendingTasks", []).append({
                     "title": entry["title"], "minutes": draft["carry_over_minutes"], "doneWhen": entry["doneWhen"],
                     "dueDate": entry["dueDate"], "reason": CARRY_OVER_REASON,
+                    **({"projectId": entry["projectId"]} if entry.get("projectId") else {}),
                 })
             close_draft(state, task_id, strategy)
 

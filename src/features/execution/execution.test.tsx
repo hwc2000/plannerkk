@@ -5,7 +5,6 @@ import { useState } from 'react'
 import { AvailabilityGrid } from './AvailabilityGrid'
 import { FixedScheduleEditor } from './FixedScheduleEditor'
 import { ProfileForm } from './ProfileForm'
-import { ProfileChat } from './ProfileChat'
 import { ExecutionView } from './ExecutionView'
 import { ExecutionLearning } from './ExecutionLearning'
 import { PlannerChat } from './PlannerChat'
@@ -65,9 +64,8 @@ it('colors each calendar task by its own project in a multi-project week', () =>
   expect(planCalendarEvents(plan,projects).map(e=>e.projectId)).toEqual(['essay','app',undefined])
 })
 
-describe('conversational onboarding', () => {
+describe('onboarding survey', () => {
   const state: ExecutionState = { revision: 0, profile: null, profileDraft: null, settings: { slots: [], view: 'timeline' }, plan: null, planDraft: null, llmAvailable: false, model: 'test' }
-  const session = { id: 'chat-1', ready: false, answers: {}, messages: [{ id: 'msg-1', role: 'assistant', content: '어떤 생활인가요?' }], question: { field: 'roles', text: '어떤 생활인가요?', choices: [{ label: '학생', value: 'student' }, { label: '직장인', value: 'employee' }] } }
   it('opens a checkbox survey without chat or AI requests', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ revision: 0, session: null }) }))
     render(<ExecutionView state={state} onChange={vi.fn()} projects={[]} milestones={[]} events={[]}/>)
@@ -77,7 +75,7 @@ describe('conversational onboarding', () => {
     expect(fetch).not.toHaveBeenCalled()
 
   })
-  it('resets profile only after confirmation and returns to a fresh chat', async () => {
+  it('resets profile only after confirmation and returns to the survey', async () => {
     const fetcher = vi.fn().mockImplementation(async (url: string) => ({ok:true,json:async()=>url.endsWith('/profile/reset') ? {...state,revision:1} : {revision:0,session:null}}))
     vi.stubGlobal('fetch',fetcher)
     const confirm = vi.spyOn(window,'confirm').mockReturnValue(false)
@@ -91,59 +89,7 @@ describe('conversational onboarding', () => {
     await waitFor(()=>expect(changed).toHaveBeenCalledWith(expect.objectContaining({revision:1,profile:null})))
     expect(fetcher.mock.calls.filter(c=>c[0].endsWith('/profile/reset'))).toHaveLength(1)
   })
-  it('restores conversation and submits an answer using current revision', async () => {
-    const fetcher = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ revision: 7, session }) }).mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 8 }) })
-    vi.stubGlobal('fetch', fetcher)
-    const run = vi.fn(async (action: () => Promise<ExecutionState>) => { await action(); return true })
-    render(<ProfileChat state={{ ...state, revision: 7 }} busy={false} run={run} onReviewed={vi.fn()}/>)
-    await screen.findByText('어떤 생활인가요?')
-    fireEvent.click(screen.getByText('학생'))
-    fireEvent.click(screen.getByText('직장인'))
-    expect(run).not.toHaveBeenCalled()
-    expect(screen.getByText('학생').getAttribute('aria-pressed')).toBe('true')
-    fireEvent.click(screen.getByText('선택한 답변 보내기 (2)'))
-    await waitFor(() => expect(run).toHaveBeenCalledTimes(1))
-    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toMatchObject({ revision: 7, sessionId: 'chat-1', text: '학생, 직장인', mode: 'guided', consent: false })
-  })
-  it('toggles multiple choices and treats none/unknown as exclusive', async () => {
-    const barriers = {...session, question: {field:'barriers',text:'이유?',choices:[{label:'피곤해요',value:'fatigue'},{label:'시작이 어려워요',value:'starting'},{label:'특별히 없어요',value:'none'},{label:'잘 모르겠어요',value:'unknown'}]}}
-    const run = vi.fn().mockResolvedValue(false)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok:true,json:async()=>({session:barriers})}))
-    render(<ProfileChat state={state} busy={false} run={run} onReviewed={vi.fn()}/>)
-    await screen.findByText('피곤해요')
-    fireEvent.click(screen.getByText('피곤해요')); fireEvent.click(screen.getByText('시작이 어려워요'))
-    expect(screen.getByText('선택한 답변 보내기 (2)')).toBeTruthy()
-    fireEvent.click(screen.getByText('특별히 없어요'))
-    expect(screen.getByText('피곤해요').getAttribute('aria-pressed')).toBe('false')
-    fireEvent.click(screen.getByText('잘 모르겠어요'))
-    expect(screen.getByText('특별히 없어요').getAttribute('aria-pressed')).toBe('false')
-    fireEvent.click(screen.getByText('피곤해요'))
-    expect(screen.getByText('잘 모르겠어요').getAttribute('aria-pressed')).toBe('false')
-    fireEvent.click(screen.getByText('선택한 답변 보내기 (1)'))
-    await waitFor(()=>expect(run).toHaveBeenCalledTimes(1))
-    expect(screen.getByText('피곤해요').getAttribute('aria-pressed')).toBe('true')
-    fireEvent.click(screen.getByText('피곤해요'))
-    expect((screen.getByText('선택한 답변 보내기') as HTMLButtonElement).disabled).toBe(true)
-  })
-  it('requires consent before sending a free-form AI message', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ revision: 0, session }) }))
-    render(<ProfileChat state={{...state,llmAvailable:true}} busy={false} run={vi.fn()} onReviewed={vi.fn()}/>)
-    await screen.findByText('어떤 생활인가요?')
-    fireEvent.change(screen.getByLabelText('나의 답변'), { target: { value: '직장인이에요' } })
-    expect((screen.getByText('보내기') as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(screen.getByLabelText('이 대화 내용을 AI에 전송하여 답변을 정리하는 데 동의합니다.'))
-    expect((screen.getByText('보내기') as HTMLButtonElement).disabled).toBe(false)
-  })
-  it('offers summary review and conversational corrections when complete', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ revision: 0, session: {...session,ready:true,question:null,editableQuestions:[{field:'scheduleStyle',text:'방식?'}]} }) }))
-    render(<ProfileChat state={state} busy={false} run={vi.fn()} onReviewed={vi.fn()}/>)
-    await screen.findByText('프로필 요약 보기')
-    expect(screen.getByText('선호하는 계획 방식 수정')).toBeTruthy()
-    expect(screen.queryByText('설문 양식으로 입력·수정')).toBeNull()
-  })
 })
-
-
 it('collects fixed weekly schedules and saves them only on request', async () => {
   const save = vi.fn().mockResolvedValue(true)
   render(<FixedScheduleEditor items={[]} disabled={false} onSave={save}/>)
@@ -293,6 +239,112 @@ it('sends priority-change check-ins through adaptive full replanning with explic
   })
 })
 
+describe('getting a failed task back into the week', () => {
+  const settings = { slots: [{ day: 0, hour: 18 }], view: 'timeline' as const }
+  const task = { id: 'task1', kind: 'task' as const, title: '문제 풀기', minutes: 30, doneWhen: '10문제 풀이', dueDate: null,
+    start: '2030-01-07T18:00', end: '2030-01-07T18:30', completed: false }
+  const plan = {
+    id: 'week1', profileId: 'profile1', projectId: null, project: null, goal: '시험 공부',
+    startDate: '2030-01-07', endDate: '2030-01-13', timezone: 'Asia/Seoul', status: 'confirmed',
+    slots: settings.slots, pendingTasks: [], entries: [task],
+  } as ExecutionPlan
+  const state = {
+    revision: 4, profile: null, profileDraft: null, settings, plan, planDraft: null,
+    llmAvailable: true, model: 'test', executionRecords: [], profileUpdateProposals: [],
+  } as ExecutionState
+  const draft = { id: 'd1', planId: 'week1', taskId: 'task1', recordId: 'r1', strategy: 'reschedule' as const, revisionCount: 0,
+    checkIn: { completed: false, actualMinutes: 0, remainingMinutes: null, reasonCode: 'time_shortage', note: '', difficulty: null },
+    draft: { kind: 'reschedule' as const, replacesTaskId: 'task1', appliedReasons: ['시간이 부족했다는 체크인을 반영했어요.'], droppedScope: [], carryOverMinutes: 0,
+      tasks: [{ title: '문제 풀기', minutes: 30, doneWhen: '10문제 풀이', start: '2030-01-08T18:00', end: '2030-01-08T18:30' }] } }
+  const live = (initial: ExecutionState) => {
+    const messages: string[] = []
+    function Harness() {
+      const [current, setCurrent] = useState(initial)
+      const run = async (action: () => Promise<ExecutionState>, message: string | ((next: ExecutionState) => string)) => {
+        const next = await action(); setCurrent(next); messages.push(typeof message === 'string' ? message : message(next)); return true
+      }
+      return <ExecutionLearning state={current} busy={false} run={run}/>
+    }
+    return { Harness, messages }
+  }
+
+  it('asks the planner for a way back only with consent, and lets the user pick when it cannot', async () => {
+    const asked = { ...state, revision: 5, executionRecords: [{ id: 'r1', planId: 'week1', taskId: 'task1' }] as ExecutionState['executionRecords'],
+      result: { approvalStatus: 'needs_input' as const, fallback: { action: 'request_input', missingFields: ['strategy'] } } }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => asked })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...asked, revision: 6, recoveryDrafts: { task1: draft },
+        result: { approvalStatus: 'waiting', strategy: 'reschedule' } }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const { Harness, messages } = live(state)
+    render(<Harness/>)
+
+    fireEvent.change(screen.getByLabelText('작업'), { target: { value: 'task1' } })
+    fireEvent.change(screen.getByLabelText('실행 결과'), { target: { value: 'not_started' } })
+    fireEvent.change(screen.getByLabelText('실제 시간(분)'), { target: { value: '0' } })
+    fireEvent.change(screen.getByLabelText('미완료·지연 이유'), { target: { value: 'other' } })
+    fireEvent.click(screen.getByLabelText(/다시 넣을 방법\(다른 빈 시간으로 옮기기·줄이기\)/))
+    fireEvent.click(screen.getByText('결과 저장하고 다시 넣을 방법 받기'))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/adaptive/check-in')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ taskId: 'task1', strategy: null, consent: true,
+      checkIn: { completed: false, actualMinutes: 0, remainingMinutes: null, reasonCode: 'other' } })
+    expect(messages[0]).toContain('어떻게 다시 넣을지 골라 주세요')
+
+    fireEvent.click(await screen.findByText('다른 빈 시간으로 옮기기'))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({ revision: 5, taskId: 'task1', strategy: 'reschedule' })
+    await waitFor(() => expect(messages[1]).toContain('복구안을 만들었어요'))
+    expect(screen.getByText(/다른 시간으로 옮기기 · 문제 풀기/)).toBeTruthy()
+  })
+
+  it('approves a waiting draft through the planner review', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 5, result: { approvalStatus: 'approved' } }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const { Harness, messages } = live({ ...state, recoveryDrafts: { task1: draft } })
+    render(<Harness/>)
+
+    expect(screen.getByText(/18:00~18:30 · 문제 풀기 · 30분/)).toBeTruthy()
+    fireEvent.click(screen.getByText('승인하고 계획에 반영'))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/adaptive/review')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ revision: 4, draftId: 'd1', decision: 'approve' })
+    await waitFor(() => expect(messages[0]).toBe('복구안을 계획에 반영했어요.'))
+  })
+
+  it('asks about tasks whose time has passed without a record', async () => {
+    const past = { ...task, id: 'old', title: '어제 할 일', start: '2020-01-06T18:00', end: '2020-01-06T18:30' }
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 5 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const { Harness } = live({ ...state, plan: { ...plan, entries: [past, task] } })
+    render(<Harness/>)
+
+    const missed = screen.getByLabelText('지난 작업 확인')
+    expect(missed.textContent).toContain('시간이 지난 작업 1개')
+    expect(missed.textContent).toContain('어제 할 일')
+    expect(missed.textContent).not.toContain('문제 풀기')
+    fireEvent.click(screen.getByText('못 했어요'))
+    expect((screen.getByLabelText('작업') as HTMLSelectElement).value).toBe('old')
+    expect((screen.getByLabelText('실행 결과') as HTMLSelectElement).value).toBe('not_started')
+    fireEvent.click(screen.getByText('했어요'))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ planId: 'week1', taskId: 'old', completed: true })
+  })
+})
+
+it('lists what an ended project carried, with nothing left to approve', () => {
+  const carried = { id: 'c1', profileId: 'p1', appliedProfileId: 'p2', projectId: null, sourceProjectId: 'essay', reason: '‘에세이’ 프로젝트를 끝내며 기본 프로필로 옮긴 습관',
+    proposedChanges: { blockMinutes: { from: 30, to: 20 }, recoveryPreference: { from: 'unknown', to: 'reduce' } },
+    evidenceRecordIds: [], ruleVersion: 'project-close-v1', status: 'approved' as const, createdAt: '', decidedAt: '' }
+  const state = { revision: 4, profile: { id: 'p2' }, profileDraft: null, settings: { slots: [], view: 'timeline' }, plan: { id: 'w', entries: [] },
+    planDraft: null, llmAvailable: true, model: 'test', executionRecords: [], profileUpdateProposals: [carried] } as unknown as ExecutionState
+  render(<ExecutionLearning state={state} busy={false} run={vi.fn()}/>)
+  expect(screen.getByText('집중 구간 30분 → 20분 · 계획이 틀어졌을 때 잘 모르겠어요 → 할 일을 줄임')).toBeTruthy()
+  expect(screen.getByText('상태: 프로젝트를 끝내며 반영함')).toBeTruthy()
+  expect(screen.queryByRole('button')).toBeNull()
+})
+
 describe('profile proposal replan flow', () => {
   it('uses the approval response revision for the replan request', async () => {
     const settings = { slots: [{ day: 0, hour: 18 }], view: 'timeline' as const }
@@ -436,6 +488,69 @@ describe('conversational planner', () => {
     expect(fetchMock.mock.calls[0][1].method).toBe('PUT')
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ revision: 4, overrides: { blockMinutes: 25 } })
   })
+  it('applies the waiting card when the user agrees in words, as its button would', async () => {
+    const card = { kind: 'project_settings' as const, revision: 4, payload: {
+      projectId: 'essay', overrides: { blockMinutes: 25 }, changes: { blockMinutes: { from: 50, to: 25 } } } }
+    const agreed = { ...base, revision: 5, plannerThreads: { essay: { messages: [
+      { id: 'u1', role: 'user' as const, content: '응 그렇게 해 줘' },
+      { id: 'c1', role: 'assistant' as const, content: '확인했어요. 카드 내용대로 적용할게요.', skill: 'confirm', lookups: [] }],
+      action: { ...card, revision: 5 }, updatedAt: '2030-01-09T10:01:00' } } }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => agreed })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...agreed, revision: 6 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    function Harness() {
+      const [state, setState] = useState<ExecutionState>({ ...base, plannerThreads: { essay: { ...threads.essay, action: card, updatedAt: '2030-01-09T10:00:00' } } })
+      const live = async (action: () => Promise<ExecutionState>) => { setState(await action()); return true }
+      return <PlannerChat state={state} busy={false} run={live} projects={[essay]} onApplyPlan={vi.fn()}/>
+    }
+    render(<Harness/>)
+    fireEvent.change(screen.getByLabelText('메시지'), { target: { value: '응 그렇게 해 줘' } })
+    fireEvent.click(screen.getByLabelText(/OpenAI에 전송하는 데 동의/))
+    fireEvent.click(screen.getByText('보내기'))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/execution/projects/essay/profile')
+    // Applied with the revision the chat reply produced, not the one before it.
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ revision: 5, overrides: { blockMinutes: 25 } })
+  })
+  it('shows what ending a project carries to the user profile before it ends', async () => {
+    const preview = { openTasks: 2,
+      carried: [{ key: 'blockMinutes', label: '한 번에 집중할 시간', from: '30분', to: '20분', because: '20분 작업 3건 중 3건을 끝냈어요.' }],
+      kept: [{ label: '하루 계획량', value: '60분', why: '이 프로젝트에만 정한 값이라 기본 프로필에는 넘기지 않아요.' }] }
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => preview })
+    vi.stubGlobal('fetch', fetchMock)
+    const close = vi.fn().mockResolvedValue(true)
+    const late = { ...essay, startDate: '2020-01-01', dueDate: '2020-01-31' }
+    render(<PlannerChat state={{ ...base, plannerThreads: { essay: threads.essay } }} busy={false} run={run} projects={[late]}
+      onApplyPlan={vi.fn()} onCloseProject={close}/>)
+
+    fireEvent.click(screen.getByText('마감 지남 · 끝내기'))  // past its due date, ending it is offered as such
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/projects/essay/close-preview')
+    const panel = await screen.findByLabelText('프로젝트 끝내기')
+    await waitFor(() => expect(panel.textContent).toContain('한 번에 집중할 시간: 30분 → 20분'))
+    expect(panel.textContent).toContain('남은 이 프로젝트 작업 2개는 계획에서 빠져요')
+    expect(panel.textContent).toContain('이 프로젝트에만 남는 것 1개')
+    fireEvent.click(screen.getByLabelText('여기서 그만둘게요'))
+    fireEvent.click(screen.getByText('끝내고 기본 프로필에 반영'))
+    expect(close).toHaveBeenCalledWith(late, 'abandoned')
+  })
+  it('keeps an ended project apart, read-only, until it is opened again', () => {
+    const ended = { title: '에세이', outcome: 'completed' as const, closedAt: '2030-01-20T10:00:00+00:00', removedTasks: 1, kept: [],
+      carried: [{ key: 'blockMinutes', label: '한 번에 집중할 시간', from: '30분', to: '20분', because: '' }] }
+    const reopen = vi.fn().mockResolvedValue(true)
+    render(<PlannerChat state={{ ...base, plannerThreads: threads, closedProjects: { essay: ended } }} busy={false} run={run}
+      projects={[essay, app]} onApplyPlan={vi.fn()} onCloseProject={vi.fn()} onReopenProject={reopen}/>)
+
+    expect(screen.getByRole('heading', { name: '앱 개발' })).toBeTruthy()
+    expect(screen.getByText('끝낸 프로젝트 1개')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^에세이/ }))
+    expect(screen.getByLabelText('끝낸 프로젝트').textContent).toContain('기본 프로필로 넘긴 습관: 한 번에 집중할 시간 30분 → 20분')
+    expect(screen.queryByLabelText('메시지')).toBeNull()
+    expect(screen.queryByText('프로젝트 끝내기')).toBeNull()
+    fireEvent.click(screen.getByText('다시 열기'))
+    expect(reopen).toHaveBeenCalledWith(essay)
+  })
   it('opens a project with what it plans with now', () => {
     const state = { ...base, projectProfiles: { essay: { id: 'v1', projectId: 'essay', userId: 'local', version: 1, learnedPatterns: [], createdAt: '', updatedAt: '',
       overrides: { blockMinutes: { value: 20, source: 'learned' as const, proposalId: 'p1' } } } } }
@@ -503,7 +618,7 @@ describe('conversational planner', () => {
 it('shows why the plan fits this user, with where each value came from', () => {
   render(<PlanReasons open reasons={[
     { key: 'taskLength', applied: '작업은 한 번에 20분 이하로 나눴습니다.', because: '확정한 집중 가능 시간 20분에 맞췄습니다.', source: 'declared', fields: ['focusMinutes'] },
-    { key: 'buffer', applied: '선택한 가용 시간의 40% 이상을 여유분으로 비워 두었습니다.', because: '일정이 불규칙하다고 답했습니다.', source: 'declared', fields: ['regularity'] },
+    { key: 'scheduleStyle', applied: '시각 대신 순서만 정한 할 일 목록으로 보여 줍니다.', because: '일정이 불규칙하다고 답했습니다.', source: 'declared', fields: ['regularity'] },
     { key: 'taskLength2', applied: '작업은 한 번에 20분 이하로 나눴습니다.', because: '최근 실행 기록 3건을 근거로 승인한 변경(50분 → 20분)을 따랐습니다.', source: 'learned', fields: ['learnedPatterns'] },
     { key: 'dailyCap', applied: '하루에 최대 60분만 계획했습니다.', because: '이 프로젝트에서 하루 계획량을 따로 정했습니다. 기본 프로필 값은 90분입니다.', source: 'project', fields: ['dailyPlannedMinutes'] },
   ]}/>)
@@ -536,7 +651,7 @@ it('shows a learned focus time proposal with its numbers', () => {
 it('saves the fixed schedule and says which tasks moved', async () => {
   const profile = { id: 'profile1', status: 'confirmed', source: 'demo', schemaVersion: '2.0', createdAt: '', learnedPatterns: [],
     declaredFacts: { roles: ['student'], regularity: 'regular', barriers: ['none'], focusMinutes: 30, dailyMinutes: null, energy: 'unknown', recovery: 'reduce', constraints: '', context: '' },
-    planningPreferences: { blockMinutes: 30, breakMinutes: 5, bufferPercent: 25, dailyPlannedMinutes: null, scheduleStyle: 'time_blocks', recoveryPreference: 'reduce', starterMinutes: null, focusTime: 'unknown', status: 'confirmed' },
+    planningPreferences: { blockMinutes: 30, breakMinutes: 5, dailyPlannedMinutes: null, scheduleStyle: 'time_blocks', recoveryPreference: 'reduce', starterMinutes: null, focusTime: 'unknown', status: 'confirmed' },
     insights: { summary: '요약', strategies: [], followUpQuestions: [] } }
   const state = { revision: 3, profile, profileDraft: null, settings: { slots: [{ day: 0, hour: 18 }], view: 'timeline' }, plan: null, planDraft: null,
     llmAvailable: false, model: 'test', fixedSchedule: [] } as unknown as ExecutionState
@@ -562,7 +677,7 @@ describe('project settings', () => {
   const project = { id: 'project-a', title: '토익', goal: '800점', startDate: '2030-01-01', dueDate: '2030-03-31', priority: 'high', status: 'active' } as Project
   const state = {
     revision: 3, settings: { slots: [], view: 'timeline' }, plan: null,
-    profile: { planningPreferences: { blockMinutes: 30, dailyPlannedMinutes: 90, bufferPercent: 25, starterMinutes: null, recoveryPreference: 'reduce' } },
+    profile: { planningPreferences: { blockMinutes: 30, dailyPlannedMinutes: 90, starterMinutes: null, recoveryPreference: 'reduce' } },
     projectProfiles: { 'project-a': { id: 'pp1', version: 1, overrides: { blockMinutes: { value: 20, source: 'learned', proposalId: 'proposal-1' } } } },
   } as unknown as ExecutionState
 
@@ -587,7 +702,7 @@ describe('project settings', () => {
   it('shows users what the project adapted, without settings to tune', () => {
     render(<ProjectSettings state={state} project={project} busy={false} run={vi.fn()}/>)
     const note = screen.getByRole('note').textContent
-    expect(note).toContain('기본 프로필 · 모든 프로젝트 공통 · 한 번에 집중할 시간 30분 · 하루 계획량 90분 · 비워 둘 여유분 25%')
+    expect(note).toContain('기본 프로필 · 모든 프로젝트 공통 · 한 번에 집중할 시간 30분 · 하루 계획량 90분')
     expect(note).toContain('이 프로젝트만 · 한 번에 집중할 시간 20분 (이 프로젝트 실행 기록으로 학습, 기본 30분)')
     expect(screen.queryByRole('spinbutton')).toBeNull()
     expect(screen.queryByText('이 프로젝트 설정 저장')).toBeNull()

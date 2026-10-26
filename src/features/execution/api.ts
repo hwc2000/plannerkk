@@ -1,4 +1,4 @@
-import type { CalendarEvent, ExecutionPlan, ExecutionState, Memory, Milestone, ProfileUpdateProposal, Project } from '../../shared/types'
+import type { CalendarEvent, ClosePreview, ExecutionPlan, ExecutionState, Memory, Milestone, ProfileUpdateProposal, Project } from '../../shared/types'
 
 type ReplanInput = {
   goal: string
@@ -26,6 +26,14 @@ export async function executionApi(path = '', body?: unknown, method = 'POST'): 
 
 export async function adaptiveApi(path: string, body: unknown): Promise<ExecutionState> {
   return requestState(`/api/adaptive${path}`, body)
+}
+
+/** What ending a project would carry to the user profile; nothing changes until the user ends it. */
+export async function closePreview(projectId: string): Promise<ClosePreview> {
+  const response = await fetch(`/api/execution/projects/${encodeURIComponent(projectId)}/close-preview`)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '미리보기를 불러오지 못했어요.')
+  return data
 }
 
 function entryOwner(plan: ExecutionPlan, entry: ExecutionPlan['entries'][number]): string | null {

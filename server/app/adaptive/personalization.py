@@ -14,12 +14,11 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from ..execution_profile import FOCUS_PERIODS, generate_profile
-from ..execution_scheduler import schedule
+from ..execution_scheduler import BREAK_MINUTES, MIN_PIECE_MINUTES, min_task_minutes, schedule
 from .state import PREFERENCE_STRATEGY
 
 # System boundaries for "when I focus best"; not user traits.
 PERIODS = FOCUS_PERIODS
-MIN_HINT_PIECE = 10  # a day's leftover shorter than this is not worth a task
 PERIOD_LABELS = {"morning": "오전", "afternoon": "오후", "evening": "저녁"}
 
 Source = Literal["declared", "learned", "default", "profile", "memory", "project"]
@@ -30,7 +29,6 @@ Window = tuple[datetime, datetime]
 @dataclass(frozen=True)
 class PlanPolicy:
     block_minutes: int  # task length cap
-    buffer_percent: int
     daily_cap_minutes: int | None
     starter_minutes: int | None
     preferred_period: str | None
@@ -41,7 +39,6 @@ def plan_policy(user_profile: Mapping[str, Any]) -> PlanPolicy:
     focus = prefs.get("focusTime")
     return PlanPolicy(
         block_minutes=prefs["blockMinutes"],
-        buffer_percent=prefs["bufferPercent"],
         daily_cap_minutes=prefs.get("dailyPlannedMinutes"),
         starter_minutes=prefs.get("starterMinutes"),
         preferred_period=focus if focus in PERIODS else None,
@@ -57,19 +54,49 @@ def block_is_start_value(user_profile: Mapping[str, Any]) -> bool:
     return not any("blockMinutes" in (p.get("proposedChanges") or {}) for p in user_profile.get("learnedPatterns") or [])
 
 
-def day_task_minutes(policy: PlanPolicy) -> list[int]:
-    """One day's task lengths that fill the daily cap, e.g. [50, 40] for 90 minutes with 50-minute blocks.
+def _window_slots(room: int, block: int) -> list[int]:
+    """Task lengths that fill ``room`` minutes: focus blocks with a break between, then what is left."""
+    slots = []
+    while room >= block:
+        slots.append(block)
+        room -= block + BREAK_MINUTES
+    if room >= min_task_minutes(block):
+        slots.append(room)
+    elif room >= MIN_PIECE_MINUTES and slots:
+        # Too short to stand alone: share it with the block before it (60 + 15 becomes 38 + 37).
+        total = slots.pop() + room
+        slots += [total - total // 2, total // 2]
+    return slots
 
-    Given to the LLM as a hint: tasks are placed in order, so a day of two
-    50-minute blocks would not fit 90 minutes and push work out of the week.
+
+def day_slots(windows: Sequence[Window], policy: PlanPolicy, block: int) -> list[dict[str, Any]]:
+    """Each day's task lengths, in placement order, that use all the time the user chose.
+
+    The planner sizes tasks to these, so a day is full before work moves to the
+    next one: three free hours with 60-minute blocks are 60, 60 and 50 (breaks
+    between).  The day's first task follows the starter, and a daily cap ends
+    the day early.  A leftover too short for a task stays free.
     """
-    if policy.daily_cap_minutes is None:
-        return []
-    left = policy.daily_cap_minutes - (policy.starter_minutes or 0)
-    pieces = [policy.block_minutes] * (left // policy.block_minutes)
-    if left % policy.block_minutes >= MIN_HINT_PIECE:
-        pieces.append(left % policy.block_minutes)
-    return pieces
+    days: dict[str, list[int]] = {}
+    used: dict[str, int] = {}
+    for begin, end in windows:
+        day = begin.date().isoformat()
+        slots = days.setdefault(day, [])
+        room = int((end - begin).total_seconds() // 60)
+        if day not in used:
+            used[day] = policy.starter_minutes or 0
+            room -= used[day]
+        for minutes in _window_slots(room, block):
+            if policy.daily_cap_minutes is not None and used[day] + minutes > policy.daily_cap_minutes:
+                # The cap ends the day: what it leaves is a task only if it is not a sliver.
+                minutes = policy.daily_cap_minutes - used[day]
+                if minutes >= min_task_minutes(block):
+                    slots.append(minutes)
+                used[day] = policy.daily_cap_minutes
+                break
+            slots.append(minutes)
+            used[day] += minutes
+    return [{"date": day, "minutes": slots} for day, slots in days.items() if slots]
 
 
 def preferred_windows(windows: Sequence[Window], period: str) -> list[Window]:
@@ -88,8 +115,7 @@ def place_tasks(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Placement | None]:
     """Schedule in the preferred period when it holds as much as the whole week does."""
     def run(chosen: Sequence[Window]):
-        return schedule(tasks, list(chosen), policy.buffer_percent,
-                        daily_cap=policy.daily_cap_minutes, starter_minutes=policy.starter_minutes)
+        return schedule(tasks, list(chosen), daily_cap=policy.daily_cap_minutes, starter_minutes=policy.starter_minutes)
 
     entries, pending = run(windows)
     if policy.preferred_period is None:
@@ -121,8 +147,6 @@ RECOVERY_LABELS = {"replan": "시간을 다시 배치", "reduce": "할 일을 �
 
 
 def _value_text(field: str, value: Any) -> str:
-    if field == "bufferPercent":
-        return f"{value}%"
     if field == "recoveryPreference":
         return RECOVERY_LABELS.get(value, str(value))
     return f"{value}분"
@@ -188,27 +212,8 @@ def _daily_cap(facts, prefs, survey) -> dict[str, Any]:
     applied = f"하루에 최대 {cap}분만 계획했습니다."
     daily = facts.get("dailyMinutes")
     if survey and survey["dailyPlannedMinutes"] == cap and daily is not None:
-        return _reason("dailyCap", applied,
-                       f"하루에 쓸 수 있다고 답한 {daily}분에서 여유분 {prefs['bufferPercent']}%를 뺐습니다.",
-                       "declared", ["dailyMinutes"])
+        return _reason("dailyCap", applied, f"하루에 쓸 수 있다고 답한 {daily}분에 맞췄습니다.", "declared", ["dailyMinutes"])
     return _reason("dailyCap", applied, f"확정한 프로필의 하루 계획량 {cap}분을 따랐습니다.", "profile", ["dailyPlannedMinutes"])
-
-
-def _buffer(facts, prefs, survey) -> dict[str, Any]:
-    percent = prefs["bufferPercent"]
-    applied = f"선택한 가용 시간의 {percent}% 이상을 여유분으로 비워 두었습니다."
-    if survey and survey["bufferPercent"] == percent:
-        regularity, barriers = facts.get("regularity"), facts.get("barriers", [])
-        if regularity == "irregular":
-            return _reason("buffer", applied, "일정이 불규칙하다고 답했습니다.", "declared", ["regularity"])
-        if "overplanning" in barriers:
-            return _reason("buffer", applied, "계획을 많이 세우는 편이라고 답했습니다.", "declared", ["barriers"])
-        if regularity == "unknown":
-            return _reason("buffer", applied, "일정이 규칙적인지 아직 몰라 여유를 넉넉히 두었습니다.", "default", ["regularity"])
-        if regularity in ("regular", "mixed"):
-            label = "규칙적" if regularity == "regular" else "어느 정도 규칙적"
-            return _reason("buffer", applied, f"일정이 {label}이라고 답해 여유분을 적게 잡았습니다.", "declared", ["regularity"])
-    return _reason("buffer", applied, f"확정한 프로필의 여유분 {percent}%를 따랐습니다.", "profile", ["bufferPercent"])
 
 
 def _period(prefs, patterns, placement: Placement) -> dict[str, Any]:
@@ -285,8 +290,6 @@ def personalization_reasons(
     if prefs.get("dailyPlannedMinutes"):
         reasons.append(project_or("dailyCap", f"하루에 최대 {prefs['dailyPlannedMinutes']}분만 계획했습니다.",
                                   "dailyPlannedMinutes", "하루 계획량", lambda: _daily_cap(facts, prefs, survey)))
-    reasons.append(project_or("buffer", f"선택한 가용 시간의 {prefs['bufferPercent']}% 이상을 여유분으로 비워 두었습니다.",
-                              "bufferPercent", "여유분", lambda: _buffer(facts, prefs, survey)))
     if placement is not None:
         reasons.append(_period(prefs, patterns, placement))
     style = _schedule_style(facts, prefs, survey)

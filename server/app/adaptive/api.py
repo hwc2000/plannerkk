@@ -15,7 +15,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..execution_api import BusyEvent, build_full_plan_context, plan_projects, project_scope, stale_message
+from ..execution_api import BusyEvent, build_full_plan_context, project_scope, stale_message
 from ..execution_learning import refine_new_proposals
 from ..execution_llm import ExecutionLLM
 from ..execution_store import ConflictError, ExecutionStore

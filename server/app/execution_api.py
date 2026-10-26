@@ -3,12 +3,12 @@ import os
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .adaptive.context import to_profile_change_context
-from .adaptive.full_plan_generator import LLMFullPlanGenerator, SCHEDULE_STYLE_INSTRUCTIONS
+from .adaptive.full_plan_generator import LLMFullPlanGenerator
 from .adaptive.graph import build_adaptive_planner_graph
-from .adaptive.personalization import plan_policy
+from .adaptive.personalization import day_slots, plan_policy
 from .execution_store import ExecutionStore, ConflictError, empty_state
 from .execution_profile import generate_profile, validate_insights, SCHEMA
 from .execution_llm import ExecutionLLM
@@ -118,13 +118,14 @@ def build_full_plan_context(
     style = prefs.get("scheduleStyle")
     # Each day's first task carries the starter, so only the rest goes to tasks.
     starter = policy.starter_minutes or 0
-    budgets = daily_budgets(windows, policy.buffer_percent, policy.daily_cap_minutes)
-    budget = sum(max(0, minutes - starter) for minutes in budgets.values())
+    budgets = daily_budgets(windows, policy.daily_cap_minutes)
     longest = max(int((end - start).total_seconds() // 60) for start, end in windows)
     # Both schedule styles cap a task at the user's focus block.
     block = min(policy.block_minutes, longest - starter, max(budgets.values()) - starter)
     if block < 1:
-        raise ValueError("작업을 배치할 여유 시간이 부족합니다.")
+        raise ValueError("작업을 배치할 빈 시간이 부족합니다.")
+    # All the chosen time, as the tasks that fill it (breaks between them are not work time).
+    budget = sum(sum(day["minutes"]) for day in day_slots(windows, policy, block))
     # Each project's tasks follow that project's own settings on top of the user
     # profile; one project's settings never reach another project's tasks.
     project_settings = {}
@@ -147,7 +148,6 @@ def build_full_plan_context(
         "schedule_style": style,
         "max_block_minutes": block,
         "budget_minutes": budget,
-        "buffer_percent": prefs["bufferPercent"],
         "start_date": start_date.isoformat(),
         "end_date": (start_date + timedelta(days=6)).isoformat(),
         "available_windows": [
@@ -245,6 +245,11 @@ class FixedScheduleRequest(Mutation):
 class BlockedTimesRequest(Mutation):
     items: list[BlockedTime] = Field(max_length=MAX_BLOCKED_TIMES)
     events: list[BusyEvent] = Field(default_factory=list, max_length=500)
+
+
+class CloseProjectRequest(Mutation):
+    project: ProjectContext
+    outcome: Literal["completed", "abandoned"]
 
 
 class ProjectProfileRequest(Mutation):
@@ -363,6 +368,32 @@ def execution_router(store=None, llm=None):
         return change(request.revision, lambda state: set_declared_overrides(
             state, store.user_id, project_id, request.overrides))
 
+    @router.get("/projects/{project_id}/close-preview")
+    def close_preview(project_id: str):
+        """What ending the project would carry to the user profile and what stays, before the user decides."""
+        from .project_close import carry_over
+        state = store.read()
+        if not state.get("profile"):
+            raise ValueError("먼저 실행 프로필을 생성하고 확정해 주세요.")
+        summary = carry_over(state, store.user_id, project_id)
+        plan = state.get("plan")
+        open_tasks = sum(1 for e in (plan or {}).get("entries", [])
+                         if e["kind"] == "task" and not e["completed"] and entry_owner(plan, e) == project_id)
+        return {"carried": summary["carried"], "kept": summary["kept"], "openTasks": open_tasks}
+
+    @router.post("/projects/{project_id}/close")
+    def close(project_id: str, request: CloseProjectRequest):
+        from .project_close import close_project
+        if request.project.id != project_id:
+            raise ValueError("끝낼 프로젝트가 맞지 않아요.")
+        return change(request.revision, lambda state: close_project(
+            state, store.user_id, request.project.model_dump(mode="json"), request.outcome))
+
+    @router.post("/projects/{project_id}/reopen")
+    def reopen(project_id: str, request: Mutation):
+        from .project_close import reopen_project
+        return change(request.revision, lambda state: reopen_project(state, project_id))
+
     @router.post("/planning-context")
     def planning_context(request: WeeklyRequest):
         state = snapshot(request.revision)
@@ -373,7 +404,7 @@ def execution_router(store=None, llm=None):
     def reset_profile(request: Mutation):
         def update(state):
             resolve_plan_draft(state, "keep_current_plan")
-            state.update(profile=None, profileDraft=None, profileConversations=[],
+            state.update(profile=None, profileDraft=None,
                          surveyResponses=[], profileRevisions=[], profileUpdateProposals=[],
                          projectProfiles={}, projectProfileRevisions=[])
         return change(request.revision, update)
@@ -390,6 +421,9 @@ def execution_router(store=None, llm=None):
         profile = state["profile"]
         if not profile:
             raise ValueError("먼저 실행 프로필을 생성하고 확정해 주세요.")
+        closed = state.get("closedProjects") or {}
+        if any(p.id in closed for p in [*request.projects, *([request.project] if request.project else [])]):
+            raise ValueError("끝낸 프로젝트는 계획할 수 없어요. 다시 열면 이어서 계획할 수 있어요.")
 
         profile_change_context = None
         replan = request.profileChangeProposalId is not None
@@ -443,7 +477,8 @@ def execution_router(store=None, llm=None):
             effective_goal, held = scope[3], scope[2]
             effective_projects = [ProjectContext.model_validate(scope[0])]
         elif current_plan:
-            effective_projects = [ProjectContext.model_validate(p) for p in plan_projects(current_plan)]
+            # An ended project keeps its finished tasks in the week but is never planned again.
+            effective_projects = [ProjectContext.model_validate(p) for p in plan_projects(current_plan) if p["id"] not in closed]
         else:
             effective_projects = request.projects or ([request.project] if request.project else [])
         effective_project = effective_projects[0] if len(effective_projects) == 1 else None
@@ -524,11 +559,6 @@ def execution_router(store=None, llm=None):
         before = {p["id"] for p in store.read()["profileUpdateProposals"]}
         state = service.record_execution(request.revision, request.model_dump(exclude={"revision", "consent"}))
         return envelope(refine_new_proposals(store, llm, state, before, consent=request.consent))
-
-    @router.get("/summary")
-    def execution_summary(days: int = Query(default=14, ge=1, le=365),
-                          planId: str | None = None, profileId: str | None = None):
-        return service.get_execution_summary(days=days, plan_id=planId, profile_id=profileId)
 
     @router.post("/proposals/{proposal_id}/{decision}")
     def decide_proposal(proposal_id: str, decision: Literal["approve", "reject"], request: Mutation):

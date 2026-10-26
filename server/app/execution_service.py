@@ -1,8 +1,8 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from .execution_learning import REASON_CODES, propose_focus_time, propose_update
+from .execution_learning import REASON_CODES, propose_focus_time, propose_growth, propose_update
 from .execution_store import ConflictError
 from .plan_merge import entry_owner
 from .project_profile import apply_project_proposal, entry_settings_version
@@ -35,37 +35,6 @@ class ExecutionRecordInput(BaseModel):
 
 class ProposalNotFoundError(ValueError):
     pass
-
-
-def summarize_execution(state, *, days=14, plan_id=None, profile_id=None, now=None):
-    if type(days) is not int or not 1 <= days <= 365:
-        raise ValueError("조회 기간은 1~365일이어야 합니다.")
-    now = now or datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=days)
-    records = sorted((r for r in state.get('executionRecords', [])
-                      if cutoff <= datetime.fromisoformat(r['createdAt']) <= now
-                      and (plan_id is None or r['planId'] == plan_id)
-                      and (profile_id is None or r.get('profileId') == profile_id)),
-                     key=lambda r: (datetime.fromisoformat(r['createdAt']), r['id']))
-    counts = {result: sum(r['result'] == result for r in records)
-              for result in ('completed', 'partial', 'not_started', 'incomplete')}
-    reasons = {code: sum(r['result'] != 'completed' and r['reasonCode'] == code for r in records)
-               for code in REASON_CODES}
-    planned = sum(r['plannedMinutes'] for r in records)
-    measured = [r for r in records if r.get('actualMinutes') is not None]
-    actual = sum(r['actualMinutes'] for r in measured)
-    return {
-        'revision': state['revision'], 'days': days,
-        'periodStart': cutoff.isoformat(), 'periodEnd': now.isoformat(),
-        'planId': plan_id, 'profileId': profile_id,
-        'recordCount': len(records), 'resultCounts': counts,
-        'completionRate': round(counts['completed'] / len(records) * 100, 2) if records else None,
-        'plannedMinutes': planned, 'actualMinutes': actual,
-        'minutesDifference': actual - sum(r['plannedMinutes'] for r in measured),
-        'actualMinutesRecordCount': len(measured),
-        'incompleteReasonCounts': reasons,
-        'evidenceRecordIds': [r['id'] for r in records],
-    }
 
 
 class ExecutionService:
@@ -106,9 +75,6 @@ class ExecutionService:
 
         return self.store.change(revision, update)
 
-    def get_execution_summary(self, *, days=14, plan_id=None, profile_id=None):
-        return summarize_execution(self.store.read(), days=days, plan_id=plan_id, profile_id=profile_id)
-
 
 def save_execution_record(state, payload, *, allow_follow_up=False):
     request = ExecutionRecordInput.model_validate(payload)
@@ -134,6 +100,7 @@ def save_execution_record(state, payload, *, allow_follow_up=False):
         state['executionRecords'].append(record)
     task['completed'] = request.result == 'completed'
     propose_update(state, record.get('projectId'))
+    propose_growth(state, record.get('projectId'))
     propose_focus_time(state)
     return record['id']
 
@@ -168,6 +135,7 @@ def set_task_completion(state, plan_id, task_id, completed):
         state['executionRecords'].append(_new_record(plan, task, request))
         task['completed'] = True
         propose_update(state, entry_owner(plan, task))
+        propose_growth(state, entry_owner(plan, task))
         propose_focus_time(state)
         return
     matches = [r for r in state['executionRecords'] if r['planId'] == plan_id and r['taskId'] == task_id]

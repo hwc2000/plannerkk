@@ -42,7 +42,8 @@ class FakeLLM:
             return generate_profile(ANSWERS)["insights"]
         if kwargs["name"] == "execution_tasks":
             self.plan_calls.append(kwargs)
-            count = min(4, max(1, kwargs["context"]["budgetMinutes"] // self.plan_minutes))  # stays within the budget
+            # Three tasks (18:00~19:10), leaving 19:15~20:00 free for the recovery cases below.
+            count = min(3, max(1, kwargs["context"]["budgetMinutes"] // self.plan_minutes))
             return {"tasks": [{"title": f"연습문제 {i} 풀기", "minutes": self.plan_minutes, "doneWhen": "풀이 기록", "dueDate": self.plan_due} for i in range(count)]}
         self.shrink_calls.append(kwargs)
         reply = self.shrink_replies.pop(0) if self.shrink_replies else SHRINK

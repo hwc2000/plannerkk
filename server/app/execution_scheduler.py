@@ -49,6 +49,16 @@ MIN_PIECE_MINUTES = 10
 BREAK_MINUTES = 5
 
 
+def min_piece(minutes):
+    """The shortest part a task of ``minutes`` is cut into: half of it, so a split never leaves a sliver."""
+    return min(minutes, max(MIN_PIECE_MINUTES, minutes // 2))
+
+
+def min_task_minutes(block):
+    """The shortest task worth its own slot for a focus block of ``block`` minutes: half of it."""
+    return min_piece(block)
+
+
 def validate_tasks(payload, block, projects=()):
     tasks = payload.get("tasks") if isinstance(payload, dict) else None
     if not isinstance(tasks, list) or not 1 <= len(tasks) <= 40:
@@ -77,16 +87,15 @@ def validate_tasks(payload, block, projects=()):
     return result
 
 
-def daily_budgets(windows, buffer_percent, daily_cap=None):
-    """Work minutes per day: the free time minus the buffer, never above the daily cap."""
+def daily_budgets(windows, daily_cap=None):
+    """Work minutes per day: all the free time the user chose, never above the daily cap."""
     minutes = {}
     for begin, end in windows:
         key = begin.date().isoformat()
         minutes[key] = minutes.get(key, 0) + int((end-begin).total_seconds()//60)
-    budgets = {d: int(m*(100-buffer_percent)/100) for d, m in minutes.items()}
     if daily_cap is not None:
-        budgets = {d: min(b, daily_cap) for d, b in budgets.items()}
-    return budgets
+        minutes = {d: min(m, daily_cap) for d, m in minutes.items()}
+    return minutes
 
 
 def _starter_entry(task, start, minutes):
@@ -98,19 +107,20 @@ def _starter_entry(task, start, minutes):
             "start": start.isoformat(timespec="minutes"), "end": end.isoformat(timespec="minutes"), "completed": False}
 
 
-def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=None):
+def schedule(tasks, windows, *, daily_cap=None, starter_minutes=None):
     """Place tasks in order; with ``starter_minutes`` each day's first task gets a short starter before it."""
     cursors = [begin for begin, _ in windows]
     # Daily work budget leaves the rest for breaks and interruptions.
-    budgets = daily_budgets(windows, buffer_percent, daily_cap)
+    budgets = daily_budgets(windows, daily_cap)
     # Days where the cap, not the buffer, limits the work; pending reasons name it.
-    cap_binds = set() if daily_cap is None else {d for d, b in daily_budgets(windows, buffer_percent).items() if b > daily_cap}
+    cap_binds = set() if daily_cap is None else {d for d, b in daily_budgets(windows).items() if b > daily_cap}
     started_days = set()
     entries, pending = [], []
     not_before = windows[0][0] if windows else datetime.max
     for raw in tasks:
         task = {k: v for k, v in raw.items() if k not in ("starter", "notBefore")}
         first_day = raw.get("notBefore")
+        shortest = min_piece(task["minutes"])
         saved = (list(cursors), dict(budgets), set(started_days), len(entries))
         capped = False
         for split in (False, True):
@@ -128,9 +138,9 @@ def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=
                     if not split and piece < left:
                         capped = capped or (budget < min(left, room) and day in cap_binds)
                         break
-                    if 0 < left - piece < MIN_PIECE_MINUTES:
-                        piece -= MIN_PIECE_MINUTES - (left - piece)
-                    if piece < min(left, MIN_PIECE_MINUTES):
+                    if 0 < left - piece < shortest:
+                        piece -= shortest - (left - piece)
+                    if piece < min(left, shortest):
                         capped = capped or (budget < min(left, room) and day in cap_binds)
                         break
                     if lead:
@@ -156,7 +166,7 @@ def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=
             del entries[saved[3]:]
         if left > 0:
             reason = (f"하루 계획량 {daily_cap}분을 넘지 않도록 이번 주에는 넣지 않았습니다." if capped
-                      else "가용 시간·여유분·마감일 안에 배치할 수 없습니다.")
+                      else "가용 시간·마감일 안에 배치할 수 없습니다.")
             pending.append({**task, "reason": reason})
             continue
         for n, (begin, finish) in enumerate(pieces, 1):
@@ -166,5 +176,4 @@ def schedule(tasks, windows, buffer_percent, *, daily_cap=None, starter_minutes=
                             "end": finish.isoformat(timespec="minutes"), "completed": False})
         not_before = pieces[0][0]
     entries.sort(key=lambda e: (e["start"], e["kind"] != "task"))
-    return entries, pending
     return entries, pending

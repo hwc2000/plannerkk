@@ -51,16 +51,22 @@ def planner_chat_router(store, llm):
             raise ConflictError("화면을 새로 불러온 뒤 다시 보내 주세요.")
         if not state.get("profile"):
             raise ValueError("먼저 설문으로 프로필을 만들고 확정해 주세요.")
+        if request.project and (state.get("closedProjects") or {}).get(request.project.id):
+            raise ValueError("끝낸 프로젝트예요. 다시 열면 이어서 대화할 수 있어요.")
         key = thread_key(request.project.id if request.project else None)
         thread = state.get("plannerThreads", {}).get(key) or {"messages": [], "action": None}
         now = datetime.now(KST).replace(tzinfo=None, second=0, microsecond=0)
-        # This conversation sees the user profile and this project's own values, never another project's.
-        ctx = ChatContext(state=state, user_id=store.user_id, today=now.date(), now=now, events=request.events,
-                          project=request.project.model_dump(mode="json") if request.project else None)
-        history = [{"role": m["role"], "content": m["content"]} for m in thread["messages"][-CONTEXT_MESSAGES:]]
         # A card counts only for the revision it was made for; an older one was replaced or applied.
         waiting = thread.get("action") if (thread.get("action") or {}).get("revision") == state["revision"] else None
-        turn = await run_turn(llm, ctx, basic_info(ctx, history, request.text, waiting))
+        # This conversation sees the user profile and this project's own values, never another project's.
+        ctx = ChatContext(state=state, user_id=store.user_id, today=now.date(), now=now, events=request.events,
+                          project=request.project.model_dump(mode="json") if request.project else None,
+                          waiting={k: v for k, v in waiting.items() if k != "revision"} if waiting else None)
+        # The model reads its own earlier words only, not the notes code put under them,
+        # so it does not learn to repeat them.
+        history = [{"role": m["role"], "content": m.get("reply", m["content"])}
+                   for m in thread["messages"][-CONTEXT_MESSAGES:]]
+        turn = await run_turn(llm, ctx, basic_info(ctx, history, request.text))
 
         def save(doc):
             threads = doc.setdefault("plannerThreads", {})
@@ -68,7 +74,7 @@ def planner_chat_router(store, llm):
             messages = [*current["messages"],
                         {"id": str(uuid4()), "role": "user", "content": request.text},
                         # Which skill answered and what it read, so the routing stays visible.
-                        {"id": str(uuid4()), "role": "assistant", "content": turn.reply,
+                        {"id": str(uuid4()), "role": "assistant", "content": turn.content, "reply": turn.reply,
                          "skill": turn.skill, "lookups": turn.lookups}]
             threads[key] = {"messages": messages[-HISTORY_LIMIT:],
                             "action": {**turn.action, "revision": request.revision + 1} if turn.action else None,

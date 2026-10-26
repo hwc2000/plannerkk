@@ -90,7 +90,6 @@ export type ExecutionProfile = {
   planningPreferences: {
     blockMinutes: number
     breakMinutes: number
-    bufferPercent: number
     dailyPlannedMinutes: number | null
     scheduleStyle: ScheduleStyle
     scheduleStyleSource?: "user" | "rule" | "legacy"
@@ -150,6 +149,41 @@ export type ExecutionState = {
   fixedSchedule?: FixedBlock[]; blockedTimes?: BlockedTime[]
   /** Set by saving unavailable time: open tasks it moved, and the ones that no longer fit. */
   relocated?: { moved: string[]; unplaced: string[] }
+  /** Waiting recovery drafts of failed tasks, by task id (drafts of a replaced plan are ignored). */
+  recoveryDrafts?: Record<string, RecoveryDraft>
+  /** Set by the adaptive check-in and review calls: what the planner graph decided. */
+  result?: AdaptiveResult
+  /** Projects the user ended, by id, with what carried to the user profile. */
+  closedProjects?: Record<string, ClosedProject>
+}
+/** A user-profile value a project proved, moved to the user profile when the project ends. */
+export type CarriedHabit = { key: string; label: string; from: string; to: string; because: string }
+/** A project value that stays with the project, and why. */
+export type KeptValue = { label: string; value: string; why: string }
+export type ClosedProject = {
+  title: string; outcome: 'completed' | 'abandoned'; closedAt: string
+  carried: CarriedHabit[]; kept: KeptValue[]; removedTasks: number
+}
+export type ClosePreview = { carried: CarriedHabit[]; kept: KeptValue[]; openTasks: number }
+export type RecoveryStrategy = 'shrink' | 'reschedule' | 'replan'
+export type CheckIn = {
+  completed: boolean; actualMinutes: number | null; remainingMinutes: number | null
+  reasonCode: string | null; note: string; difficulty: number | null
+}
+/** A failed task's way back into the week: smaller pieces, or the same work at another free time. */
+export type RecoveryDraft = {
+  id: string; planId: string; taskId: string; recordId: string; strategy: RecoveryStrategy; checkIn: CheckIn
+  revisionCount: number
+  draft: {
+    kind: 'shrink' | 'reschedule' | 'fit_deadline'; replacesTaskId: string
+    tasks: Array<{ title: string; minutes: number; doneWhen: string; start: string | null; end: string | null }>
+    appliedReasons: string[]; droppedScope: string[]; carryOverMinutes: number
+  }
+}
+export type AdaptiveResult = {
+  approvalStatus: 'waiting' | 'approved' | 'rejected' | 'needs_input' | 'fallback' | 'not_required'
+  strategy?: RecoveryStrategy | null
+  fallback?: { action: string; reason?: string; options?: RecoveryStrategy[]; missingFields?: string[] } | null
 }
 
 /** Values that differ for one project, on top of the user profile. Absent keys follow the user profile. */
@@ -158,8 +192,11 @@ export type ProjectProfile = {
   overrides: Record<string, { value: number | string | null; source: 'declared' | 'learned'; proposalId: string | null }>
   learnedPatterns: LearnedPattern[]; createdAt: string; updatedAt: string
 }
-/** An assistant message names the skill that answered and the saved information it read. */
-export type PlannerMessage = { id: string; role: 'user' | 'assistant'; content: string; skill?: string; lookups?: string[] }
+/**
+ * An assistant message names the skill that answered and the saved information it read.
+ * content is what the user sees; reply is the model's own words without the notes code put under them.
+ */
+export type PlannerMessage = { id: string; role: 'user' | 'assistant'; content: string; reply?: string; skill?: string; lookups?: string[] }
 export type PlannerThread = { messages: PlannerMessage[]; action: PlannerAction | null; updatedAt?: string }
 export type PlannerAction =
   /** freeMinutes: time still free this week, counted by the server; absent when no week is planned yet. */
@@ -188,8 +225,11 @@ export type ProfileUpdateProposal = {
   id: string; profileId: string; appliedProfileId?: string
   // Set when the change was learned from one project's records and applies to that project only.
   projectId?: string | null; projectProfileId?: string | null; appliedProjectProfileId?: string
-  /** One learned value: a shorter focus block, or the part of the day the user finishes work best. */
-  proposedChanges: { blockMinutes?: { from: number; to: number }; focusTime?: { from: FocusTime; to: FocusTime } }
+  /** Learned values: the focus block, the part of the day the user finishes work best, or (when a project ends) the way back. */
+  proposedChanges: { blockMinutes?: { from: number; to: number }; focusTime?: { from: FocusTime; to: FocusTime }
+    recoveryPreference?: { from: string; to: string } }
+  /** Set when the change came from ending a project. */
+  sourceProjectId?: string
   /** How the new value was set: from the user's records alone, or by the AI reading the tasks too. */
   sizedBy?: 'evidence' | 'ai'; sizing?: string; aiReason?: string
   /** Focus time only: tasks planned and finished per part of the day. */
@@ -198,34 +238,8 @@ export type ProfileUpdateProposal = {
   status: 'pending' | 'approved' | 'rejected'; createdAt: string; decidedAt: string | null
 }
 
-export type ExecutionSummary = {
-  revision: number; days: number; periodStart: string; periodEnd: string
-  planId: string | null; profileId: string | null; recordCount: number
-  resultCounts: Record<ExecutionRecord['result'], number>
-  completionRate: number | null
-  plannedMinutes: number; actualMinutes: number; minutesDifference: number
-  actualMinutesRecordCount: number
-  incompleteReasonCounts: Record<string, number>; evidenceRecordIds: string[]
-}
-
 export type LearnedPattern = {
   id: string; observation: string; proposedChanges: Record<string, { from: number | string; to: number | string }>
   evidenceRecordIds: string[]; approvedProposalId: string; projectId: string | null
   status: 'active' | 'revoked' | 'superseded'; approvedAt: string; expiresAt: string | null
-}
-export type UserProfile = ExecutionProfile & {
-  userId: string; version: number; schemaVersion: '2.0'; declaredFacts: ExecutionAnswers
-  learnedPatterns: LearnedPattern[]; updatedAt: string; confirmedAt: string | null
-  surveyResponseId: string | null
-}
-export type SurveyResponse = {
-  id: string; userId: string; surveyVersion: string; answers: ExecutionAnswers
-  submittedAt: string; conversationId?: string
-}
-export type PlanningContext = {
-  schemaVersion: '1.0'; userId: string; profileId: string; profileVersion: number; generatedAt: string
-  userProfile: { declaredFacts: Omit<ExecutionAnswers, 'constraints' | 'context'>;
-    planningPreferences: ExecutionProfile['planningPreferences']; learnedPatterns: LearnedPattern[] }
-  projectContext: Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'> | null
-  availability: { timezone: string; slots: AvailabilitySlot[] }; memories: Memory[]; warnings: string[]
 }

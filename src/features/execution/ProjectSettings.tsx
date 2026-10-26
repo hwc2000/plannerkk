@@ -3,7 +3,7 @@ import type { ExecutionState, Project } from '../../shared/types'
 import { executionApi } from './api'
 import { options } from './profileLabels'
 
-type Key = 'blockMinutes' | 'dailyPlannedMinutes' | 'bufferPercent' | 'starterMinutes' | 'recoveryPreference'
+type Key = 'blockMinutes' | 'dailyPlannedMinutes' | 'starterMinutes' | 'recoveryPreference'
 type Field = { key: Key; label: string; unit?: string; min?: number; max?: number }
 type Values = Partial<Record<Key, number | string>>
 
@@ -11,7 +11,6 @@ type Values = Partial<Record<Key, number | string>>
 const FIELDS: Field[] = [
   { key: 'blockMinutes', label: '한 번에 집중할 시간', unit: '분', min: 1, max: 180 },
   { key: 'dailyPlannedMinutes', label: '하루 계획량', unit: '분', min: 1, max: 720 },
-  { key: 'bufferPercent', label: '비워 둘 여유분', unit: '%', min: 0, max: 90 },
   { key: 'starterMinutes', label: '첫 작업 앞 시작 행동', unit: '분', min: 1, max: 180 },
   { key: 'recoveryPreference', label: '계획이 틀어졌을 때' },
 ]

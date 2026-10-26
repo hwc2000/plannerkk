@@ -136,7 +136,8 @@ def _placement_errors(result: dict[str, Any], state: PlannerState) -> list[str]:
             errors.append(f"tasks.{index}: 빈 시간이 아닌 곳에 배치되었습니다.")
         if item["minutes"] < min_minutes:
             errors.append(f"tasks.{index}.minutes: 작업은 최소 {min_minutes}분 이상이어야 합니다.")
-        if cap is not None and item["minutes"] > cap:
+        # Moved work keeps its size; only newly cut pieces must fit one focus session.
+        if cap is not None and item["minutes"] > cap and result["kind"] != "reschedule":
             errors.append(f"tasks.{index}.minutes: 작업이 사용자의 집중 가능 시간({cap}분)을 초과합니다.")
         spans.append((start, end))
     spans.sort()

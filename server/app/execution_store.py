@@ -18,8 +18,10 @@ def empty_state():
             "fixedSchedule": [], "blockedTimes": [],
             "_planDraftRecordId": None,
             "recoveryDrafts": {}, "executionRecords": [], "profileUpdateProposals": [],
-            "surveyResponses": [], "profileRevisions": [], "memories": [], "profileConversations": [],
-            "projectProfiles": {}, "projectProfileRevisions": [], "plannerThreads": {}}
+            "surveyResponses": [], "profileRevisions": [], "memories": [],
+            "projectProfiles": {}, "projectProfileRevisions": [], "plannerThreads": {},
+            # Projects the user ended, with what carried to the user profile (project_close.py).
+            "closedProjects": {}}
 
 
 class ExecutionStore:

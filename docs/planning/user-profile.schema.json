@@ -95,12 +95,6 @@
           "title": "Breakminutes",
           "type": "integer"
         },
-        "bufferPercent": {
-          "maximum": 90,
-          "minimum": 0,
-          "title": "Bufferpercent",
-          "type": "integer"
-        },
         "dailyPlannedMinutes": {
           "anyOf": [
             {
@@ -183,7 +177,6 @@
       "required": [
         "blockMinutes",
         "breakMinutes",
-        "bufferPercent",
         "scheduleStyle",
         "recoveryPreference",
         "status"

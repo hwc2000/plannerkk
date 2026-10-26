@@ -35,7 +35,6 @@ class PlanningPreferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
     blockMinutes: int = Field(ge=1, le=180, strict=True)
     breakMinutes: int = Field(ge=0, le=60, strict=True)
-    bufferPercent: int = Field(ge=0, le=90, strict=True)
     dailyPlannedMinutes: int | None = Field(default=None, ge=1, le=720, strict=True)
     scheduleStyle: Literal["time_blocks", "flexible_queue"]
     scheduleStyleSource: Literal["user", "rule", "legacy"] = "legacy"
@@ -110,6 +109,8 @@ def upgrade_profile(profile, user_id):
     p.setdefault("surveyResponseId", None)
     p.setdefault("learnedPatterns", [])
     prefs = p["planningPreferences"]
+    # Profiles saved while a share of the weekly time was held back drop it: all chosen time is planned.
+    prefs.pop("bufferPercent", None)
     prefs.setdefault("scheduleStyleSource", "legacy")
     # Profiles made when onboarding still asked keep that answer as their focus time.
     prefs.setdefault("focusTime", p["declaredFacts"].get("energy", "unknown"))
@@ -125,6 +126,8 @@ def normalize_profile_state(state, user_id):
     for key in ("profile", "profileDraft"):
         if state.get(key):
             state[key] = upgrade_profile(state[key], user_id)
+    for project_profile in (state.get("projectProfiles") or {}).values():
+        (project_profile.get("overrides") or {}).pop("bufferPercent", None)
     # Legacy facts are a recovered normalized snapshot, not the original raw survey.
     p = state.get("profile")
     if p and not state["profileRevisions"]:
@@ -163,8 +166,8 @@ def confirm_profile_draft(state):
     state.update(profile=p, profileDraft=None, planDraft=None)
 
 
-# User-profile values a learning rule may propose to change.
-LEARNABLE_KEYS = {"blockMinutes", "focusTime"}
+# User-profile values a learning rule may propose to change (recoveryPreference: when a project ends).
+LEARNABLE_KEYS = {"blockMinutes", "focusTime", "recoveryPreference"}
 
 
 def apply_profile_proposal(state, proposal_id, *, expected_version):
@@ -189,7 +192,7 @@ def apply_profile_proposal(state, proposal_id, *, expected_version):
         raise ValueError("제안의 근거 실행 기록이 올바르지 않습니다.")
     changes = proposal.get("proposedChanges", {})
     if not changes or set(changes) - LEARNABLE_KEYS:
-        raise ValueError("학습으로 바꿀 수 있는 값은 집중 구간과 집중이 잘 되는 시간대뿐입니다.")
+        raise ValueError("학습으로 바꿀 수 있는 값은 집중 구간, 집중이 잘 되는 시간대, 계획이 틀어졌을 때의 방식뿐입니다.")
     updated = deepcopy(p)
     for key, change in changes.items():
         if set(change) != {"from", "to"} or updated["planningPreferences"][key] != change["from"]:

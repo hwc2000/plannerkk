@@ -18,7 +18,7 @@ APP = {"id": "app", "title": "앱 개발", "goal": "로그인 화면", "startDat
 class FakeLLM:
     def __init__(self):
         self.chat_calls = []
-        self.route, self.replies = {"skill": "answer", "lookups": [], "reply": "좋아요"}, {}
+        self.route, self.replies = {"skill": "small_talk", "lookups": [], "reply": "좋아요"}, {}
 
     async def generate(self, **kwargs):
         if kwargs["name"] == "execution_profile":

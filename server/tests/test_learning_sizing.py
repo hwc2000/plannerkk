@@ -33,8 +33,8 @@ class LearningSizingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.llm = FakeLLM()
-        self.client = TestClient(create_app(execution_store=ExecutionStore(Path(self.temp.name) / "db.sqlite3"),
-                                            execution_llm=self.llm))
+        self.store = ExecutionStore(Path(self.temp.name) / "db.sqlite3")
+        self.client = TestClient(create_app(execution_store=self.store, execution_llm=self.llm))
         self.revision = self.client.get("/api/execution").json()["revision"]
         self.call("/api/execution/profile", answers=ANSWERS)
         self.call("/api/execution/profile/confirm")
@@ -99,6 +99,60 @@ class LearningSizingTests(unittest.TestCase):
 
         [proposal] = state["profileUpdateProposals"]
         self.assertEqual((proposal["proposedChanges"]["blockMinutes"]["to"], proposal["sizedBy"]), (30, "evidence"))
+
+
+class FocusGrowthTests(unittest.TestCase):
+    """A block that keeps getting finished grows by a step, never back to a size it was cut from."""
+
+    setUp, tearDown = LearningSizingTests.setUp, LearningSizingTests.tearDown
+    state, call, fail, tasks = LearningSizingTests.state, LearningSizingTests.call, LearningSizingTests.fail, LearningSizingTests.tasks
+
+    def finish(self, tasks):
+        state = None
+        for task in tasks:
+            state = self.call("/api/execution/task", planId=self.plan["id"], taskId=task["id"], completed=True)
+        return state
+
+    def grown(self, state):
+        return [p for p in state["profileUpdateProposals"] if p["ruleVersion"] == "focus-grow-v1"]
+
+    def test_finishing_block_sized_tasks_proposes_a_longer_block(self):
+        tasks = self.tasks()
+        self.assertEqual(len(tasks), 4)
+        self.assertEqual(self.grown(self.finish(tasks[:3])), [])  # three in a row is not yet a pattern
+
+        [proposal] = self.grown(self.finish(tasks[3:]))
+        self.assertEqual(proposal["proposedChanges"], {"blockMinutes": {"from": 60, "to": 70}})
+        self.assertIn("60분짜리 작업 4건을 연달아 끝냈습니다", proposal["reason"])
+        self.assertEqual(self.llm.size_calls, [])  # a longer block is a fixed step, not sized by the AI
+
+        state = self.call(f"/api/execution/proposals/{proposal['id']}/approve")
+        self.assertEqual(state["profile"]["planningPreferences"]["blockMinutes"], 70)
+
+    def cut_before(self, size):
+        def seed(doc):
+            doc["profileUpdateProposals"].append({
+                "id": f"cut-{size}", "profileId": doc["profile"]["id"], "projectId": None, "projectProfileId": None,
+                "proposedChanges": {"blockMinutes": {"from": size, "to": 60}}, "reason": "", "evidenceRecordIds": [],
+                "ruleVersion": "long-task-v2", "status": "approved", "createdAt": "2030-01-01T00:00:00+00:00",
+                "decidedAt": "2030-01-01T00:00:00+00:00"})
+        self.revision = self.store.change(self.revision, seed)["revision"]
+
+    def test_it_stops_short_of_a_size_it_was_cut_from(self):
+        self.cut_before(70)
+        [proposal] = self.grown(self.finish(self.tasks()))
+        self.assertEqual(proposal["proposedChanges"]["blockMinutes"], {"from": 60, "to": 65})
+        self.assertIn("예전에 70분에서 줄였으니", proposal["sizing"])
+
+    def test_a_block_just_cut_does_not_grow_back(self):
+        self.cut_before(65)
+        self.assertEqual(self.grown(self.finish(self.tasks())), [])
+
+    def test_a_miss_in_between_is_not_a_pattern(self):
+        tasks = self.tasks()
+        self.finish(tasks[:2])
+        self.fail(tasks[2], 30)
+        self.assertEqual(self.grown(self.finish(tasks[3:])), [])
 
 
 class EvidenceBlockTests(unittest.TestCase):

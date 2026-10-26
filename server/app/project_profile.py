@@ -18,9 +18,9 @@ from .plan_merge import entry_owner
 from .user_profile import LearnedPattern, PlanningPreferences
 
 # Planning preferences a project may override.  Anything else stays a user trait.
-OVERRIDE_KEYS = ("blockMinutes", "dailyPlannedMinutes", "bufferPercent", "starterMinutes", "recoveryPreference")
+OVERRIDE_KEYS = ("blockMinutes", "dailyPlannedMinutes", "starterMinutes", "recoveryPreference")
 FIELD_LABELS = {
-    "blockMinutes": "집중 구간", "dailyPlannedMinutes": "하루 계획량", "bufferPercent": "여유분",
+    "blockMinutes": "집중 구간", "dailyPlannedMinutes": "하루 계획량",
     "starterMinutes": "시작 행동", "recoveryPreference": "복구 방식",
 }
 
@@ -34,7 +34,6 @@ class ProjectPreferenceValues(BaseModel):
     model_config = ConfigDict(extra="forbid")
     blockMinutes: int = Field(default=None, ge=1, le=180, strict=True)
     dailyPlannedMinutes: int | None = Field(default=None, ge=1, le=720, strict=True)
-    bufferPercent: int = Field(default=None, ge=0, le=90, strict=True)
     starterMinutes: int | None = Field(default=None, ge=1, le=180, strict=True)
     recoveryPreference: Literal["replan", "reduce", "continue", "abandon", "unknown"] = None
 

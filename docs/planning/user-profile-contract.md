@@ -134,7 +134,6 @@ execution_state / user_execution_state 의 JSON document
 |---|---|---|---|
 | `blockMinutes` | integer | 필수 | 최솟값 1, 최댓값 180 |
 | `breakMinutes` | integer | 필수 | 최솟값 0, 최댓값 60 |
-| `bufferPercent` | integer | 필수 | 최솟값 0, 최댓값 90 |
 | `dailyPlannedMinutes` | integer / null | null | 최솟값 1, 최댓값 720 |
 | `scheduleStyle` | `time_blocks`, `flexible_queue` | 필수 | — |
 | `scheduleStyleSource` | `user`, `rule`, `legacy` | "legacy" | — |
@@ -151,8 +150,8 @@ execution_state / user_execution_state 의 JSON document
   복구도 이 값을 집중 시간으로 쓴다(따로 묻지 않음).
   dailyMinutes가 있으면 그 값과 하루 계획량을 넘지 않는다. distraction 응답은 길이를 바꾸지 않고 전략 문장으로만 반영한다.
   이후 길이는 실행 기록으로 학습해 조정한다.
-- breakMinutes=5. 불규칙/모름 또는 overplanning이면 bufferPercent=40, 나머지는 25다.
-- dailyMinutes가 있으면 dailyPlannedMinutes=int(dailyMinutes × (100-bufferPercent)/100), 없으면 null이다. 예산이 있으면 집중 구간과 시작 작업을 그 안으로 줄인다.
+- breakMinutes=5. 비워 두는 비율(예전 bufferPercent)은 없다(10/19): 사용자가 고른 가용 시간은 모두 계획에 쓴다. 예전 프로필의 값은 읽을 때 지운다.
+- dailyMinutes가 있으면 dailyPlannedMinutes=dailyMinutes, 없으면 null이다. 예산이 있으면 집중 구간과 시작 작업을 그 안으로 줄인다.
 - starting 응답이 있으면 starterMinutes=min(5, blockMinutes), 없으면 null이다.
 - recoveryPreference는 설문 recovery를 따른다. scheduleStyle 명시 선택은 user, 규칙으로 계산한 값은 rule, 기존 값의 출처 보완은 legacy다.
 - 초안의 선호 status는 provisional이며 사용자가 프로필을 확정하면 confirmed가 된다.
@@ -275,7 +274,6 @@ save_profile_draft가 제출마다 새 원본을 추가하고 profileDraft.surve
   "planningPreferences": {
     "blockMinutes": 25,
     "breakMinutes": 5,
-    "bufferPercent": 25,
     "dailyPlannedMinutes": null,
     "scheduleStyle": "flexible_queue",
     "scheduleStyleSource": "user",
@@ -284,7 +282,7 @@ save_profile_draft가 제출마다 새 원본을 추가하고 profileDraft.surve
     "status": "confirmed"
   },
   "insights": {
-    "summary": "답변을 바탕으로 만든 첫 실행 프로필입니다. 제안한 시간과 여유분은 실제 실행 후 조정할 초기값입니다.",
+    "summary": "답변을 바탕으로 만든 첫 실행 프로필입니다. 제안한 집중 시간은 실제 실행 후 조정할 초기값입니다.",
     "strategies": [
       {
         "action": "첫 집중 구간을 25분으로 시도해 보세요.",
@@ -441,7 +439,7 @@ state.projectProfiles[projectId] = {
 state.projectProfileRevisions = [{projectId, version, projectProfileId, source, sourceId, createdAt, snapshot}]
 ```
 
-- 덮을 수 있는 키: `blockMinutes`, `dailyPlannedMinutes`, `bufferPercent`, `starterMinutes`, `recoveryPreference`.
+- 덮을 수 있는 키: `blockMinutes`, `dailyPlannedMinutes`, `starterMinutes`, `recoveryPreference`. (`bufferPercent`는 10/19에 없앰, 예전 값은 읽을 때 지움)
   `dailyPlannedMinutes`·`starterMinutes`의 null은 "이 프로젝트에서는 없음"이다. 키가 없으면 사용자 프로필 값을 쓴다.
 - `PUT /api/execution/projects/{projectId}/profile` `{revision, overrides}`: 사용자가 정한 값(declared) 전체를 바꾼다.
   같은 키의 학습값은 사용자가 정한 값으로 대체하고 그 패턴은 superseded, 다른 키의 학습값은 유지한다.

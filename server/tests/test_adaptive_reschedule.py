@@ -33,29 +33,35 @@ def reschedule_state(free, *, deadline=None, within_plan=False, remaining=None, 
 
 
 class FillTests(unittest.TestCase):
-    def test_uses_short_window_first_then_continues_later(self):
-        # 60 minutes of work, 50 free today: do 50 today and 10 tomorrow, not all 60 tomorrow.
+    def test_keeps_the_work_whole_when_a_later_window_holds_it(self):
+        # 60 minutes of work, 50 free today: all 60 tomorrow, not 50 today and a 10-minute sliver.
         placements, left = fill(60, windows(("07T18:00", "07T18:50"), ("08T18:00", "08T20:00")),
-                                min_piece=5, max_piece=None, gap=0)
+                                min_piece=5, gap=0)
 
-        self.assertEqual(placements, windows(("07T18:00", "07T18:50"), ("08T18:00", "08T18:10")))
+        self.assertEqual(placements, windows(("08T18:00", "08T19:00")))
         self.assertEqual(left, 0)
 
-    def test_time_blocks_cap_each_piece_and_leave_breaks(self):
-        placements, _ = fill(60, windows(("07T18:00", "07T20:00")), min_piece=5, max_piece=25, gap=5)
+    def test_work_no_window_holds_is_spread_in_halves_at_least(self):
+        # No window holds 70: two even parts, not 40 + a 30 that would be under half.
+        placements, left = fill(70, windows(("07T18:00", "07T18:40"), ("08T18:00", "08T18:40")), min_piece=5, gap=5)
+        self.assertEqual([round((e - s).total_seconds() / 60) for s, e in placements], [35, 35])
+        self.assertEqual(left, 0)
 
-        self.assertEqual(placements, windows(("07T18:00", "07T18:25"), ("07T18:30", "07T18:55"), ("07T19:00", "07T19:10")))
+        # A window under half of the work is skipped; what does not fit carries over.
+        placements, left = fill(60, windows(("07T18:00", "07T18:25"), ("08T18:00", "08T18:40")), min_piece=5, gap=5)
+        self.assertEqual((placements, left), (windows(("08T18:00", "08T18:40")), 20))
 
     def test_never_leaves_a_sliver_behind(self):
-        placements, left = fill(52, windows(("07T18:00", "07T18:50"), ("08T18:00", "08T19:00")),
-                                min_piece=5, max_piece=None, gap=0)
+        # No window holds all 52: spread, but the last piece is at least half of the work.
+        placements, left = fill(52, windows(("07T18:00", "07T18:50"), ("08T18:00", "08T18:30")),
+                                min_piece=5, gap=0)
 
-        self.assertEqual([round((e - s).total_seconds() / 60) for s, e in placements], [47, 5])
+        self.assertEqual([round((e - s).total_seconds() / 60) for s, e in placements], [26, 26])
         self.assertEqual(left, 0)
 
     def test_skips_windows_too_short_and_reports_what_did_not_fit(self):
         placements, left = fill(60, windows(("07T18:00", "07T18:03"), ("07T19:00", "07T19:30")),
-                                min_piece=5, max_piece=None, gap=0)
+                                min_piece=5, gap=0)
 
         self.assertEqual(placements, windows(("07T19:00", "07T19:30")))
         self.assertEqual(left, 30)
@@ -68,7 +74,8 @@ class FillTests(unittest.TestCase):
 
 
 class RescheduleGraphTests(unittest.TestCase):
-    def test_remaining_work_fills_earliest_free_time(self):
+    def test_remaining_work_goes_whole_into_the_earliest_slot_that_holds_it(self):
+        # 50 minutes free today and 2 hours tomorrow: all 60 tomorrow, not 50 today and a 10-minute sliver.
         state = reschedule_state([("07T18:00", "07T18:50"), ("08T18:00", "08T20:00")])
 
         result = build_adaptive_planner_graph(never_generate).invoke(state)
@@ -77,11 +84,20 @@ class RescheduleGraphTests(unittest.TestCase):
         self.assertEqual(result["approval_status"], "waiting")
         draft = result["draft"]
         self.assertEqual(draft["kind"], "reschedule")
+        self.assertEqual([(t["start"], t["minutes"]) for t in draft["tasks"]], [("2030-01-08T18:00", 60)])
+        self.assertEqual((draft["tasks"][0]["title"], draft["tasks"][0]["done_when"]), ("발표 자료 초안 작성", "슬라이드 초안이 완성됨"))
+        self.assertIn("01/08 18:00~19:00(60분)", draft["applied_reasons"][0])
+
+    def test_without_one_slot_for_it_work_is_spread_without_slivers(self):
+        state = reschedule_state([("07T18:00", "07T18:50"), ("08T18:00", "08T18:40")])
+
+        draft = build_adaptive_planner_graph(never_generate).invoke(state)["draft"]
+
+        # 50 + 10 would leave a sliver; the first part gives up some time so the second is workable.
         self.assertEqual([(t["start"], t["minutes"]) for t in draft["tasks"]],
-                         [("2030-01-07T18:00", 50), ("2030-01-08T18:00", 10)])
+                         [("2030-01-07T18:00", 30), ("2030-01-08T18:00", 30)])
         self.assertEqual(draft["tasks"][0]["title"], "발표 자료 초안 작성 (1/2)")
         self.assertEqual(draft["tasks"][1]["done_when"], "슬라이드 초안이 완성됨")
-        self.assertIn("01/07 18:00~18:50(50분)", draft["applied_reasons"][0])
 
     def test_user_estimate_of_remaining_work_is_used(self):
         state = reschedule_state([("07T18:00", "07T20:00")], remaining=20)
@@ -90,12 +106,27 @@ class RescheduleGraphTests(unittest.TestCase):
 
         self.assertEqual([t["minutes"] for t in result["draft"]["tasks"]], [20])
 
-    def test_time_blocks_pieces_respect_focus(self):
+    def test_moving_keeps_the_work_in_one_slot_even_past_a_focus_session(self):
+        # Moving is time routing: 60 minutes of the same work stay one slot for a 25-minute focus, not 20 + 20 + 20.
+        # If it fails again, the shrink cuts it by content.
         state = reschedule_state([("07T18:00", "07T20:00")], style="time_blocks", focus=25)
 
         result = build_adaptive_planner_graph(never_generate).invoke(state)
 
-        self.assertEqual([t["minutes"] for t in result["draft"]["tasks"]], [25, 25, 10])
+        self.assertEqual([(t["start"], t["minutes"]) for t in result["draft"]["tasks"]], [("2030-01-07T18:00", 60)])
+        self.assertEqual(result["approval_status"], "waiting")
+
+        # Approval rechecks the same placement and accepts the moved size as is.
+        writes = []
+
+        class Writer:
+            def apply_recovery(self, **kwargs):
+                writes.append(kwargs)
+
+        review = {**state, "request": "review", "decision": "approve", "strategy": "reschedule",
+                  "pending_draft": result["draft"], "base_revision": 1}
+        self.assertEqual(build_adaptive_planner_graph(never_generate, plan_writer=Writer()).invoke(review)["approval_status"], "approved")
+        self.assertEqual(len(writes), 1)
 
     def test_overflow_moves_to_next_plan_when_deadline_allows(self):
         state = reschedule_state([("07T18:00", "07T18:40")], deadline="2030-01-20")
@@ -169,7 +200,7 @@ class RescheduleGraphTests(unittest.TestCase):
         self.assertEqual(result["fallback"]["missing_fields"], ["schedule_context"])
 
     def test_approval_rechecks_placement_against_fresh_free_time(self):
-        state = reschedule_state([("07T18:00", "07T18:50"), ("08T18:00", "08T20:00")])
+        state = reschedule_state([("07T18:00", "07T19:30"), ("08T18:00", "08T20:00")])
         draft = build_adaptive_planner_graph(never_generate).invoke(state)["draft"]
         writes = []
 

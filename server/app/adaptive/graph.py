@@ -30,7 +30,7 @@ from langgraph.graph import END, StateGraph
 from pydantic import ValidationError
 
 from .ports import GenerationUnavailableError, PlanConflictError, PlanValidationError, PlanWriter
-from .scheduling import fill, longest_window, parse_windows
+from .scheduling import fill, longest_window, parse_windows, room_for
 from .state import (
     CheckInSignalModel,
     CurrentTaskModel,
@@ -413,22 +413,23 @@ def _format(start: Any) -> str:
 
 def _plan_reschedule(policy: RecoveryPolicy):
     def node(state: PlannerState) -> dict[str, Any]:
-        """Move the remaining work into free time, earliest first, without wasting any.
+        """Move the remaining work, unchanged, into free time: whole, never in slivers.
 
         If it all fits (or may spill into the next plan), the draft is built by
         code.  If the deadline makes that impossible, the LLM is asked to cut the
-        scope to the free time that is left (fit_deadline).
+        scope to all the free time that is left (fit_deadline).
         """
         task = state["current_task"]
         schedule = state["schedule_context"]
         windows = parse_windows(schedule["free_windows"])
         remaining = remaining_minutes(state)
         placements, left = fill(
-            remaining, windows,
-            min_piece=policy.min_task_minutes, max_piece=piece_cap(state), gap=gap_minutes(state),
+            remaining, windows, min_piece=policy.min_task_minutes, gap=gap_minutes(state),
         )
         placed = remaining - left
         if left and schedule["deadline_within_plan"]:
+            placed = room_for(remaining, windows, min_piece=policy.min_task_minutes, max_piece=piece_cap(state),
+                              gap=gap_minutes(state))
             if placed < policy.min_task_minutes:
                 return {
                     "route": "request_information",
@@ -461,7 +462,8 @@ def _plan_reschedule(policy: RecoveryPolicy):
         ]
         # Reasons are written by code from the placement, so they are always true.
         spots = ", ".join(f"{_format(s)}~{e.strftime('%H:%M')}({t['minutes']}분)" for (s, e), t in zip(placements, tasks))
-        reasons = [f"남은 {remaining}분을 가장 이른 빈 시간부터 채웠습니다: {spots}" if tasks
+        how = "한 번에 할 수 있는 가장 이른 빈 시간에 넣었습니다" if count == 1 else f"{count}번으로 나눠 빈 시간에 넣었습니다"
+        reasons = [f"남은 {remaining}분을 {how}: {spots}" if tasks
                    else f"이번 계획에는 남은 {remaining}분을 넣을 빈 시간이 없습니다."]
         if left:
             reasons.append(f"넣지 못한 {left}분은 다음 계획으로 넘깁니다.")
