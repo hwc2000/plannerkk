@@ -9,7 +9,7 @@ from .adaptive.context import to_profile_change_context
 from .adaptive.full_plan_generator import LLMFullPlanGenerator
 from .adaptive.graph import build_adaptive_planner_graph
 from .adaptive.personalization import day_slots, plan_policy
-from .execution_store import ExecutionStore, ConflictError, empty_state
+from .execution_store import ExecutionStore, ConflictError, empty_state, this_week
 from .execution_profile import generate_profile, validate_insights, SCHEMA
 from .execution_llm import ExecutionLLM
 from .execution_learning import refine_new_proposals
@@ -292,6 +292,7 @@ def execution_router(store=None, llm=None):
             if state["settings"]["slots"] != value["slots"]:
                 resolve_plan_draft(state, "keep_current_plan")
             state["settings"] = value
+            state["slotsWeek"] = this_week()
         return change(request.revision, update)
 
     def save_unavailable(revision, key, value, events):

@@ -58,6 +58,17 @@ class AvailabilityTests(unittest.TestCase):
     def fixed(self, *items, status=200):
         return self.call("/api/execution/fixed-schedule", status=status, method="put", items=list(items))
 
+    def test_the_hours_to_plan_in_are_chosen_again_every_week(self):
+        saved = self.client.get("/api/execution").json()
+        self.assertEqual(len(saved["settings"]["slots"]), 21)
+        with mock.patch("server.app.execution_store.this_week", return_value="2099-01-05"), \
+                mock.patch("server.app.execution_api.this_week", return_value="2099-01-05"):
+            next_week = self.client.get("/api/execution").json()
+            self.assertEqual(next_week["settings"]["slots"], [])
+            self.assertEqual(next_week["settings"]["view"], "timeline")
+            self.call("/api/execution/settings", method="put", settings={"slots": [{"day": 0, "hour": 9}], "view": "timeline"})
+            self.assertEqual(self.client.get("/api/execution").json()["settings"]["slots"], [{"day": 0, "hour": 9}])
+
     def test_plans_never_use_the_fixed_schedule(self):
         # Monday and Tuesday 18:00-19:30 is class; the weekly grid still has those hours ticked.
         self.fixed({"days": [0, 1], "start": "18:00", "end": "19:30"})

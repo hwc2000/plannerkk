@@ -47,7 +47,7 @@ REASON_NAMES = {
 # What each card does, in the words code uses to talk about it.
 CARD_NAMES = {
     "plan": "이번 주 계획 초안 만들기", "adjust": "이번 주 계획 조정",
-    "settings": "매주 계획할 시간 바꾸기", "project_settings": "이 프로젝트 방식 바꾸기",
+    "settings": "이번 주 계획할 시간 바꾸기", "project_settings": "이 프로젝트 방식 바꾸기",
 }
 
 
