@@ -20,18 +20,7 @@
 .project-dot { display: inline-block; flex: none; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
 .execution-task-project { display: flex; align-items: center; color: var(--muted); font-size: 11px; font-weight: 400; }
 
-.planner-workspace { --thread-color: var(--violet); display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 16px; align-items: start; margin: 20px 0; }
-.planner-threads { position: sticky; top: 20px; display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 17px; background: rgba(255,255,255,.85); }
-.planner-threads-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 10px; font-size: 13px; }
-.planner-new { display: inline-flex; align-items: center; gap: 4px; padding: 6px 8px; border-radius: 8px; background: #f0f2ef; color: #4e5954; font-size: 11px; font-weight: 700; }
-.planner-thread { --item-color: var(--violet); position: relative; display: flex; align-items: flex-start; gap: 6px; width: 100%; padding: 10px; border-radius: 10px; background: transparent; text-align: left; color: var(--ink); border-left: 3px solid transparent; }
-.planner-thread:hover { background: #f4f5f2; }
-.planner-thread.active { background: color-mix(in srgb, var(--item-color) 12%, white); border-left-color: var(--item-color); }
-.planner-thread .project-dot { margin-top: 5px; }
-.planner-thread span { display: grid; gap: 3px; min-width: 0; }
-.planner-thread b { font-size: 13px; }
-.planner-thread small { overflow: hidden; color: var(--muted); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
-.planner-badge { position: absolute; top: 12px; right: 10px; width: 7px; height: 7px; border-radius: 50%; background: var(--item-color); }
+.planner-workspace { --thread-color: var(--violet); margin: 20px 0; }
 .planner-chat { margin: 0; border-top: 4px solid var(--thread-color); }
 .planner-chat-head { display: flex; align-items: flex-start; gap: 8px; }
 .planner-chat-head .project-dot { width: 12px; height: 12px; margin-top: 15px; }
@@ -42,4 +31,32 @@
 .planner-chat .primary-button { background: var(--thread-color); }
 .planner-chat .execution-workspace input[type=checkbox], .planner-chat input[type=checkbox] { accent-color: var(--thread-color); }
 .planner-action { border-color: var(--thread-color) !important; background: color-mix(in srgb, var(--thread-color) 7%, white) !important; }
-@media (max-width: 760px) { .planner-workspace { grid-template-columns: 1fr; } .planner-threads { position: static; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); overflow-x: auto; } .planner-threads-head { grid-column: 1 / -1; } }
+.fixed-list { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
+.fixed-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: white; font-size: 13px; }
+.planner-skill { display: block; margin-top: 6px; font-size: 11px; opacity: .65; }
+.home-project-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.home-project { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+.home-project:hover { border-color: var(--violet); }
+.home-project-open { display: flex; align-items: flex-start; gap: 4px; padding: 0; background: transparent; text-align: left; cursor: pointer; }
+.checkin-start { justify-self: start; }
+.home-project .project-dot { margin-top: 6px; }
+.home-project span { display: grid; gap: 4px; min-width: 0; }
+.home-project b { font-size: 14px; }
+.home-project small { color: var(--muted); font-size: 12px; }
+.checkin { display: grid; gap: 10px; }
+.checkin-tasks { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.checkin-tasks li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-radius: 10px; background: white; }
+.checkin-tasks li > span:first-child { display: grid; gap: 2px; }
+.checkin-tasks small { color: var(--muted); font-size: 11px; }
+.checkin-choices { display: flex; gap: 6px; flex-wrap: wrap; }
+.checkin-choices button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; background: white; font-size: 12px; cursor: pointer; }
+.checkin-choices button.chosen { border-color: var(--thread-color); background: var(--thread-color); color: white; }
+.checkin-optional { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: white; font-size: 12px; }
+.checkin-optional ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+/* Errors and notices stay in view wherever the user clicked. */
+.execution-status { position: sticky; top: 8px; z-index: 3; }
+.about-me { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.about-me li { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.about-me li strong { font-size: 12px; color: var(--muted); }
+.about-me li span { font-size: 14px; }
+.about-me li.empty span { color: var(--muted); font-size: 12px; }

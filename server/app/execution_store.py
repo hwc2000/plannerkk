@@ -4,20 +4,40 @@ import os
 import sqlite3
 from .user_profile import normalize_profile_state
 from contextlib import closing
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+KST = timezone(timedelta(hours=9))
 
 
 class ConflictError(ValueError):
     pass
 
 
+def this_week(today: date | None = None) -> str:
+    """Monday of the current week in Korea: the hours to plan in are chosen anew every week."""
+    today = today or datetime.now(KST).date()
+    return (today - timedelta(days=today.weekday())).isoformat()
+
+
 def empty_state():
     return {"revision": 0, "profile": None, "profileDraft": None,
             "settings": {"slots": [], "view": "timeline"}, "plan": None, "planDraft": None,
+            # The week ``settings.slots`` were chosen for; another week starts with none.
+            "slotsWeek": None,
+            # User-level time that cannot be planned in, shared by every project (availability.py).
+            "fixedSchedule": [], "blockedTimes": [],
             "_planDraftRecordId": None,
             "recoveryDrafts": {}, "executionRecords": [], "profileUpdateProposals": [],
-            "surveyResponses": [], "profileRevisions": [], "memories": [], "profileConversations": [],
-            "projectProfiles": {}, "projectProfileRevisions": [], "plannerThreads": {}}
+            "surveyResponses": [], "profileRevisions": [], "memories": [],
+            "projectProfiles": {}, "projectProfileRevisions": [], "plannerThreads": {},
+            # Projects the user ended, with what carried to the user profile (project_close.py).
+            "closedProjects": {},
+            # How a project's plans felt (load, notes) from check-ins; only that project uses it,
+            # and it goes when the project ends (planner_checkin.py).
+            "projectFeedback": {},
+            # What the planner learned about the user from check-ins, and when it last asked (user_insights.py).
+            "userInsights": {}, "insightAsks": {}}
 
 
 class ExecutionStore:
@@ -64,4 +84,7 @@ class ExecutionStore:
 
     def _decode(self, row):
         state = {**empty_state(), **json.loads(row[0])} if row else empty_state()
+        if state["slotsWeek"] != this_week():
+            # Last week's hours say nothing about this week: the user picks them again.
+            state["settings"] = {**state["settings"], "slots": []}
         return normalize_profile_state(state, self.user_id)

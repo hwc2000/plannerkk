@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from ..execution_api import BusyEvent, Slot
 from ..execution_service import save_execution_record, set_recovery_action
+from ..availability import busy_times
 from ..execution_scheduler import availability_windows
 from ..execution_store import ConflictError, ExecutionStore
 from .ports import PlanConflictError
@@ -36,13 +37,11 @@ def execution_context_from_profile(profile: Mapping[str, Any] | None, _records: 
     if not profile:
         return {}
     prefs = profile["planningPreferences"]
-    # blockMinutes falls back to a default when the user answered "모름";
-    # only use it when the user actually gave a focus time.
-    known_focus = (profile.get("declaredFacts", profile.get("facts", {})).get("focusMinutes") is not None
-                   or "blockMinutes" in (profile.get("projectOverrides") or {}))
+    # When the user did not know their focus time, blockMinutes is the start value
+    # (shown as a default in plan reasons); recovery uses it rather than stopping to ask.
     return {
         "schedule_style": prefs.get("scheduleStyle"),
-        "focus_minutes": prefs["blockMinutes"] if (known_focus or profile.get("learnedPatterns")) else None,
+        "focus_minutes": prefs["blockMinutes"],
         "break_minutes": prefs.get("breakMinutes"),
         "recovery_preference": prefs.get("recoveryPreference"),
     }
@@ -117,10 +116,11 @@ def schedule_context(
     """Free time left in the plan for moving ``task_id``.
 
     Availability slots minus calendar events (sent by the client, which keeps
-    them) minus every plan entry, including the task's own slot: the user just
-    said that time did not work.  Times proposed by other tasks' waiting drafts
-    are held too, so two drafts never offer the same free time.  The plan's
-    buffer is not held back: it exists to absorb exactly this kind of recovery.
+    them), minus the user's fixed schedule and blocked hours, minus every plan
+    entry, including the task's own slot: the user just said that time did not
+    work.  Times proposed by other tasks' waiting drafts are held too, so two
+    drafts never offer the same free time.  The plan's buffer is not held back:
+    it exists to absorb exactly this kind of recovery.
     """
     plan = state["plan"]
     entry = next(e for e in plan["entries"] if e["id"] == task_id)
@@ -129,7 +129,7 @@ def schedule_context(
     within_plan = deadline is not None and deadline <= plan["endDate"]
     held = [t for other, d in drafts_for_plan(state).items() if other != task_id
             for t in d["draft"]["tasks"] if t.get("start")]
-    busy = list(events) + [
+    busy = list(events) + busy_times(state, date.fromisoformat(plan["startDate"])) + [
         BusyEvent(date=e["start"][:10], startTime=e["start"][11:], endTime=e["end"][11:])
         for e in [*plan["entries"], *held]
     ]
@@ -185,11 +185,14 @@ def close_all_drafts(state: dict[str, Any], recovery_action: str) -> None:
 
 
 def _entry(entry: Mapping[str, Any], task: Mapping[str, Any], start: datetime, end: datetime, depth: int) -> dict[str, Any]:
+    # The pieces stay in the task's project with the settings it was planned with, so a
+    # shared week keeps them apart and their records still count for that project.
+    owner = {key: entry[key] for key in ("projectId", "projectProfileId", "notBefore") if key in entry}
     return {
         "id": str(uuid4()), "kind": "task", "title": task["title"], "minutes": task["minutes"],
         "doneWhen": task["done_when"], "dueDate": entry["dueDate"],
         "start": start.isoformat(timespec="minutes"), "end": end.isoformat(timespec="minutes"),
-        "completed": False, "recoveryDepth": depth,
+        "completed": False, "recoveryDepth": depth, **owner,
     }
 
 
@@ -230,6 +233,7 @@ class LocalPlanWriter:
                 plan.setdefault("pendingTasks", []).append({
                     "title": entry["title"], "minutes": draft["carry_over_minutes"], "doneWhen": entry["doneWhen"],
                     "dueDate": entry["dueDate"], "reason": CARRY_OVER_REASON,
+                    **({"projectId": entry["projectId"]} if entry.get("projectId") else {}),
                 })
             close_draft(state, task_id, strategy)
 

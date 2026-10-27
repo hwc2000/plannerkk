@@ -24,9 +24,8 @@ export function ProjectForm({ editor, projects, milestones, onClose, onSave }: P
   const [priority, setPriority] = useState<Project['priority']>(
     existing && 'priority' in existing ? existing.priority : 'medium',
   )
-  const [projectStatus, setProjectStatus] = useState<ProjectStatus>(
-    existing && 'goal' in existing ? existing.status : 'active',
-  )
+  // Ending a project happens in its planner conversation, where its habits move to the user profile.
+  const projectStatus: ProjectStatus = existing && 'goal' in existing ? existing.status : 'active'
   const [milestoneStatus, setMilestoneStatus] = useState<MilestoneStatus>(
     existing && 'estimatedHours' in existing ? existing.status : 'todo',
   )
@@ -97,15 +96,8 @@ export function ProjectForm({ editor, projects, milestones, onClose, onSave }: P
                   <option value="low">낮음</option>
                 </select>
               </label>
-              <label>
-                상태
-                <select value={projectStatus} onChange={(event) => setProjectStatus(event.target.value as ProjectStatus)}>
-                  <option value="active">진행 중</option>
-                  <option value="paused">중지</option>
-                  <option value="completed">완료</option>
-                </select>
-              </label>
             </div>
+            <p className="execution-help">프로젝트를 끝낼 때는 플래너의 프로젝트 대화에서 ‘프로젝트 끝내기’를 눌러 주세요. 배운 습관이 기본 프로필로 넘어가요.</p>
           </>
         )}
 

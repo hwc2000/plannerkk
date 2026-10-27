@@ -18,14 +18,14 @@ APP = {"id": "app", "title": "앱 개발", "goal": "로그인 화면", "startDat
 class FakeLLM:
     def __init__(self):
         self.chat_calls = []
-        self.chat_reply = {"reply": "좋아요", "action": "none", "goal": None, "startDate": None, "slots": None}
+        self.route, self.replies = {"skill": "small_talk", "lookups": [], "reply": "좋아요"}, {}
 
     async def generate(self, **kwargs):
         if kwargs["name"] == "execution_profile":
             return generate_profile(ANSWERS)["insights"]
-        if kwargs["name"] == "planner_conversation":
+        if kwargs["name"].startswith("planner_"):
             self.chat_calls.append(kwargs)
-            return self.chat_reply
+            return self.route if kwargs["name"] == "planner_route" else self.replies[kwargs["name"]]
         title = (kwargs["context"]["project"] or {"title": "자유"})["title"]
         return {"tasks": [{"title": f"{title} 작업 {i}", "minutes": 20, "doneWhen": "완료", "dueDate": None, "projectId": None}
                           for i in range(2)]}
@@ -103,9 +103,11 @@ class ProjectThreadTests(unittest.TestCase):
 
     def test_plan_card_uses_the_active_week(self):
         self.plan(ESSAY, "에세이 초안")
-        self.llm.chat_reply = {"reply": "정리했어요", "action": "plan", "goal": "로그인", "startDate": None, "slots": None}
+        self.llm.route = {"skill": "plan_create", "lookups": [], "reply": None}
+        self.llm.replies = {"planner_plan_create": {"reply": "정리했어요", "ready": True, "goal": "로그인", "startDate": None}}
         state = self.call("/api/execution/chat/message", text="로그인 화면 만들래", consent=True, project=APP)
         self.assertEqual(state["plannerThreads"]["app"]["action"]["payload"], {"goal": "로그인", "startDate": "2030-01-07"})
+        self.assertGreater(state["plannerThreads"]["app"]["action"]["freeMinutes"], 0)
         self.assertEqual(state["plannerThreads"]["app"]["action"]["revision"], state["revision"])
 
 

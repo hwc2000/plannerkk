@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from server.app.adaptive.llm_generator import STYLE_INSTRUCTIONS
 from server.app.execution_llm import LLMUnavailableError
-from server.app.execution_profile import generate_profile
+from server.app.execution_profile import UNKNOWN_FOCUS_START, generate_profile
 from server.app.execution_store import ExecutionStore
 from server.app.main import create_app
 from server.tests.test_execution import ANSWERS
@@ -42,7 +42,8 @@ class FakeLLM:
             return generate_profile(ANSWERS)["insights"]
         if kwargs["name"] == "execution_tasks":
             self.plan_calls.append(kwargs)
-            count = min(4, max(1, kwargs["context"]["budgetMinutes"] // self.plan_minutes))  # stays within the budget
+            # Three tasks (18:00~19:10), leaving 19:15~20:00 free for the recovery cases below.
+            count = min(3, max(1, kwargs["context"]["budgetMinutes"] // self.plan_minutes))
             return {"tasks": [{"title": f"연습문제 {i} 풀기", "minutes": self.plan_minutes, "doneWhen": "풀이 기록", "dueDate": self.plan_due} for i in range(count)]}
         self.shrink_calls.append(kwargs)
         reply = self.shrink_replies.pop(0) if self.shrink_replies else SHRINK
@@ -459,15 +460,18 @@ class AdaptiveApiTests(unittest.TestCase):
         self.assertEqual(data["result"]["fallback"]["source"], "generation_unavailable")
         self.assertIsNone(data["recoveryDraft"])
 
-    def test_unknown_focus_is_asked_not_defaulted(self):
-        self.llm.plan_minutes = 15  # the profile's default block when focus is unknown
+    def test_unknown_focus_recovers_with_the_start_value(self):
         task = self.setup_plan({**PLAIN_ANSWERS, "regularity": "regular", "focusMinutes": None})
 
         data = self.check_in(task)
 
-        self.assertEqual(data["result"]["approvalStatus"], "needs_input")
-        self.assertEqual(data["result"]["fallback"]["missingFields"], ["execution_context.focus_minutes"])
-        self.assertEqual(self.llm.shrink_calls, [])
+        # The start value stands in for the unknown focus time instead of stopping to ask.
+        self.assertEqual(data["result"]["approvalStatus"], "waiting")
+        self.assertEqual(len(self.llm.shrink_calls), 1)
+        self.assertLessEqual(self.llm.shrink_calls[0]["context"]["maxTaskMinutes"], UNKNOWN_FOCUS_START)
+        plan_context = self.llm.plan_calls[0]["context"]
+        self.assertEqual((plan_context["maxBlockMinutes"], plan_context["blockIsStartValue"]), (UNKNOWN_FOCUS_START, True))
+        self.assertIn("무리 없이 끝낼 수 있는 분량", self.llm.plan_calls[0]["instructions"])
 
     def test_guards(self):
         task = self.setup_plan()

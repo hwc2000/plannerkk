@@ -8,6 +8,7 @@ import { MemoryView } from './features/memories/MemoryView'
 import { ProjectForm } from './features/projects/ProjectForm'
 import { ProjectsView } from './features/projects/ProjectsView'
 import { TODAY } from './shared/constants'
+import { SEED_CLEANUP_KEY, withoutOldSeeds } from './shared/oldSeeds'
 import { ExecutionView } from './features/execution/ExecutionView'
 import { executionApi, planCalendarEvents } from './features/execution/api'
 import type {
@@ -45,7 +46,11 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
     firstRender.current = false
     persistRef.current({ projects, milestones, events, memories })
   }, [projects, milestones, events, memories, user])
-  const [activeView, setActiveView] = useState<View>('portfolio')
+  // Home is the week on the calendar; a user without a profile is sent to the survey first.
+  const [activeView, setActiveView] = useState<View>('calendar')
+  const [activeProjectId, setActiveProjectId] = useState('')
+  // A project opened from the home screen's check-in prompt starts its check-in.
+  const [checkInFor, setCheckInFor] = useState('')
   const [selectedDate, setSelectedDate] = useState(TODAY)
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '')
   const [editor, setEditor] = useState<Editor>(null)
@@ -58,6 +63,18 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
     catch (error) { setExecutionError(error instanceof Error ? error.message : '실행 프로필을 불러오지 못했습니다.') }
   }
   useEffect(() => { void loadExecution() }, [])
+  const needsSurvey = !!execution && !execution.profile && !execution.profileDraft
+  useEffect(() => { if (needsSurvey) setActiveView('execution') }, [needsSurvey])
+  // Once per browser and account: drop the sample data older versions saved, now that the planner can tell what was used.
+  const cleanupKey = user ? `${SEED_CLEANUP_KEY}:${user.id}` : SEED_CLEANUP_KEY
+  useEffect(() => {
+    if (!execution || localStorage.getItem(cleanupKey)) return
+    const clean = withoutOldSeeds({ projects, milestones, events, memories }, execution)
+    localStorage.setItem(cleanupKey, new Date().toISOString())
+    if (!clean.removed.length) return
+    setProjects(clean.projects); setMilestones(clean.milestones); setEvents(clean.events); setMemories(clean.memories)
+    setNotice(`예전 버전이 넣어 둔 ${clean.removed.join(', ')}을 지웠어요. 계획에 더는 쓰이지 않아요.`)
+  }, [execution, cleanupKey, projects, milestones, events, memories])
   const generatedEvents = planCalendarEvents(execution?.plan ?? null, projects)
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0]
 
@@ -70,6 +87,7 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
       item.projectId === projectId ? { ...item, projectId: undefined } : item
     )))
     setSelectedProjectId(projects.find((item) => item.id !== projectId)?.id ?? '')
+    if (activeProjectId === projectId && activeView === 'project') setActiveView('calendar')
     setNotice('프로젝트를 삭제했습니다.')
   }
 
@@ -82,6 +100,8 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
 
     if (kind === 'project') {
       const item = value as Project
+      // A new project opens its conversation, where its plan is asked for.
+      if (!projects.some((current) => current.id === item.id)) openProject(item.id)
       setProjects((items) => replace(items, item))
       setSelectedProjectId(item.id)
     }
@@ -91,6 +111,38 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
     setEditor(null)
     setNotice('저장했습니다.')
   }
+
+  function openProject(projectId: string, checkIn = false) {
+    setActiveProjectId(projectId)
+    setCheckInFor(checkIn ? projectId : '')
+    setActiveView('project')
+  }
+
+  const executionProps = execution && {
+    state: execution, onChange: setExecution, projects, milestones, events, memories,
+    onProjectStatus: (projectId: string, status: Project['status']) => setProjects(items => items.map(item => item.id === projectId ? { ...item, status } : item)),
+    onGoHome: () => setActiveView('calendar'),
+    onOpenProfile: () => setActiveView('execution'),
+    onOpenProject: openProject,
+    onCreateProject: () => setEditor({ kind: 'project' }),
+  }
+  const executionLoading = <section className="execution-card"><h1>내 플래너</h1>
+    <p role={executionError ? 'alert' : 'status'}>{executionError || '저장된 프로필을 불러오는 중입니다…'}</p>
+    {executionError && <button className="primary-button" onClick={() => { void loadExecution() }}>다시 불러오기</button>}
+  </section>
+  const calendarView = <CalendarView
+    projects={projects}
+    milestones={milestones}
+    events={[...events, ...generatedEvents]}
+    readOnlyEventIds={generatedEvents.map(event => event.id)}
+    onOpenExecution={() => document.getElementById('my-week')?.scrollIntoView({ behavior: 'smooth' })}
+    selectedDate={selectedDate}
+    setSelectedDate={setSelectedDate}
+    onCreateEvent={(date) => setEditor({ kind: 'event', date })}
+    onCreateMilestone={(projectId) => setEditor({ kind: 'milestone', projectId })}
+    onEditEvent={(eventId) => setEditor({ kind: 'event', id: eventId })}
+    onDeleteEvent={(eventId) => setEvents((items) => items.filter((item) => item.id !== eventId))}
+  />
 
   const entityForm = editor?.kind === 'project' || editor?.kind === 'milestone' ? (
     <ProjectForm
@@ -124,34 +176,26 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
       onCreateProject={() => setEditor({ kind: 'project' })}
       onShowSettingsNotice={() => setActiveView('execution')}
       projectCount={projects.length}
+      projects={projects}
+      endedProjectIds={Object.keys(execution?.closedProjects ?? {})}
+      activeProjectId={activeProjectId}
+      onOpenProject={openProject}
       user={user}
       onLogout={onLogout}
       notice={notice || saveError || ''}
       onCloseNotice={() => setNotice('')}
       editor={entityForm}
     >
-      {activeView === 'execution' && (execution ? <ExecutionView
-        state={execution} onChange={setExecution} projects={projects} milestones={milestones} events={events} memories={memories}
-        onCreateProject={() => setEditor({ kind: 'project' })}
-      /> : <section className="execution-card"><h1>실행 프로필과 주간 계획</h1>
-        <p role={executionError ? 'alert' : 'status'}>{executionError || '저장된 프로필을 불러오는 중입니다…'}</p>
-        {executionError && <button className="primary-button" onClick={() => { void loadExecution() }}>다시 불러오기</button>}
-      </section>)}
-      {activeView === 'calendar' && (
-        <CalendarView
-          projects={projects}
-          milestones={milestones}
-          events={[...events, ...generatedEvents]}
-          readOnlyEventIds={generatedEvents.map(event => event.id)}
-          onOpenExecution={() => setActiveView('execution')}
-          selectedDate={selectedDate}
-          setSelectedDate={setSelectedDate}
-          onCreateEvent={(date) => setEditor({ kind: 'event', date })}
-          onCreateMilestone={(projectId) => setEditor({ kind: 'milestone', projectId })}
-          onEditEvent={(eventId) => setEditor({ kind: 'event', id: eventId })}
-          onDeleteEvent={(eventId) => setEvents((items) => items.filter((item) => item.id !== eventId))}
-        />
-      )}
+      {activeView === 'execution' && (executionProps
+        ? <ExecutionView {...executionProps} section="profile" onProfileConfirmed={() => setActiveView('calendar')}/>
+        : executionLoading)}
+      {activeView === 'calendar' && (executionProps
+        ? <ExecutionView {...executionProps} section="home" calendar={calendarView}/>
+        : <>{executionLoading}{calendarView}</>)}
+      {activeView === 'project' && (executionProps
+        ? <ExecutionView {...executionProps} section="project" projectId={activeProjectId}
+            startCheckIn={checkInFor === activeProjectId} onCheckInStarted={() => setCheckInFor('')}/>
+        : executionLoading)}
 
       {activeView === 'portfolio' && (
         <ProjectsView

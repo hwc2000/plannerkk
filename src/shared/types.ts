@@ -1,4 +1,4 @@
-export type View = 'calendar' | 'memory' | 'portfolio' | 'execution'
+export type View = 'calendar' | 'memory' | 'portfolio' | 'execution' | 'project'
 
 export type ProjectStatus = 'active' | 'completed' | 'paused'
 export type MilestoneStatus = 'todo' | 'in_progress' | 'done' | 'deferred'
@@ -90,12 +90,13 @@ export type ExecutionProfile = {
   planningPreferences: {
     blockMinutes: number
     breakMinutes: number
-    bufferPercent: number
     dailyPlannedMinutes: number | null
     scheduleStyle: ScheduleStyle
     scheduleStyleSource?: "user" | "rule" | "legacy"
     recoveryPreference: string
     starterMinutes: number | null
+    /** When the user finishes work best; learned from records, 'unknown' until then. */
+    focusTime?: FocusTime
     status: string
   }
   insights: {
@@ -107,9 +108,17 @@ export type ExecutionProfile = {
 
 export type AvailabilitySlot = { day: number; hour: number }
 export type PlannerSettings = { slots: AvailabilitySlot[]; view: 'timeline' | 'checklist' }
+export type FocusTime = 'morning' | 'afternoon' | 'evening' | 'variable' | 'unknown'
+/** A weekly commitment (class, work): the same hours on each listed day, Monday = 0. Never planned in. */
+export type FixedBlock = { id: string; days: number[]; start: string; end: string }
+/** Hours taken out on one date; the end hour is not included. */
+export type BlockedTime = { id: string; date: string; startHour: number; endHour: number }
 export type ExecutionTask = { title: string; minutes: number; doneWhen: string; dueDate: string | null; projectId?: string | null }
 export type ExecutionEntry = ExecutionTask & {
   id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean; starter?: boolean
+  environmentSuggestion?: { place: string; optional: true; source?: string; knownFocusDays: number; goodFocusDays: number; goodFocusRatio?: number | null }
+  /** The settings version of this entry's own project when it was planned. Absent on older entries. */
+  projectProfileId?: string | null
 }
 /** Why the plan looks the way it does for this user; built by code from the values it applied. */
 export type PlanReason = {
@@ -137,6 +146,48 @@ export type ExecutionState = {
   projectProfiles?: Record<string, ProjectProfile>
   llmAvailable: boolean; model: string
   plannerThreads?: Record<string, PlannerThread>
+  /** User-level time that cannot be planned in, shared by every project. */
+  fixedSchedule?: FixedBlock[]; blockedTimes?: BlockedTime[]
+  /** Set by saving unavailable time: open tasks it moved, and the ones that no longer fit. */
+  relocated?: { moved: string[]; unplaced: string[] }
+  /** Waiting recovery drafts of failed tasks, by task id (drafts of a replaced plan are ignored). */
+  recoveryDrafts?: Record<string, RecoveryDraft>
+  /** Set by the adaptive check-in and review calls: what the planner graph decided. */
+  result?: AdaptiveResult
+  /** Projects the user ended, by id, with what carried to the user profile. */
+  closedProjects?: Record<string, ClosedProject>
+  projectFeedback?: Record<string, ProjectFeedback[]>
+  checkInSessions?: CheckInSession[]
+  userInsights?: Record<string, { value: string; history: string[]; updatedAt: string }>
+}
+/** A user-profile value a project proved, moved to the user profile when the project ends. */
+export type CarriedHabit = { key: string; label: string; from: string; to: string; because: string }
+/** A project value that stays with the project, and why. */
+export type KeptValue = { label: string; value: string; why: string }
+export type ClosedProject = {
+  title: string; outcome: 'completed' | 'abandoned'; closedAt: string
+  carried: CarriedHabit[]; kept: KeptValue[]; removedTasks: number
+}
+export type ClosePreview = { carried: CarriedHabit[]; kept: KeptValue[]; openTasks: number }
+export type RecoveryStrategy = 'shrink' | 'reschedule' | 'replan'
+export type CheckIn = {
+  completed: boolean; actualMinutes: number | null; remainingMinutes: number | null
+  reasonCode: string | null; note: string; difficulty: number | null
+}
+/** A failed task's way back into the week: smaller pieces, or the same work at another free time. */
+export type RecoveryDraft = {
+  id: string; planId: string; taskId: string; recordId: string; strategy: RecoveryStrategy; checkIn: CheckIn
+  revisionCount: number
+  draft: {
+    kind: 'shrink' | 'reschedule' | 'fit_deadline'; replacesTaskId: string
+    tasks: Array<{ title: string; minutes: number; doneWhen: string; start: string | null; end: string | null }>
+    appliedReasons: string[]; droppedScope: string[]; carryOverMinutes: number
+  }
+}
+export type AdaptiveResult = {
+  approvalStatus: 'waiting' | 'approved' | 'rejected' | 'needs_input' | 'fallback' | 'not_required'
+  strategy?: RecoveryStrategy | null
+  fallback?: { action: string; reason?: string; options?: RecoveryStrategy[]; missingFields?: string[] } | null
 }
 
 /** Values that differ for one project, on top of the user profile. Absent keys follow the user profile. */
@@ -145,60 +196,88 @@ export type ProjectProfile = {
   overrides: Record<string, { value: number | string | null; source: 'declared' | 'learned'; proposalId: string | null }>
   learnedPatterns: LearnedPattern[]; createdAt: string; updatedAt: string
 }
-export type PlannerMessage = { id: string; role: 'user' | 'assistant'; content: string }
+/**
+ * An assistant message names the skill that answered and the saved information it read.
+ * content is what the user sees; reply is the model's own words without the notes code put under them.
+ */
+export type PlannerMessage = { id: string; role: 'user' | 'assistant'; content: string; reply?: string; skill?: string; lookups?: string[] }
 export type PlannerThread = { messages: PlannerMessage[]; action: PlannerAction | null; updatedAt?: string }
-export type PlannerAction =
-  | { kind: 'plan'; revision: number; payload: { goal: string; startDate: string } }
-  | { kind: 'settings'; revision: number; payload: PlannerSettings }
+export type PlannerAction = PlannerActionMetadata & (
+  /** freeMinutes: time still free this week, counted by the server; absent when no week is planned yet. */
+  | { kind: 'plan'; revision: number; payload: { goal: string; startDate: string }; freeMinutes?: number | null }
+  /** The whole weekly time after the change, and what the change adds and removes (worked out by the server). */
+  | { kind: 'settings'; revision: number; payload: PlannerSettings; change?: { added: AvailabilitySlot[]; removed: AvailabilitySlot[] } }
+  /** What the user said about how to work on this project, waiting for a click to apply. */
+  | { kind: 'project_settings'; revision: number; payload: {
+      projectId: string; overrides: Record<string, number | string | null>
+      changes: Record<string, { from: number | string | null; to: number | string | null }> } }
+  /** A change to this week: hours to take out (for every project) and/or this project's work planned again. */
+  | { kind: 'adjust'; revision: number; payload: {
+      blockedTimes: Array<Omit<BlockedTime, 'id'>>; goal: string | null; startDate: string } }
+  /** A check-in turned into records, saved only when the user confirms. */
+  | { kind: 'check_in'; revision: number; payload: { records: CheckInRecord[]; insights?: Record<string, string>; learned?: string[]; session?: Partial<CheckInSession>; date?: string; knownDaily?: Partial<CheckInSession> } }
+)
+export type PlannerActionMetadata = { id?: string; projectId?: string | null; valid?: boolean; basis?: unknown }
+/** Explicit server validity supersedes the legacy global-revision check. */
+export function plannerActionValid(action: PlannerAction | null | undefined, revision: number, projectId: string): action is PlannerAction {
+  return !!action && (!action.projectId || action.projectId === projectId) && (typeof action.valid === 'boolean' ? action.valid : action.revision === revision)
+}
+export type CheckInSession = {
+  id: string; date: string; projectId: string | null; place?: string | null; atmosphere?: Atmosphere | null
+  focus?: Level | null; condition?: Level | null; note?: string
+}
+
+export type Level = 'good' | 'ok' | 'poor'
+export type Atmosphere = 'quiet' | 'lively'
+export type CheckInRecord = {
+  checkInId?: string | null; checkInDate?: string | null
+  planId: string; taskId: string; taskTitle: string; plannedMinutes: number
+  /** Set when the task was ticked off before: the check-in fills in that record. */
+  recordId?: string | null
+  result: 'completed' | 'partial' | 'not_started'; actualMinutes: number | null; reasonCode: string | null
+  place: string | null; atmosphere?: Atmosphere | null; focus: Level | null; condition: Level | null; note: string
+}
+/** A field the planner learns about the user, and what is known in it. */
+export type InsightSlot = { key: string; label: string; value: string | null; history: string[]; updatedAt: string | null; source?: string; kind?: string; status?: string; confidence?: number | string; evidenceRecordIds?: string[]; evidence?: { confirmations?: number; distinctDays?: number; windowDays?: number } }
+export type InsightPattern = { field: string; value: string; status: string; samples: number; distinctDays: number; knownFocus?: number; unknownFocus?: number; windowDays?: number; projectIds?: string[] }
+export type InsightQuestion = { key: string; label: string; question: string }
+/** How a project's plan felt; only that project uses it, and it goes when the project ends. */
+export type ProjectFeedback = { id: string; load?: 'too_much' | 'right' | 'too_little'; timeFit?: 'too_short' | 'right' | 'too_long' | 'unknown'; note: string; date?: string; planId: string | null; createdAt: string }
 
 export type ExecutionRecord = {
+  checkInId?: string | null; checkInDate?: string | null
   id: string; planId: string; taskId: string; profileId: string; taskTitle: string
   // Absent on records saved before they were added.
   profileVersion?: number | null; projectId?: string | null; projectProfileId?: string | null
+  plannedStart?: string
   plannedMinutes: number; actualMinutes: number | null; remainingMinutes?: number | null
   result: 'completed' | 'partial' | 'not_started' | 'incomplete'
   reasonCode: string | null; note: string; difficulty: number | null
   recoveryAction: string | null; recoveryDecidedAt?: string; createdAt: string
+  /** How the session went, from a check-in. */
+  place?: string | null; atmosphere?: Atmosphere | null; focus?: Level | null; condition?: Level | null
 }
 export type ProfileUpdateProposal = {
   id: string; profileId: string; appliedProfileId?: string
   // Set when the change was learned from one project's records and applies to that project only.
   projectId?: string | null; projectProfileId?: string | null; appliedProjectProfileId?: string
-  proposedChanges: { blockMinutes: { from: number; to: number } }
+  /** Learned values: the focus block, the part of the day the user finishes work best, or (when a project ends) the way back. */
+  proposedChanges: { blockMinutes?: { from: number; to: number }; focusTime?: { from: FocusTime; to: FocusTime }
+    recoveryPreference?: { from: string; to: string } }
+  /** Set when the change came from ending a project. */
+  sourceProjectId?: string
+  /** How the new value was set: from the user's records alone, or by the AI reading the tasks too. */
+  sizedBy?: 'evidence' | 'ai'; sizing?: string; aiReason?: string
+  /** Focus time only: tasks planned and finished per part of the day. */
+  focusStats?: Record<string, { planned: number; finished: number }>
   reason: string; evidenceRecordIds: string[]; ruleVersion: string
   status: 'pending' | 'approved' | 'rejected'; createdAt: string; decidedAt: string | null
 }
 
-export type ExecutionSummary = {
-  revision: number; days: number; periodStart: string; periodEnd: string
-  planId: string | null; profileId: string | null; recordCount: number
-  resultCounts: Record<ExecutionRecord['result'], number>
-  completionRate: number | null
-  plannedMinutes: number; actualMinutes: number; minutesDifference: number
-  actualMinutesRecordCount: number
-  incompleteReasonCounts: Record<string, number>; evidenceRecordIds: string[]
-}
-
 export type LearnedPattern = {
-  id: string; observation: string; proposedChanges: Record<string, { from: number; to: number }>
+  id: string; observation: string; proposedChanges: Record<string, { from: number | string; to: number | string }>
   evidenceRecordIds: string[]; approvedProposalId: string; projectId: string | null
   status: 'active' | 'revoked' | 'superseded'; approvedAt: string; expiresAt: string | null
-}
-export type UserProfile = ExecutionProfile & {
-  userId: string; version: number; schemaVersion: '2.0'; declaredFacts: ExecutionAnswers
-  learnedPatterns: LearnedPattern[]; updatedAt: string; confirmedAt: string | null
-  surveyResponseId: string | null
-}
-export type SurveyResponse = {
-  id: string; userId: string; surveyVersion: string; answers: ExecutionAnswers
-  submittedAt: string; conversationId?: string
-}
-export type PlanningContext = {
-  schemaVersion: '1.0'; userId: string; profileId: string; profileVersion: number; generatedAt: string
-  userProfile: { declaredFacts: Omit<ExecutionAnswers, 'constraints' | 'context'>;
-    planningPreferences: ExecutionProfile['planningPreferences']; learnedPatterns: LearnedPattern[] }
-  projectContext: Pick<Project, 'id' | 'title' | 'goal' | 'startDate' | 'dueDate'> | null
-  availability: { timezone: string; slots: AvailabilitySlot[] }; memories: Memory[]; warnings: string[]
 }
 
 export type AuthUser = {

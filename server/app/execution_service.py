@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from .execution_learning import REASON_CODES, propose_update
+from .execution_learning import REASON_CODES, propose_focus_time, propose_growth, propose_update
 from .execution_store import ConflictError
-from .project_profile import apply_project_proposal
+from .plan_merge import entry_owner
+from .project_profile import apply_project_proposal, entry_settings_version
 from .user_profile import apply_profile_proposal
 
 
@@ -19,13 +20,17 @@ class ExecutionRecordInput(BaseModel):
     note: str = Field(default="", max_length=2000)
     difficulty: int | None = Field(default=None, ge=1, le=5, strict=True)
     recoveryAction: str | None = Field(default=None, max_length=1000)
+    # How the session went, from the check-in: signals about the user, so they stay with the
+    # user's records after the project ends (planner_checkin.py).
+    place: str | None = Field(default=None, max_length=40)
+    atmosphere: Literal["quiet", "lively"] | None = None
+    focus: Literal["good", "ok", "poor"] | None = None
+    condition: Literal["good", "ok", "poor"] | None = None
 
     @model_validator(mode="after")
     def valid_result(self):
         if self.reasonCode is not None and self.reasonCode not in REASON_CODES:
             raise ValueError("올바른 이유 코드를 선택해 주세요.")
-        if self.result in ("partial", "not_started") and self.reasonCode is None:
-            raise ValueError("미완료 이유를 선택해 주세요.")
         if self.result == "not_started" and self.actualMinutes != 0:
             raise ValueError("미시작 작업의 실제 시간은 0분이어야 합니다.")
         if self.result == "completed" and self.remainingMinutes not in (None, 0):
@@ -34,37 +39,6 @@ class ExecutionRecordInput(BaseModel):
 
 class ProposalNotFoundError(ValueError):
     pass
-
-
-def summarize_execution(state, *, days=14, plan_id=None, profile_id=None, now=None):
-    if type(days) is not int or not 1 <= days <= 365:
-        raise ValueError("조회 기간은 1~365일이어야 합니다.")
-    now = now or datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=days)
-    records = sorted((r for r in state.get('executionRecords', [])
-                      if cutoff <= datetime.fromisoformat(r['createdAt']) <= now
-                      and (plan_id is None or r['planId'] == plan_id)
-                      and (profile_id is None or r.get('profileId') == profile_id)),
-                     key=lambda r: (datetime.fromisoformat(r['createdAt']), r['id']))
-    counts = {result: sum(r['result'] == result for r in records)
-              for result in ('completed', 'partial', 'not_started', 'incomplete')}
-    reasons = {code: sum(r['result'] != 'completed' and r['reasonCode'] == code for r in records)
-               for code in REASON_CODES}
-    planned = sum(r['plannedMinutes'] for r in records)
-    measured = [r for r in records if r.get('actualMinutes') is not None]
-    actual = sum(r['actualMinutes'] for r in measured)
-    return {
-        'revision': state['revision'], 'days': days,
-        'periodStart': cutoff.isoformat(), 'periodEnd': now.isoformat(),
-        'planId': plan_id, 'profileId': profile_id,
-        'recordCount': len(records), 'resultCounts': counts,
-        'completionRate': round(counts['completed'] / len(records) * 100, 2) if records else None,
-        'plannedMinutes': planned, 'actualMinutes': actual,
-        'minutesDifference': actual - sum(r['plannedMinutes'] for r in measured),
-        'actualMinutesRecordCount': len(measured),
-        'incompleteReasonCounts': reasons,
-        'evidenceRecordIds': [r['id'] for r in records],
-    }
 
 
 class ExecutionService:
@@ -105,12 +79,12 @@ class ExecutionService:
 
         return self.store.change(revision, update)
 
-    def get_execution_summary(self, *, days=14, plan_id=None, profile_id=None):
-        return summarize_execution(self.store.read(), days=days, plan_id=plan_id, profile_id=profile_id)
-
 
 def save_execution_record(state, payload, *, allow_follow_up=False):
     request = ExecutionRecordInput.model_validate(payload)
+    # Only the server's recovery-review path can record an approval.
+    if request.recoveryAction is not None:
+        raise ValueError('복구 결정은 복구안을 확인한 뒤 반영해 주세요.')
     plan = state['plan']
     if not plan or plan['id'] != request.planId:
         raise ValueError('현재 확정한 계획을 선택해 주세요.')
@@ -133,18 +107,18 @@ def save_execution_record(state, payload, *, allow_follow_up=False):
         state['executionRecords'].append(record)
     task['completed'] = request.result == 'completed'
     propose_update(state, record.get('projectId'))
+    propose_growth(state, record.get('projectId'))
+    propose_focus_time(state)
     return record['id']
 
 
 def _new_record(plan, task, request):
-    # The plan's project and settings versions travel with the record, so
-    # learning can group records by project after the plan itself is replaced.
-    project_id = task.get('projectId') or plan.get('projectId')
+    # The task's project and the settings version it was planned with travel with
+    # the record, so learning counts it for that project only, even in a shared week.
     record = request.model_dump()
     record.update(id=str(uuid4()), profileId=plan['profileId'], profileVersion=plan.get('profileVersion'),
-                  projectId=project_id,
-                  projectProfileId=plan.get('projectProfileId') if project_id == plan.get('projectId') else None,
-                  taskTitle=task['title'], plannedMinutes=task['minutes'],
+                  projectId=entry_owner(plan, task), projectProfileId=entry_settings_version(plan, task),
+                  taskTitle=task['title'], plannedMinutes=task['minutes'], plannedStart=task['start'],
                   createdAt=datetime.now(timezone.utc).isoformat())
     return record
 
@@ -167,13 +141,20 @@ def set_task_completion(state, plan_id, task_id, completed):
         request = ExecutionRecordInput(planId=plan_id, taskId=task_id, result='completed')
         state['executionRecords'].append(_new_record(plan, task, request))
         task['completed'] = True
-        propose_update(state, task.get('projectId') or plan.get('projectId'))
+        propose_update(state, entry_owner(plan, task))
+        propose_growth(state, entry_owner(plan, task))
+        propose_focus_time(state)
         return
     matches = [r for r in state['executionRecords'] if r['planId'] == plan_id and r['taskId'] == task_id]
     if matches and matches[-1]['result'] == 'completed':
         last = matches[-1]
-        if any(last['id'] in p['evidenceRecordIds'] for p in state['profileUpdateProposals']):
-            raise ConflictError('변경 후보의 근거로 사용된 기록은 되돌릴 수 없습니다.')
+        using = [p for p in state['profileUpdateProposals'] if last['id'] in p['evidenceRecordIds']]
+        if any(p['status'] == 'approved' for p in using):
+            raise ConflictError('이 완료 기록으로 이미 프로필을 바꿨어요. 완료 표시는 되돌릴 수 없어요.')
+        # A suggestion still waiting stood on this completion; without it the suggestion goes too.
+        for proposal in using:
+            if proposal['status'] == 'pending':
+                proposal.update(status='rejected', decidedAt=datetime.now(timezone.utc).isoformat(), closedBy='evidence_withdrawn')
         state['executionRecords'].remove(last)
     task['completed'] = False
 

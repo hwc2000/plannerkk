@@ -2,9 +2,8 @@ import base64
 import os
 import secrets
 from pathlib import Path
-from typing import Protocol
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -13,22 +12,10 @@ from .adaptive.api import adaptive_router
 from .auth import SESSION_COOKIE, AuthStore, UserScopedStore, auth_router, current_user_id, workspace_router
 from .execution_api import execution_router
 from .execution_store import ConflictError, ExecutionStore
-from .profile_chat import profile_chat_router
 from .planner_chat import planner_chat_router
+from .planner_checkin import checkin_router
 from .execution_llm import ExecutionLLM
-from .planning_context import get_planning_context
-
-from .planner import (
-    PlanDraft,
-    PlanDraftRequest,
-    PlanGenerationError,
-    parse_plan_for_project,
-)
-from .project_overview import router as project_overview_router
-
-
-class PlanGenerator(Protocol):
-    async def generate(self, request: PlanDraftRequest) -> object: ...
+from .planner import PlanGenerationError
 
 
 PUBLIC_API_PATHS = {"/api/health", "/api/auth/signup", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
@@ -44,8 +31,7 @@ def _auth_enabled(explicit, execution_store):
     return execution_store is None
 
 
-def create_app(generator: PlanGenerator | None = None, execution_store=None, execution_llm=None,
-               *, auth: bool | None = None, db_path=None) -> FastAPI:
+def create_app(execution_store=None, execution_llm=None, *, auth: bool | None = None, db_path=None) -> FastAPI:
     app = FastAPI(title="PlannerKK API")
     auth_enabled = _auth_enabled(auth, execution_store)
     auth_store = AuthStore(db_path or (execution_store.path if execution_store is not None else None))
@@ -59,9 +45,9 @@ def create_app(generator: PlanGenerator | None = None, execution_store=None, exe
     if auth_enabled:
         app.include_router(workspace_router(auth_store))
     app.include_router(execution_router(store, execution_llm))
-    app.include_router(profile_chat_router(store, execution_llm or ExecutionLLM()))
     app.include_router(adaptive_router(store, execution_llm))
     app.include_router(planner_chat_router(store, execution_llm or ExecutionLLM()))
+    app.include_router(checkin_router(store, execution_llm or ExecutionLLM()))
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
@@ -130,82 +116,9 @@ def create_app(generator: PlanGenerator | None = None, execution_store=None, exe
         allow_headers=["*"],
     )
 
-    app.include_router(project_overview_router)
-
     @app.get("/api/health")
     async def health():
-        return {
-            "status": "ok"
-        }
-
-    @app.post(
-        "/api/ai/plan-draft",
-        response_model=PlanDraft,
-    )
-    async def create_plan_draft(
-        request: PlanDraftRequest
-    ):
-        # Server overwrites this private field; never trust a client profile.
-        state = store.read()
-        if state.get("profile"):
-            request.planning_context = get_planning_context(store.user_id, request.project, state=state,
-                memories=[m.model_dump() for m in request.memories])
-        active_generator = generator
-        owns_generator = active_generator is None
-
-        if active_generator is None:
-            from .openai_planner import (
-                OpenAIPlanGenerator,
-            )
-
-            try:
-                active_generator = (
-                    OpenAIPlanGenerator.from_env()
-                )
-            except PlanGenerationError as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail=str(exc),
-                ) from exc
-
-        try:
-            payload = await active_generator.generate(
-                request
-            )
-
-            return parse_plan_for_project(
-                payload,
-                project_start=(
-                    request.project.startDate
-                ),
-                project_due=(
-                    request.project.dueDate
-                ),
-            )
-
-        except PlanGenerationError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=str(exc),
-            ) from exc
-
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "AI 계획 생성에 실패했습니다."
-                ),
-            ) from exc
-
-        finally:
-            if owns_generator:
-                try:
-                    await getattr(
-                        active_generator,
-                        "close",
-                    )()
-                except Exception:
-                    pass
+        return {"status": "ok"}
 
     # Optional single-server local preview after `npm run build`.
     dist = Path(__file__).resolve().parents[2] / "dist"

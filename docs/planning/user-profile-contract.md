@@ -19,7 +19,7 @@ API/DB는 camelCase, C 그래프 내부는 snake_case를 유지한다.
 |---|---|---|
 | 1. 생활의 리듬 | roles, regularity | 생활 형태 복수 선택, 생활 규칙성 단일 선택 |
 | 2. 막히는 순간 | barriers | 계획이 무너지는 이유 복수 선택 |
-| 3. 집중 습관 | focusMinutes, energy | 한 번의 집중 시간과 집중이 잘되는 시간대 각각 단일 선택 |
+| 3. 집중 습관 | focusMinutes | 한 번의 집중 시간 단일 선택 |
 | 4. 다시 시작하는 방법 | recovery, scheduleStyle | 계획이 틀어졌을 때 대응과 선호 계획 방식 각각 단일 선택 |
 
 - roles/barriers는 체크박스, 나머지는 라디오 버튼이다. barriers의 none/unknown은 다른 항목과 함께 선택할 수 없다.
@@ -27,6 +27,10 @@ API/DB는 camelCase, C 그래프 내부는 snake_case를 유지한다.
 - 단계별 필수 선택을 검사한 뒤 다음 단계로 이동한다. focusMinutes의 기본값은 null, scheduleStyle의 기본값은 unknown이다.
 - `dailyMinutes`는 현재 설문에서 받지 않고 제출 시 null로 설정한다. 타입/기존 데이터 호환을 위해 스키마에는 남긴다.
 - `constraints`, `context` 입력 UI는 없다. 신규 설문은 빈 문자열을 사용한다. 기존 프로필 수정 시 기존 값은 보존하되 새로운 자유 텍스트를 입력받지 않는다.
+- **묻지 않는 항목 (10/15)**: 설문(양식·대화 모두)은 `energy`(집중이 잘되는 시간대)와 `constraints`(고정 일정)를 묻지 않는다.
+  스키마는 그대로 두고 신규 답은 `energy=unknown`, `constraints=""`. 예전 프로필의 답은 다시 설문해도 그대로 둔다.
+  - 집중이 잘되는 시간대: 실행 기록으로 찾아 기본 프로필 `planningPreferences.focusTime`에 채운다(focus-time-v1, 승인 후 반영).
+  - 고정 일정: 설문이 아니라 계획할 시간 옆의 **고정 일정 편집기**에서 언제든 저장한다(`state.fixedSchedule`). 저장하면 배치에서 자동으로 빠진다.
 - 요약에서 dailyMinutes는 표시하지 않는다. 답변을 검토한 뒤 확정하며 언제든 설문 수정으로 돌아갈 수 있다.
 
 ## 가용시간과 계획 방식
@@ -37,7 +41,21 @@ API/DB는 camelCase, C 그래프 내부는 snake_case를 유지한다.
 
 프로필 확정 시 scheduleStyle에 따라 `settings.view`를 time_blocks → timeline, flexible_queue → checklist로 맞춘다.
 별도 화면에서 같은 계획 방식을 다시 선택하도록 요구하지 않는다.
-고정 일정 텍스트는 자동 차감하지 않는다. 배치할 수 없는 시간은 가용시간 선택에서 제외하거나 캘린더 일정으로 등록해야 한다.
+### 계획할 수 없는 시간 (10/15)
+
+가용시간(`settings.slots`)은 "계획할 수 있는 시간"이고, 아래 두 목록은 "계획할 수 없는 시간"이다. 둘 다 사용자 단위라 모든 프로젝트가 같이 쓴다.
+사용자가 가용시간 표에서 손으로 뺄 필요가 없다. 배치할 때마다 코드가 뺀다(`availability.py` `busy_times`: 새 계획·프로젝트 재계획·복구 재배치 모두).
+
+| 키 | 모양 | 바꾸는 곳 | 의미 |
+|---|---|---|---|
+| `fixedSchedule` | `[{id, days: [0~6], start: "HH:MM", end: "HH:MM"}]` (최대 30개) | `PUT /api/execution/fixed-schedule {revision, items, events}` | 매주 반복되는 고정 일정(수업·출근). 같은 요일끼리 겹치면 400 |
+| `blockedTimes` | `[{id, date, startHour, endHour}]` (최대 50개, endHour 미포함, 8~23시) | `PUT /api/execution/blocked-times {revision, items, events}` | 이번 주 특정 날짜에 비워 둔 시간. 지난 날짜는 저장할 때 지운다 |
+
+- 저장하면 지금 계획의 미완료 작업 중 새로 겹치는 것(모든 프로젝트)을 코드가 옮긴다(`relocate`): id·길이·프로젝트·마감은 그대로,
+  원래 시각 이후의 가장 이른 빈 시간 → 없으면 그 주의 앞쪽 빈 시간. 시작 행동은 혼자 옮기지 않고 뺀다.
+  어디에도 안 들어가면 `pendingTasks`에 이유와 함께 남긴다. 응답의 `relocated: {moved, unplaced}`로 화면이 알린다.
+- 기다리던 계획 초안은 버리고(예전 빈 시간 기준), 옮긴 작업이나 막힌 시간을 제안하던 복구 초안도 닫는다.
+- 고정 일정 표시: 가용시간 표에서 한 시간 전체가 고정 일정이면 "고정" 빗금 칸(선택 불가, 시간 수에서 제외), 일부만 겹치면 옅은 빗금.
 
 ## 스키마
 
@@ -116,20 +134,24 @@ execution_state / user_execution_state 의 JSON document
 |---|---|---|---|
 | `blockMinutes` | integer | 필수 | 최솟값 1, 최댓값 180 |
 | `breakMinutes` | integer | 필수 | 최솟값 0, 최댓값 60 |
-| `bufferPercent` | integer | 필수 | 최솟값 0, 최댓값 90 |
 | `dailyPlannedMinutes` | integer / null | null | 최솟값 1, 최댓값 720 |
 | `scheduleStyle` | `time_blocks`, `flexible_queue` | 필수 | — |
 | `scheduleStyleSource` | `user`, `rule`, `legacy` | "legacy" | — |
 | `recoveryPreference` | `replan`, `reduce`, `continue`, `abandon`, `unknown` | 필수 | — |
 | `starterMinutes` | integer / null | null | 최솟값 1, 최댓값 180 |
+| `focusTime` | `morning`, `afternoon`, `evening`, `variable`, `unknown` | "unknown" | 집중이 잘 되는 시간대. 실행 기록으로 학습(승인), 예전 프로필은 설문 `energy` 값 |
 | `status` | `provisional`, `confirmed` | 필수 | — |
 
 #### 항목 간 조건과 생성 규칙
 
 - blockMinutes ≤ dailyPlannedMinutes(하루 예산이 있는 경우), starterMinutes ≤ blockMinutes(시작 작업이 있는 경우).
-- 초기 blockMinutes = min(focusMinutes 또는 15, dailyMinutes 또는 180, 50). distraction 응답이면 최대 20분이다.
-- breakMinutes=5. 불규칙/모름 또는 overplanning이면 bufferPercent=40, 나머지는 25다.
-- dailyMinutes가 있으면 dailyPlannedMinutes=int(dailyMinutes × (100-bufferPercent)/100), 없으면 null이다. 예산이 있으면 집중 구간과 시작 작업을 그 안으로 줄인다.
+- 초기 blockMinutes = 사용자가 답한 focusMinutes 그대로(고정 상한 없음). 모른다고 답했을 때만 시작값 60분(`UNKNOWN_FOCUS_START`, 근거 출처 `default`).
+  시작값인 동안 계획 AI에는 `blockIsStartValue: true`를 주어 상한을 채우지 말고 작업마다 그 시간에 무리 없이 끝낼 분량을 판단하게 하고,
+  복구도 이 값을 집중 시간으로 쓴다(따로 묻지 않음).
+  dailyMinutes가 있으면 그 값과 하루 계획량을 넘지 않는다. distraction 응답은 길이를 바꾸지 않고 전략 문장으로만 반영한다.
+  이후 길이는 실행 기록으로 학습해 조정한다.
+- breakMinutes=5. 비워 두는 비율(예전 bufferPercent)은 없다(10/19): 사용자가 고른 가용 시간은 모두 계획에 쓴다. 예전 프로필의 값은 읽을 때 지운다.
+- dailyMinutes가 있으면 dailyPlannedMinutes=dailyMinutes, 없으면 null이다. 예산이 있으면 집중 구간과 시작 작업을 그 안으로 줄인다.
 - starting 응답이 있으면 starterMinutes=min(5, blockMinutes), 없으면 null이다.
 - recoveryPreference는 설문 recovery를 따른다. scheduleStyle 명시 선택은 user, 규칙으로 계산한 값은 rule, 기존 값의 출처 보완은 legacy다.
 - 초안의 선호 status는 provisional이며 사용자가 프로필을 확정하면 confirmed가 된다.
@@ -252,7 +274,6 @@ save_profile_draft가 제출마다 새 원본을 추가하고 profileDraft.surve
   "planningPreferences": {
     "blockMinutes": 25,
     "breakMinutes": 5,
-    "bufferPercent": 25,
     "dailyPlannedMinutes": null,
     "scheduleStyle": "flexible_queue",
     "scheduleStyleSource": "user",
@@ -261,7 +282,7 @@ save_profile_draft가 제출마다 새 원본을 추가하고 profileDraft.surve
     "status": "confirmed"
   },
   "insights": {
-    "summary": "답변을 바탕으로 만든 첫 실행 프로필입니다. 제안한 시간과 여유분은 실제 실행 후 조정할 초기값입니다.",
+    "summary": "답변을 바탕으로 만든 첫 실행 프로필입니다. 제안한 집중 시간은 실제 실행 후 조정할 초기값입니다.",
     "strategies": [
       {
         "action": "첫 집중 구간을 25분으로 시도해 보세요.",
@@ -418,10 +439,15 @@ state.projectProfiles[projectId] = {
 state.projectProfileRevisions = [{projectId, version, projectProfileId, source, sourceId, createdAt, snapshot}]
 ```
 
-- 덮을 수 있는 키: `blockMinutes`, `dailyPlannedMinutes`, `bufferPercent`, `starterMinutes`, `recoveryPreference`.
+- 덮을 수 있는 키: `blockMinutes`, `dailyPlannedMinutes`, `starterMinutes`, `recoveryPreference`. (`bufferPercent`는 10/19에 없앰, 예전 값은 읽을 때 지움)
   `dailyPlannedMinutes`·`starterMinutes`의 null은 "이 프로젝트에서는 없음"이다. 키가 없으면 사용자 프로필 값을 쓴다.
 - `PUT /api/execution/projects/{projectId}/profile` `{revision, overrides}`: 사용자가 정한 값(declared) 전체를 바꾼다.
   같은 키의 학습값은 사용자가 정한 값으로 대체하고 그 패턴은 superseded, 다른 키의 학습값은 유지한다.
+- 프로젝트 대화에서 사용자가 이 프로젝트를 하는 방식을 직접 말하면(예: "에세이는 25분씩") 대화방이 확인 카드
+  (`plannerThreads[id].action.kind = "project_settings"`)를 만들고, 사용자가 누르면 위 API로 저장한다. 값은 사용자가 말한
+  것만 쓰고 추측하지 않으며, 기본 프로필과 함께 쓸 수 없는 값이면 카드 없이 이유를 답에 붙인다.
+- 프로젝트 대화방 머리에는 기본 프로필(모든 프로젝트 공통)과 이 프로젝트만의 값을 나란히 보여 준다.
+- 대화 한 번은 기능 고르기 → 필요한 정보 꺼내기 → 기능 실행으로 처리한다: [planner-chat-skills.md](planner-chat-skills.md).
 - 프로젝트 실행 기록으로 배운 변경은 프로젝트 설정에만 적용한다(`apply_project_proposal`). 사용자 프로필의
   ID·버전은 그대로라 다른 프로젝트의 계획은 계속 유효하다.
 - 프로필 초기화는 프로젝트 설정과 그 이력도 지운다.
@@ -468,8 +494,14 @@ B의 서비스/엔드포인트 자체는 PR #8 병합 시 위 한 경계로 연�
 
 기본 로컬 사용자는 기존 execution_state(id=1, document)를 유지한다.
 다른 사용자 저장소는 ExecutionStore(path, user_id='...')로 만들고 user_execution_state에 분리 저장한다.
-HTTP 서버는 여전히 로컬 단일 사용자용이다. userId를 외부 요청에서 받지 않는다.
-다중 사용자 서비스 배포 시 인증된 사용자로 저장소를 주입하고 프로젝트/기억 소유권을 검증해야 한다.
+모든 API는 요청마다 `server/app/auth.py`의 `current_user(request)`로 사용자를 정하고, 그 사용자의 저장소만 쓴다
+(`UserStores.bind` 앱 의존성 → `CurrentUserStore`). 사용자를 모르면 저장소를 열지 않는다(fail closed).
+userId를 요청 본문에서 받지 않는다.
+
+**로그인 담당이 바꿀 곳은 `current_user` 본문 하나다.** 지금은 항상 `"local"`을 돌려준다. 세션 쿠키를 읽어 사용자 id를
+돌려주고, 없으면 401을 내게 바꾸면 모든 API가 사용자별로 나뉜다. 테스트에서는
+`app.dependency_overrides[current_user]`로 다른 사용자를 흉내 낸다(`server/tests/test_user_isolation.py`).
+브라우저에 있는 프로젝트·일정·기억은 아직 사용자별로 나뉘지 않는다(저장 키에 사용자 id를 붙이거나 서버로 옮겨야 함).
 
 기존 프로필은 읽기 시 호환 보완, 다음 쓰기 시 저장한다. 기존 ID/승인 상태/계획을 유지한다.
 기존 facts는 원본 설문이라고 꾸미지 않고 legacy_snapshot으로만 기록한다.

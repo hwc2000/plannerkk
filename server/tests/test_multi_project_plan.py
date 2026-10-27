@@ -21,11 +21,13 @@ class FakeLLM:
         if kwargs["name"] == "execution_profile":
             return generate_profile(ANSWERS)["insights"]
         self.plan_calls.append(kwargs)
-        return {"tasks": [
+        tasks = [
             {"title": "에세이 개요", "minutes": 20, "doneWhen": "개요 작성", "dueDate": None, "projectId": "essay"},
             {"title": "로그인 화면", "minutes": 20, "doneWhen": "화면 완성", "dueDate": None, "projectId": "app"},
-            {"title": "방 정리", "minutes": 20, "doneWhen": "정리 끝", "dueDate": None, "projectId": "unknown"},
-        ]}
+            {"title": "방 정리", "minutes": 20, "doneWhen": "정리 끝", "dueDate": None, "projectId": None},
+        ]
+        owners = {p["id"] for p in kwargs["context"]["projects"]}
+        return {"tasks": [task for task in tasks if task["projectId"] is None or task["projectId"] in owners]}
 
 
 class MultiProjectPlanTests(unittest.TestCase):

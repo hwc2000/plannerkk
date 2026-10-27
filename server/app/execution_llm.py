@@ -15,8 +15,10 @@ class ExecutionLLM:
         if not key:
             raise LLMUnavailableError("서버에 OPENAI_API_KEY를 설정해 주세요.")
         # Conversation replies are short; plan generation retains its existing budget.
-        chat = name in ("profile_conversation", "profile_reply_rewrite", "planner_conversation")
-        output_limit = 1800 if name in ("profile_conversation", "planner_conversation") else 500 if chat else 6500
+        # Planner chat turns are a routing call and a skill call, all named planner_*.
+        planner = name.startswith("planner_")
+        chat = planner or name in ("profile_conversation", "profile_reply_rewrite")
+        output_limit = 1800 if planner or name == "profile_conversation" else 500 if chat else 6500
         try:
             async with AsyncOpenAI(api_key=key, timeout=25 if chat else 60, max_retries=0) as client:
                 result = await client.chat.completions.create(

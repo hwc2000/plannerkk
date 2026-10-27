@@ -27,10 +27,12 @@ def kept_entries(plan: dict, scope_id: str | None) -> list[dict]:
 def merge_into(current: dict, draft: dict, scope_project: dict | None, goal: str) -> dict:
     scope_id = scope_project["id"] if scope_project else None
     kept = kept_entries(current, scope_id)
+    kept_ids = {e["id"] for e in kept}
     known = {p["id"]: p for p in (current.get("projects") or ([current["project"]] if current.get("project") else []))}
     if scope_project:
         known[scope_id] = scope_project
-    entries = sorted([*kept, *draft["entries"]], key=lambda e: e["start"])
+    # A replan of this project copies its finished tasks into the draft; keep one of each.
+    entries = sorted([*kept, *(e for e in draft["entries"] if e["id"] not in kept_ids)], key=lambda e: e["start"])
     owners = {e.get("projectId") for e in entries if e["kind"] == "task"} | {scope_id}
     projects = [p for pid, p in known.items() if pid in owners]
     goals = current.get("projectGoals") or {thread_key(current.get("projectId")): current["goal"]}
@@ -42,5 +44,7 @@ def merge_into(current: dict, draft: dict, scope_project: dict | None, goal: str
     single = projects[0] if len(projects) == 1 and None not in owners else None
     return {**draft, "entries": entries, "pendingTasks": pending, "projects": projects,
             "project": single, "projectId": single["id"] if single else None, "projectGoals": goals,
+            # Entries carry their own project's settings version; a plan-wide one only fits one project.
+            "projectProfileId": draft.get("projectProfileId") if single else None,
             "goal": next(iter(goals.values())) if len(goals) == 1 else "\n".join(
                 f"[{titles.get(key, '자유 계획')}] {value}" for key, value in goals.items())}

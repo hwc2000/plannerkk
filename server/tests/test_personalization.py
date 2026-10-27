@@ -7,9 +7,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from server.app.adaptive import build_adaptive_planner_graph
+from server.app.adaptive.full_plan_generator import TASK_DEPTH_INSTRUCTION
+from server.app.adaptive.llm_generator import COMMON_INSTRUCTIONS as RECOVERY_INSTRUCTIONS
 from server.app.adaptive.personalization import (
     PlanPolicy,
-    day_task_minutes,
+    day_slots,
     personalization_reasons,
     place_tasks,
     plan_policy,
@@ -54,7 +56,7 @@ class SchedulerTests(unittest.TestCase):
     def test_daily_cap_and_one_starter_per_day(self):
         week = windows(("2030-01-07T09:00", "2030-01-07T12:00"), ("2030-01-08T09:00", "2030-01-08T12:00"))
         tasks = [task(f"작업 {i}", 20, starter=f"작업 {i} 파일 열기" if i else "") for i in range(5)]
-        entries, pending = schedule(tasks, week, 0, daily_cap=50, starter_minutes=5)
+        entries, pending = schedule(tasks, week, daily_cap=50, starter_minutes=5)
         work = [e for e in entries if e["kind"] == "task"]
         for day in ("2030-01-07", "2030-01-08"):
             today = [e for e in work if e["start"].startswith(day)]
@@ -69,15 +71,32 @@ class SchedulerTests(unittest.TestCase):
 
     def test_pending_reason_names_the_cap_only_when_it_binds(self):
         tight = windows(("2030-01-07T09:00", "2030-01-07T10:00"))
-        _, pending = schedule([task("A", 40), task("B", 40)], tight, 25, daily_cap=90)
-        self.assertNotIn("하루 계획량", pending[0]["reason"])  # the 45-minute buffer budget binds, not 90
+        _, pending = schedule([task("A", 40), task("B", 40)], tight, daily_cap=90)
+        self.assertNotIn("하루 계획량", pending[0]["reason"])  # the hour itself binds, not the 90-minute cap
+
+    def test_all_the_chosen_time_is_planned(self):
+        # Three free hours, one-hour blocks: two blocks and the 50 minutes left, with breaks between.
+        evening = windows(("2030-01-07T19:00", "2030-01-07T22:00"))
+        self.assertEqual(day_slots(evening, PlanPolicy(60, None, None, None), 60), [{"date": "2030-01-07", "minutes": [60, 60, 50]}])
+        entries, pending = schedule([task("A", 60), task("B", 60), task("복습", 50)], evening)
+        self.assertEqual(pending, [])
+        self.assertEqual([(e["start"][11:], e["end"][11:]) for e in entries if e["kind"] == "task"],
+                         [("19:00", "20:00"), ("20:05", "21:05"), ("21:10", "22:00")])
+
+    def test_day_slots_share_a_short_end_and_follow_the_starter_and_cap(self):
+        def slots(span, policy, block):
+            return day_slots(windows(span), policy, block)[0]["minutes"]
+        self.assertEqual(slots(("2030-01-07T19:00", "2030-01-07T21:00"), PlanPolicy(50, None, None, None), 50), [50, 30, 30])
+        self.assertEqual(slots(("2030-01-07T19:00", "2030-01-07T22:00"), PlanPolicy(60, None, 5, None), 60), [60, 60, 45])
+        self.assertEqual(slots(("2030-01-07T19:00", "2030-01-07T22:00"), PlanPolicy(60, 90, None, None), 60), [60, 30])
+        self.assertEqual(day_slots(windows(("2030-01-07T19:00", "2030-01-07T19:05")), PlanPolicy(60, None, None, None), 60), [])
 
     def test_tasks_longer_than_the_days_rest_are_split_to_fill_the_cap(self):
         # Real gpt-4o-mini output for a 50-minute / 90-minute-a-day user: every task 50 minutes.
         # Placed whole, each day used 50 of its 90 minutes and the rehearsals fell out of the week.
         week = windows(*[(f"2030-01-{d:02d}T09:00", f"2030-01-{d:02d}T12:00") for d in range(7, 12)])
         titles = ["구성", "작성 1", "작성 2", "작성 3", "작성 4", "디자인", "연습 1", "연습 2", "연습 3"]
-        entries, pending = schedule([task(t, 50) for t in titles], week, 25, daily_cap=90)
+        entries, pending = schedule([task(t, 50) for t in titles], week, daily_cap=90, fill_daily_cap=True)
         work = [e for e in entries if e["kind"] == "task"]
         self.assertEqual(pending, [])
         for day in {e["start"][:10] for e in work}:
@@ -90,8 +109,8 @@ class SchedulerTests(unittest.TestCase):
 
     def test_split_to_fill_the_cap_keeps_the_starter_and_minimum_piece(self):
         week = windows(*[(f"2030-01-{d:02d}T19:00", f"2030-01-{d:02d}T22:00") for d in range(7, 10)])
-        entries, pending = schedule([task(f"작업 {i}", 20, starter="열기") for i in range(4)], week, 40,
-                                    daily_cap=36, starter_minutes=5)
+        entries, pending = schedule([task(f"작업 {i}", 20, starter="열기") for i in range(4)], week,
+                                    daily_cap=36, starter_minutes=5, fill_daily_cap=True)
         work = [e for e in entries if e["kind"] == "task"]
         self.assertEqual(pending, [])
         for day in {e["start"][:10] for e in work}:
@@ -103,26 +122,44 @@ class SchedulerTests(unittest.TestCase):
 
     def test_a_leftover_shorter_than_a_piece_is_not_split_into(self):
         week = windows(("2030-01-07T09:00", "2030-01-07T12:00"), ("2030-01-08T09:00", "2030-01-08T12:00"))
-        entries, pending = schedule([task("A", 50), task("B", 50)], week, 0, daily_cap=55)
+        entries, pending = schedule([task("A", 50), task("B", 50)], week, daily_cap=55, fill_daily_cap=True)
         work = [e for e in entries if e["kind"] == "task"]
         self.assertEqual([(e["title"], e["start"]) for e in work],
                          [("A", "2030-01-07T09:00"), ("B", "2030-01-08T09:00")])  # 5 minutes left: B waits a day
 
+    def test_tasks_that_fit_the_slots_are_not_cut_for_a_leftover(self):
+        # 9-11 and 19-21, 120 minutes a day: the morning takes 50·30·30 and 10 minutes of the plan are left.
+        # Cutting the next day's task for those 10 minutes would put a sliver in the evening.
+        week = windows(*[w for d in (7, 8) for w in ((f"2030-01-{d:02d}T09:00", f"2030-01-{d:02d}T11:00"),
+                                                     (f"2030-01-{d:02d}T19:00", f"2030-01-{d:02d}T21:00"))])
+        entries, pending = schedule([task(f"작업 {i}", m) for i, m in enumerate([50, 30, 30] * 2)], week, daily_cap=120)
+        work = [e for e in entries if e["kind"] == "task"]
+        self.assertEqual(pending, [])
+        self.assertEqual([(e["start"][5:16], e["minutes"]) for e in work],
+                         [("01-07T09:00", 50), ("01-07T09:55", 30), ("01-07T10:30", 30),
+                          ("01-08T09:00", 50), ("01-08T09:55", 30), ("01-08T10:30", 30)])
+
+    def test_shrink_to_fit_keeps_later_tasks_before_the_deadline(self):
+        # 19-22 twice, 90-minute tasks: after the first one only 85 minutes are left each evening.
+        week = windows(("2030-01-07T19:00", "2030-01-07T22:00"), ("2030-01-08T19:00", "2030-01-08T22:00"))
+        tasks = [dict(task(f"작업 {i}", 90), dueDate="2030-01-08") for i in range(4)]
+        _, pending = schedule(tasks, week)
+        self.assertEqual(len(pending), 2)  # in order, the second task skips a day and the last two fall out
+        entries, pending = schedule(tasks, week, shrink_to_fit=True)
+        self.assertEqual(pending, [])
+        self.assertEqual([(e["start"][5:], e["minutes"]) for e in entries if e["kind"] == "task"],
+                         [("01-07T19:00", 90), ("01-07T20:35", 85), ("01-08T19:00", 90), ("01-08T20:35", 85)])
+
     def test_a_window_too_short_still_waits_for_a_whole_block(self):
         # Without a daily cap a short window does not chop a task; it goes whole into the next window.
         week = windows(("2030-01-07T09:00", "2030-01-07T09:30"), ("2030-01-07T19:00", "2030-01-07T21:00"))
-        entries, pending = schedule([task("A", 50)], week, 0)
+        entries, pending = schedule([task("A", 50)], week)
         work = [e for e in entries if e["kind"] == "task"]
         self.assertEqual([(e["title"], e["start"], e["minutes"]) for e in work], [("A", "2030-01-07T19:00", 50)])
 
-    def test_day_task_minutes_fill_the_daily_cap(self):
-        self.assertEqual(day_task_minutes(plan_policy(user_profile(USER_A))), [50, 40])
-        self.assertEqual(day_task_minutes(plan_policy(user_profile(USER_B))), [20, 20, 20])  # 72 - 5 starter
-        self.assertEqual(day_task_minutes(PlanPolicy(30, 25, None, None, None)), [])
-
     def test_without_policy_values_the_schedule_is_unchanged(self):
         week = windows(("2030-01-07T09:00", "2030-01-07T12:00"))
-        entries, pending = schedule([task("작업", 30)], week, 25)
+        entries, pending = schedule([task("작업", 30)], week)
         self.assertEqual([e["kind"] for e in entries], ["task", "break"])
         self.assertFalse(any(e.get("starter") for e in entries))
         self.assertEqual(pending, [])
@@ -130,8 +167,7 @@ class SchedulerTests(unittest.TestCase):
     def test_preferred_period_is_used_when_it_fits(self):
         week = windows(("2030-01-07T09:00", "2030-01-07T11:00"), ("2030-01-07T19:00", "2030-01-07T21:00"),
                        ("2030-01-08T09:00", "2030-01-08T11:00"), ("2030-01-08T19:00", "2030-01-08T21:00"))
-        policy = PlanPolicy(block_minutes=50, buffer_percent=25, daily_cap_minutes=90, starter_minutes=None,
-                            preferred_period="morning")
+        policy = PlanPolicy(block_minutes=50, daily_cap_minutes=90, starter_minutes=None, preferred_period="morning")
         entries, pending, placement = place_tasks([task("A", 50), task("B", 40)], week, policy)
         self.assertEqual(placement, "preferred")
         self.assertTrue(all(e["start"][11:13] < "12" for e in entries))
@@ -142,7 +178,7 @@ class SchedulerTests(unittest.TestCase):
 
     def test_preferred_period_falls_back_without_losing_tasks(self):
         week = windows(("2030-01-07T11:00", "2030-01-07T12:00"), ("2030-01-07T19:00", "2030-01-07T22:00"))
-        policy = PlanPolicy(50, 0, None, None, "morning")
+        policy = PlanPolicy(50, None, None, "morning")
         entries, pending, placement = place_tasks([task("A", 50), task("B", 50)], week, policy)
         self.assertEqual((placement, pending), ("mixed", []))
         _, _, placement = place_tasks([task("A", 50)], windows(("2030-01-07T19:00", "2030-01-07T21:00")), policy)
@@ -158,8 +194,7 @@ class ReasonTests(unittest.TestCase):
         self.assertIn("50분", a["taskLength"]["applied"])
         self.assertEqual((a["taskLength"]["source"], a["taskLength"]["fields"]), ("declared", ["focusMinutes"]))
         self.assertIn("집중 가능 시간 50분", a["taskLength"]["because"])
-        self.assertIn("25%", a["buffer"]["applied"])
-        self.assertIn("규칙적", a["buffer"]["because"])
+        self.assertNotIn("buffer", a)  # all the chosen time is planned; nothing is held back
         self.assertIn("오전", a["period"]["applied"])
         self.assertIn("다시 잡는", a["recovery"]["applied"])
         self.assertNotIn("starter", a)
@@ -167,9 +202,7 @@ class ReasonTests(unittest.TestCase):
         self.assertIn("20분", b["taskLength"]["applied"])
         self.assertIn("집중 가능 시간 20분", b["taskLength"]["because"])
         self.assertIn("5분", b["starter"]["applied"])
-        self.assertIn("40%", b["buffer"]["applied"])
-        self.assertIn("불규칙", b["buffer"]["because"])
-        self.assertIn("72분", b["dailyCap"]["applied"])
+        self.assertIn("120분", b["dailyCap"]["applied"])
         self.assertIn("줄이는", b["recovery"]["applied"])
         self.assertIn("할 일 목록", b["scheduleStyle"]["applied"])
         self.assertNotIn("period", b)
@@ -196,8 +229,6 @@ class ReasonTests(unittest.TestCase):
                 self.assertEqual(keyed["taskLength"]["source"], "default" if focus is None else "declared")
                 if focus is not None:
                     self.assertIn(f"{focus}분", keyed["taskLength"]["because"])
-                self.assertIn(f"{prefs['bufferPercent']}%", keyed["buffer"]["applied"])
-                self.assertEqual("불규칙" in keyed["buffer"]["because"], regularity == "irregular")
                 self.assertEqual("starter" in keyed, prefs["starterMinutes"] is not None)
                 self.assertEqual("dailyCap" in keyed, daily is not None)
                 if daily is not None:
@@ -206,10 +237,9 @@ class ReasonTests(unittest.TestCase):
                 self.assertEqual("recovery" in keyed, recovery in ("reduce", "replan"))
 
     def test_values_set_outside_the_survey_are_not_explained_by_answers(self):
-        edited = user_profile(USER_B, blockMinutes=15, bufferPercent=10)
+        edited = user_profile(USER_B, blockMinutes=15, dailyPlannedMinutes=100)
         reasons = by_key(personalization_reasons(edited, placement=None, starter_used=False))
-        self.assertEqual((reasons["taskLength"]["source"], reasons["buffer"]["source"]), ("profile", "profile"))
-        self.assertNotIn("불규칙", reasons["buffer"]["because"])
+        self.assertEqual((reasons["taskLength"]["source"], reasons["dailyCap"]["source"]), ("profile", "profile"))
 
     def test_learned_change_names_its_evidence(self):
         profile = user_profile(USER_A, blockMinutes=20)
@@ -221,8 +251,8 @@ class ReasonTests(unittest.TestCase):
         self.assertIn("50분 → 20분", reason["because"])
 
     def test_policy_reads_only_the_users_profile(self):
-        self.assertEqual(plan_policy(user_profile(USER_A)), PlanPolicy(50, 25, 90, None, "morning"))
-        self.assertEqual(plan_policy(user_profile(USER_B)), PlanPolicy(20, 40, 72, 5, None))
+        self.assertEqual(plan_policy(user_profile(USER_A)), PlanPolicy(50, 120, None, "morning"))
+        self.assertEqual(plan_policy(user_profile(USER_B)), PlanPolicy(20, 120, 5, None))
 
 
 class StrategyTests(unittest.TestCase):
@@ -310,20 +340,22 @@ class OverflowLLM(PlanLLM):
     async def generate(self, **kwargs):
         reply = await super().generate(**kwargs)
         if kwargs["name"] == "execution_tasks":
-            reply["tasks"] = reply["tasks"] * 3 if len(self.calls) <= self.overflows else reply["tasks"][:2]
+            reply["tasks"] = (reply["tasks"] * 5)[:40] if len(self.calls) <= self.overflows else reply["tasks"][:2]
         return reply
 
 
 class DeadlineLLM(PlanLLM):
-    """Puts a task due on the first day last, until a retry names its deadline."""
+    """Puts a task due on the first day last, until a retry names its deadline; then keeps it first."""
+
+    told = False
 
     async def generate(self, **kwargs):
         reply = await super().generate(**kwargs)
         if kwargs["name"] == "execution_tasks":
             due = {"title": "발표 연습", "minutes": 40, "doneWhen": "처음부터 끝까지 한 번", "dueDate": "2030-01-07"}
             others = [{"title": f"자료 {i}장", "minutes": 40, "doneWhen": "초안 완성", "dueDate": None} for i in range(3)]
-            told = any("'발표 연습'(마감 2030-01-07)" in e for e in kwargs["context"].get("previousErrors", []))
-            reply["tasks"] = [due, *others] if told else [*others, due]
+            self.told = self.told or any("'발표 연습'(마감 2030-01-07)" in e for e in kwargs["context"].get("previousErrors", []))
+            reply["tasks"] = [due, *others] if self.told else [*others, due]
         return reply
 
 
@@ -337,6 +369,36 @@ class TooLongLLM(PlanLLM):
             told = any("'화면 흐름 검토' 120분은 작업당 최대 50분을 넘습니다" in e for e in errors)
             reply["tasks"] = ([{"title": f"화면 흐름 검토 {i}", "minutes": 40, "doneWhen": "절반 검토", "dueDate": None} for i in (1, 2)]
                               if told else [{"title": "화면 흐름 검토", "minutes": 120, "doneWhen": "검토 완료", "dueDate": None}])
+        return reply
+
+
+class TimedDoneWhenLLM(PlanLLM):
+    """Writes the start time as the completion condition for the first ``times`` calls."""
+
+    def __init__(self, times):
+        super().__init__()
+        self.times = times
+
+    async def generate(self, **kwargs):
+        reply = await super().generate(**kwargs)
+        if kwargs["name"] == "execution_tasks" and len(self.calls) <= self.times:
+            for i, task in enumerate(reply["tasks"]):
+                task["doneWhen"] = f"2030-01-07T{9 + i:02d}:00"
+        return reply
+
+
+class ShortTasksLLM(PlanLLM):
+    """Cuts the work into 10-minute slivers for the first ``times`` calls."""
+
+    def __init__(self, times):
+        super().__init__()
+        self.times = times
+
+    async def generate(self, **kwargs):
+        reply = await super().generate(**kwargs)
+        if kwargs["name"] == "execution_tasks" and len(self.calls) <= self.times:
+            reply["tasks"] = [{"title": f"자료 {i} 찾기", "minutes": 10, "doneWhen": f"자료 {i} 링크 저장", "dueDate": None}
+                              for i in range(1, 7)]
         return reply
 
 
@@ -366,13 +428,47 @@ class TwoUsersApiTests(unittest.TestCase):
             self.assertEqual(state["plan"]["personalization"], draft["personalization"])
             return draft, llm.calls[-1]
 
+    def test_tasks_go_only_as_deep_as_the_planner_can_know(self):
+        # A school exam's range is not visible to the planner; only a public exam's big areas are.
+        _, call = self.plan_for(USER_A)
+        self.assertIn(TASK_DEPTH_INSTRUCTION, call["instructions"])
+        self.assertIn(TASK_DEPTH_INSTRUCTION, RECOVERY_INSTRUCTIONS)  # shrinking a task keeps the same depth
+
     def test_overflow_is_asked_again_with_numbers(self):
         llm = OverflowLLM(overflows=1)
         draft, last = self.plan_for(USER_B, llm)
         self.assertEqual(len(llm.calls), 2)
         self.assertEqual(draft["pendingTasks"], [])
-        self.assertIn("하루 최대 72분", last["context"]["previousErrors"][0])
+        self.assertIn("하루 최대 120분", last["context"]["previousErrors"][0])
         self.assertNotIn("previousErrors", llm.calls[0]["context"])
+
+    def test_a_completion_condition_is_a_result_not_a_time(self):
+        llm = TimedDoneWhenLLM(times=1)
+        draft, _ = self.plan_for(USER_A, llm)
+        self.assertNotIn("previousErrors", llm.calls[0]["context"])
+        self.assertIn("doneWhen에 날짜·시각('2030-01-07T09:00')을 썼습니다", llm.calls[1]["context"]["previousErrors"][0])
+        self.assertEqual({e["doneWhen"] for e in draft["entries"] if e["kind"] == "task"}, {"한 부분 완성"})
+
+        # Out of retries, the plan still comes, with a plain condition instead of a time.
+        llm = TimedDoneWhenLLM(times=10)
+        draft, _ = self.plan_for(USER_A, llm)
+        tasks = [e for e in draft["entries"] if e["kind"] == "task"]
+        self.assertTrue(tasks)
+        self.assertTrue(all(e["doneWhen"] == f"‘{e['title']}’ 마치기" for e in tasks))
+
+    def test_work_is_not_cut_into_slivers(self):
+        llm = ShortTasksLLM(times=1)
+        draft, _ = self.plan_for(USER_A, llm)
+        self.assertIn("짧습니다", llm.calls[1]["context"]["previousErrors"][0])
+        self.assertEqual(llm.calls[0]["context"]["minTaskMinutes"], 25)
+        self.assertTrue(all(e["minutes"] >= 25 for e in draft["entries"] if e["kind"] == "task" and not e.get("starter")))
+
+        # Out of retries, neighbouring slivers are joined up to the focus block; one short wrap-up may stay.
+        llm = ShortTasksLLM(times=10)
+        draft, _ = self.plan_for(USER_A, llm)
+        tasks = [e for e in draft["entries"] if e["kind"] == "task" and not e.get("starter")]
+        self.assertEqual([e["minutes"] for e in tasks], [50, 10])
+        self.assertEqual(tasks[0]["title"], "자료 1 찾기 · 자료 2 찾기 · 자료 3 찾기 · 자료 4 찾기 · 자료 5 찾기")
 
     def test_a_task_over_the_focus_block_is_named_in_the_retry(self):
         llm = TooLongLLM()
@@ -384,9 +480,8 @@ class TwoUsersApiTests(unittest.TestCase):
 
     def test_a_deadline_task_left_out_is_named_in_the_retry(self):
         llm = DeadlineLLM()
-        draft, last = self.plan_for(USER_A, llm)
-        self.assertEqual(len(llm.calls), 2)
-        self.assertIn("'발표 연습'(마감 2030-01-07)은 마감 전에 들어갈 자리가 없었습니다", last["context"]["previousErrors"][1])
+        draft, _ = self.plan_for(USER_A, llm)
+        self.assertIn("'발표 연습'(마감 2030-01-07)은 마감 전에 들어갈 자리가 없었습니다", llm.calls[1]["context"]["previousErrors"][1])
         self.assertEqual(draft["pendingTasks"], [])
         placed = next(e for e in draft["entries"] if e["title"] == "발표 연습")
         self.assertEqual(placed["start"][:10], "2030-01-07")
@@ -407,15 +502,15 @@ class TwoUsersApiTests(unittest.TestCase):
 
         self.assertEqual(max(e["minutes"] for e in a_tasks), 50)
         self.assertTrue(all(e["minutes"] <= 50 for e in a_tasks))
-        self.assertEqual(a["pendingTasks"], [])  # 50-minute tasks are split to fill each 90-minute day
+        self.assertEqual(a["pendingTasks"], [])
         for day in {e["start"][:10] for e in a_tasks}:
-            self.assertLessEqual(sum(e["minutes"] for e in a_tasks if e["start"].startswith(day)), 90)
+            self.assertLessEqual(sum(e["minutes"] for e in a_tasks if e["start"].startswith(day)), 120)
         self.assertTrue(all(e["start"][11:13] < "12" for e in a_tasks))
         self.assertFalse(any(e.get("starter") for e in a["entries"]))
         self.assertTrue(b_tasks and all(e["minutes"] <= 20 for e in b_tasks))
         self.assertTrue(b_starters and all(e["minutes"] == 5 for e in b_starters))
         for day in {e["start"][:10] for e in b_tasks}:
-            self.assertLessEqual(sum(e["minutes"] for e in b["entries"] if e["kind"] == "task" and e["start"].startswith(day)), 72)
+            self.assertLessEqual(sum(e["minutes"] for e in b["entries"] if e["kind"] == "task" and e["start"].startswith(day)), 120)
         self.assertLess(sum(e["minutes"] for e in b_tasks), sum(e["minutes"] for e in a_tasks))
 
         self.assertEqual((a_call["context"]["maxBlockMinutes"], a_call["context"]["starterMinutes"]), (50, None))
@@ -428,6 +523,118 @@ class TwoUsersApiTests(unittest.TestCase):
         self.assertEqual(set(b_reasons) - set(a_reasons), {"starter"})
         self.assertNotIn(SECRET, str(a["personalization"]) + str(b["personalization"]))
         self.assertNotIn(SECRET, str(a_call["context"]) + str(b_call["context"]))
+
+
+
+class FillTheDayLLM(PlanLLM):
+    """Sizes every task to the focus block first; after the retry, fits each day's slots."""
+
+    async def generate(self, **kwargs):
+        if kwargs["name"] != "execution_tasks":
+            return await super().generate(**kwargs)
+        self.calls.append(kwargs)
+        context = kwargs["context"]
+        if context.get("previousErrors"):
+            sizes = [m for day in context["daySlots"] for m in day["minutes"]][:4]
+        else:
+            sizes = [context["maxBlockMinutes"]] * 4
+        return {"tasks": [{"title": f"보고서 {i}", "minutes": m, "doneWhen": "한 부분 완성", "dueDate": None}
+                          for i, m in enumerate(sizes, 1)]}
+
+
+class StubbornLLM(PlanLLM):
+    """Sizes every task to the focus block, however often it is told about the day's slots."""
+
+    async def generate(self, **kwargs):
+        if kwargs["name"] != "execution_tasks":
+            return await super().generate(**kwargs)
+        self.calls.append(kwargs)
+        return {"tasks": [{"title": f"보고서 {i}", "minutes": kwargs["context"]["maxBlockMinutes"],
+                           "doneWhen": "한 부분 완성", "dueDate": None} for i in range(1, 7)]}
+
+
+class FillTheDayTests(unittest.TestCase):
+    """The time the user chose is used: a day is full before work moves to the next one."""
+
+    def test_a_day_is_filled_before_the_next(self):
+        answers = {**USER_A, "focusMinutes": 60, "dailyMinutes": None, "energy": "unknown"}
+        llm = FillTheDayLLM()
+        with tempfile.TemporaryDirectory() as temp, TestClient(create_app(
+                execution_store=ExecutionStore(Path(temp) / "db.sqlite3"), execution_llm=llm)) as client:
+            state = client.get("/api/execution").json()
+
+            def post(path, method="post", **body):
+                nonlocal state
+                response = getattr(client, method)(f"/api/execution{path}", json={"revision": state["revision"], **body})
+                self.assertEqual(response.status_code, 200, response.text)
+                state = response.json()
+
+            post("/profile", answers=answers)
+            post("/profile/confirm")
+            post("/settings", method="put", settings={"slots": [{"day": d, "hour": h} for d in (0, 1) for h in (19, 20, 21)],
+                                                      "view": "timeline"})
+            post("/plan", goal=GOAL, startDate="2030-01-07", consent=True)
+
+        first, retry = llm.calls
+        self.assertEqual(first["context"]["daySlots"][0], {"date": "2030-01-07", "minutes": [60, 60, 50]})
+        self.assertEqual(first["context"]["budgetMinutes"], 340)
+        self.assertIn("1/7(월)에 50분이 비었는데 다음 작업 '보고서 3'(60분)", retry["context"]["previousErrors"][0])
+        monday = [(e["start"][11:], e["minutes"]) for e in state["planDraft"]["entries"]
+                  if e["kind"] == "task" and e["start"].startswith("2030-01-07")]
+        self.assertEqual(monday, [("19:00", 60), ("20:05", 60), ("21:10", 50)])
+
+
+    def test_out_of_retries_the_day_is_filled_by_cutting(self):
+        answers = {**USER_A, "focusMinutes": 50, "dailyMinutes": 90, "energy": "unknown"}
+        llm = StubbornLLM()
+        with tempfile.TemporaryDirectory() as temp, TestClient(create_app(
+                execution_store=ExecutionStore(Path(temp) / "db.sqlite3"), execution_llm=llm)) as client:
+            state = client.get("/api/execution").json()
+
+            def post(path, method="post", **body):
+                nonlocal state
+                response = getattr(client, method)(f"/api/execution{path}", json={"revision": state["revision"], **body})
+                self.assertEqual(response.status_code, 200, response.text)
+                state = response.json()
+
+            post("/profile", answers=answers)
+            post("/profile/confirm")
+            post("/settings", method="put", settings={"slots": [{"day": d, "hour": h} for d in (0, 1, 2) for h in (9, 10, 11)],
+                                                      "view": "timeline"})
+            post("/plan", goal=GOAL, startDate="2030-01-07", consent=True)
+
+        self.assertEqual(len(llm.calls), 3)  # the first try and both retries asked for the day's slots
+        self.assertIn("가용 시간에 들어가지 않았습니다", llm.calls[1]["context"]["previousErrors"][0])
+        monday = [(e["title"], e["minutes"]) for e in state["planDraft"]["entries"]
+                  if e["kind"] == "task" and e["start"].startswith("2030-01-07")]
+        # Shortened to the 40 minutes left rather than cut into 40 + 10: one task, no sliver the next day.
+        self.assertEqual(monday, [("보고서 1", 50), ("보고서 2", 40)])
+        self.assertEqual(state["planDraft"]["pendingTasks"], [])
+
+
+    def test_out_of_retries_tasks_shrink_to_the_time_left_instead_of_falling_out(self):
+        answers = {**USER_A, "focusMinutes": 90, "dailyMinutes": None, "energy": "unknown"}
+        llm = StubbornLLM()
+        with tempfile.TemporaryDirectory() as temp, TestClient(create_app(
+                execution_store=ExecutionStore(Path(temp) / "db.sqlite3"), execution_llm=llm)) as client:
+            state = client.get("/api/execution").json()
+
+            def post(path, method="post", **body):
+                nonlocal state
+                response = getattr(client, method)(f"/api/execution{path}", json={"revision": state["revision"], **body})
+                self.assertEqual(response.status_code, 200, response.text)
+                state = response.json()
+
+            post("/profile", answers=answers)
+            post("/profile/confirm")
+            post("/settings", method="put", settings={"slots": [{"day": d, "hour": h} for d in (0, 1) for h in (19, 20, 21)],
+                                                      "view": "timeline"})
+            post("/plan", goal=GOAL, startDate="2030-01-07", consent=True)
+
+        self.assertTrue(any("85분이 비었는데" in e for e in llm.calls[1]["context"]["previousErrors"]))  # the retry names the slot it missed
+        placed = [e["minutes"] for e in state["planDraft"]["entries"] if e["kind"] == "task"]
+        self.assertEqual(placed, [90, 85, 90, 85])
+        self.assertEqual(len(state["planDraft"]["pendingTasks"]), 2)  # six 90-minute tasks never fit two evenings
 
 
 if __name__ == "__main__":

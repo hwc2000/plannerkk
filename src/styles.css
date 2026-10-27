@@ -31,6 +31,13 @@ button { cursor: pointer; border: 0; }
 .nav-item { display: flex; gap: 12px; align-items: center; width: 100%; padding: 11px 12px; border-radius: 10px; color: #58635e; background: transparent; text-align: left; font-size: 14px; font-weight: 600; transition: .18s ease; }
 .nav-item:hover { background: #ebeee8; color: var(--ink); }
 .nav-item.active { background: #e8e9ff; color: var(--violet-dark); }
+.nav-section { display: grid; gap: 2px; margin: 10px 0; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.nav-heading { padding: 0 12px 6px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+.nav-project { padding: 8px 12px; font-size: 13px; }
+.nav-project span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nav-project .project-dot { flex: none; }
+.nav-add { padding: 8px 12px; color: var(--muted); font-size: 12px; }
+.nav-ended summary { padding: 6px 12px; color: var(--muted); font-size: 11px; cursor: pointer; }
 .sidebar-bottom { margin-top: auto; }
 .profile { display: flex; align-items: center; gap: 9px; margin: 16px 4px 0; padding: 14px 9px 4px; border-top: 1px solid var(--line); font-size: 12px; }
 .profile > div:nth-child(2) { display: grid; gap: 2px; flex: 1; }

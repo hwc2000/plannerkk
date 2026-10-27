@@ -9,7 +9,6 @@ import {
   logout,
   saveWorkspace,
 } from './features/auth/api'
-import { seedEvents, seedMemories, seedMilestones, seedProjects } from './shared/constants'
 import type { AuthUser, WorkspaceData } from './shared/types'
 import './features/auth/auth.css'
 
@@ -84,11 +83,12 @@ export function Root() {
   const boot = useCallback(async () => {
     setPhase({ kind: 'loading' })
     if (!(await fetchAuthEnabled())) {
+      // A new user starts empty: sample data would reach the AI as if it were the user's.
       setPhase({ kind: 'open', workspace: {
-        projects: readLegacy(LEGACY_KEYS.projects) ?? seedProjects,
-        milestones: readLegacy(LEGACY_KEYS.milestones) ?? seedMilestones,
-        events: readLegacy(LEGACY_KEYS.events) ?? seedEvents,
-        memories: readLegacy(LEGACY_KEYS.memories) ?? seedMemories,
+        projects: readLegacy(LEGACY_KEYS.projects) ?? [],
+        milestones: readLegacy(LEGACY_KEYS.milestones) ?? [],
+        events: readLegacy(LEGACY_KEYS.events) ?? [],
+        memories: readLegacy(LEGACY_KEYS.memories) ?? [],
       } })
       return
     }

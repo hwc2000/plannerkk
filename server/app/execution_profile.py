@@ -1,5 +1,4 @@
 """Validated onboarding facts and provisional planning preferences."""
-import json
 from datetime import datetime, timezone
 
 OPTIONS = {
@@ -8,6 +7,14 @@ OPTIONS = {
     "barriers": ["starting", "overplanning", "distraction", "fatigue", "interruptions", "unclear", "none", "unknown"],
     "recovery": ["replan", "reduce", "continue", "abandon", "unknown"],
     "energy": ["morning", "afternoon", "evening", "variable", "unknown"],
+}
+
+# The survey's choices as the user sees them (src/features/execution/profileLabels.ts).
+CHOICE_LABELS = {
+    "roles": {"student": "학생", "employee": "직장인", "job_seeker": "취업 준비생", "freelancer": "프리랜서", "other": "그 외"},
+    "regularity": {"regular": "대체로 규칙적", "mixed": "요일마다 다름", "irregular": "예측하기 어려움", "unknown": "잘 모르겠어요"},
+    "barriers": {"starting": "시작이 어려움", "overplanning": "과도한 계획", "distraction": "집중력 저하", "fatigue": "피로",
+                 "interruptions": "갑작스러운 일", "unclear": "무엇부터 할지 모름", "none": "특별한 어려움 없음", "unknown": "잘 모르겠어요"},
 }
 
 def validate_answers(value):
@@ -68,6 +75,14 @@ def validate_insights(data):
         raise ValueError("LLM 후속 질문이 올바르지 않습니다.")
     return data
 
+# Parts of the day a focus time can name (system boundaries, start hour inclusive).
+FOCUS_PERIODS = {"morning": (5, 12), "afternoon": (12, 18), "evening": (18, 24)}
+
+# Start value when the user does not know their focus time yet (a default, shown as such).
+# Plans tell the AI it is only a starting value, so it sizes each task's workload to fit.
+UNKNOWN_FOCUS_START = 60
+
+
 def generate_profile(raw):
     mode = "demo"
     a = validate_answers(raw)
@@ -75,17 +90,21 @@ def generate_profile(raw):
         raise ValueError("지원하지 않는 생성 방식입니다.")
     focus = a["focusMinutes"]
     daily = a["dailyMinutes"]
-    block = min(focus or 15, daily or 180, 50)
-    if "distraction" in a["barriers"]:
-        block = min(block, 20)
-    buffer = 40 if a["regularity"] in ("irregular", "unknown") or "overplanning" in a["barriers"] else 25
+    # The focus block is the user's own answer, never capped by a fixed number.  Only an
+    # unknown answer starts from a short block; execution records adjust it from there.
+    block = focus or UNKNOWN_FOCUS_START
+    if daily:
+        block = min(block, daily)
+    # The weekly time the user chooses is the time to plan in, all of it: no share is held back.
     prefs = {
         "blockMinutes": block, "breakMinutes": 5,
-        "bufferPercent": buffer,
-        "dailyPlannedMinutes": int(daily * (100 - buffer) / 100) if daily else None,
+        "dailyPlannedMinutes": daily or None,
         "scheduleStyle": a.get("scheduleStyle") if a.get("scheduleStyle") in ("time_blocks", "flexible_queue") else ("time_blocks" if a["regularity"] == "regular" else "flexible_queue"),
         "scheduleStyleSource": "user" if a.get("scheduleStyle") in ("time_blocks", "flexible_queue") else "rule",
         "recoveryPreference": a["recovery"],
+        # When the user focuses best.  Onboarding no longer asks: it starts unknown and is
+        # learned from execution records (an older answer is kept as the user's own).
+        "focusTime": a["energy"],
         "starterMinutes": min(5, block) if "starting" in a["barriers"] else None,
         "status": "provisional",
     }
@@ -93,10 +112,10 @@ def generate_profile(raw):
         prefs["blockMinutes"] = min(block, prefs["dailyPlannedMinutes"])
         if prefs["starterMinutes"] is not None:
             prefs["starterMinutes"] = min(prefs["starterMinutes"], prefs["blockMinutes"])
-    strategies = [{"action": f"첫 집중 구간을 {prefs['blockMinutes']}분으로 시도해 보세요.", "reason": "응답한 집중 시간과 하루 여유 시간을 상한으로 둔 초기 제안입니다. 모르는 경우 15분부터 탐색합니다.", "evidence": ["focusMinutes", "dailyMinutes"]}]
+    strategies = [{"action": f"첫 집중 구간을 {prefs['blockMinutes']}분으로 시도해 보세요.", "reason": f"답한 집중 시간을 그대로 첫 집중 구간으로 씁니다. 모르는 경우 {UNKNOWN_FOCUS_START}분부터 시작하고, 실행 기록이 쌓이면 맞춰 조정합니다.", "evidence": ["focusMinutes", "dailyMinutes"]}]
     actions = {
         "starting": ("첫 행동을 5분 이내로 줄이기", "시작이 어렵다는 응답에 맞춰 준비와 첫 행동을 분리합니다."),
-        "overplanning": ("하루 여유 시간의 40%를 비워 두기", "계획량이 많다는 응답을 반영한 초기 여유분입니다."),
+        "overplanning": ("고른 시간에 들어가는 만큼만 계획하기", "계획량이 많다는 응답에 맞춰, 넘치는 일은 ‘배치하지 못한 작업’으로 따로 보여 줍니다."),
         "distraction": ("한 구간에 한 작업만 배치하기", "집중이 흐트러지는 상황에서 전환 횟수를 줄여 봅니다."),
         "fatigue": ("힘이 덜 드는 대체 작업 준비하기", "피곤한 날에도 작업량을 조절할 수 있게 합니다."),
         "interruptions": ("중단할 때 다음 행동 한 줄 남기기", "다시 시작하는 부담을 줄여 봅니다."),
@@ -115,5 +134,5 @@ def generate_profile(raw):
         questions.append("집중 가능 시간이 하루 여유 시간보다 깁니다. 서로 다른 상황을 기준으로 답하셨나요?")
     if a["recovery"] in ("abandon", "unknown"):
         questions.append("계획이 틀어졌을 때 작업량 줄이기와 시간 다시 잡기 중 무엇이 덜 부담스러울까요?")
-    insights = {"summary": "답변을 바탕으로 만든 첫 실행 프로필입니다. 제안한 시간과 여유분은 실제 실행 후 조정할 초기값입니다.", "strategies": strategies, "followUpQuestions": questions}
+    insights = {"summary": "답변을 바탕으로 만든 첫 실행 프로필입니다. 제안한 집중 시간은 실제 실행 후 조정할 초기값입니다.", "strategies": strategies, "followUpQuestions": questions}
     return {"schemaVersion": "1.0", "createdAt": datetime.now(timezone.utc).isoformat(), "source": mode, "status": "draft", "facts": a, "planningPreferences": prefs, "insights": insights}
