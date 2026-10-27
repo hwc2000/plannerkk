@@ -111,11 +111,13 @@ def preferred_windows(windows: Sequence[Window], period: str) -> list[Window]:
 
 
 def place_tasks(
-    tasks: Sequence[Mapping[str, Any]], windows: Sequence[Window], policy: PlanPolicy,
+    tasks: Sequence[Mapping[str, Any]], windows: Sequence[Window], policy: PlanPolicy, *, fill_daily_cap: bool = False,
+    shrink_to_fit: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Placement | None]:
     """Schedule in the preferred period when it holds as much as the whole week does."""
     def run(chosen: Sequence[Window]):
-        return schedule(tasks, list(chosen), daily_cap=policy.daily_cap_minutes, starter_minutes=policy.starter_minutes)
+        return schedule(tasks, list(chosen), daily_cap=policy.daily_cap_minutes, starter_minutes=policy.starter_minutes,
+                        fill_daily_cap=fill_daily_cap, shrink_to_fit=shrink_to_fit)
 
     entries, pending = run(windows)
     if policy.preferred_period is None:

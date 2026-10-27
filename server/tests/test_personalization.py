@@ -96,7 +96,7 @@ class SchedulerTests(unittest.TestCase):
         # Placed whole, each day used 50 of its 90 minutes and the rehearsals fell out of the week.
         week = windows(*[(f"2030-01-{d:02d}T09:00", f"2030-01-{d:02d}T12:00") for d in range(7, 12)])
         titles = ["구성", "작성 1", "작성 2", "작성 3", "작성 4", "디자인", "연습 1", "연습 2", "연습 3"]
-        entries, pending = schedule([task(t, 50) for t in titles], week, daily_cap=90)
+        entries, pending = schedule([task(t, 50) for t in titles], week, daily_cap=90, fill_daily_cap=True)
         work = [e for e in entries if e["kind"] == "task"]
         self.assertEqual(pending, [])
         for day in {e["start"][:10] for e in work}:
@@ -110,7 +110,7 @@ class SchedulerTests(unittest.TestCase):
     def test_split_to_fill_the_cap_keeps_the_starter_and_minimum_piece(self):
         week = windows(*[(f"2030-01-{d:02d}T19:00", f"2030-01-{d:02d}T22:00") for d in range(7, 10)])
         entries, pending = schedule([task(f"작업 {i}", 20, starter="열기") for i in range(4)], week,
-                                    daily_cap=36, starter_minutes=5)
+                                    daily_cap=36, starter_minutes=5, fill_daily_cap=True)
         work = [e for e in entries if e["kind"] == "task"]
         self.assertEqual(pending, [])
         for day in {e["start"][:10] for e in work}:
@@ -122,10 +122,33 @@ class SchedulerTests(unittest.TestCase):
 
     def test_a_leftover_shorter_than_a_piece_is_not_split_into(self):
         week = windows(("2030-01-07T09:00", "2030-01-07T12:00"), ("2030-01-08T09:00", "2030-01-08T12:00"))
-        entries, pending = schedule([task("A", 50), task("B", 50)], week, daily_cap=55)
+        entries, pending = schedule([task("A", 50), task("B", 50)], week, daily_cap=55, fill_daily_cap=True)
         work = [e for e in entries if e["kind"] == "task"]
         self.assertEqual([(e["title"], e["start"]) for e in work],
                          [("A", "2030-01-07T09:00"), ("B", "2030-01-08T09:00")])  # 5 minutes left: B waits a day
+
+    def test_tasks_that_fit_the_slots_are_not_cut_for_a_leftover(self):
+        # 9-11 and 19-21, 120 minutes a day: the morning takes 50·30·30 and 10 minutes of the plan are left.
+        # Cutting the next day's task for those 10 minutes would put a sliver in the evening.
+        week = windows(*[w for d in (7, 8) for w in ((f"2030-01-{d:02d}T09:00", f"2030-01-{d:02d}T11:00"),
+                                                     (f"2030-01-{d:02d}T19:00", f"2030-01-{d:02d}T21:00"))])
+        entries, pending = schedule([task(f"작업 {i}", m) for i, m in enumerate([50, 30, 30] * 2)], week, daily_cap=120)
+        work = [e for e in entries if e["kind"] == "task"]
+        self.assertEqual(pending, [])
+        self.assertEqual([(e["start"][5:16], e["minutes"]) for e in work],
+                         [("01-07T09:00", 50), ("01-07T09:55", 30), ("01-07T10:30", 30),
+                          ("01-08T09:00", 50), ("01-08T09:55", 30), ("01-08T10:30", 30)])
+
+    def test_shrink_to_fit_keeps_later_tasks_before_the_deadline(self):
+        # 19-22 twice, 90-minute tasks: after the first one only 85 minutes are left each evening.
+        week = windows(("2030-01-07T19:00", "2030-01-07T22:00"), ("2030-01-08T19:00", "2030-01-08T22:00"))
+        tasks = [dict(task(f"작업 {i}", 90), dueDate="2030-01-08") for i in range(4)]
+        _, pending = schedule(tasks, week)
+        self.assertEqual(len(pending), 2)  # in order, the second task skips a day and the last two fall out
+        entries, pending = schedule(tasks, week, shrink_to_fit=True)
+        self.assertEqual(pending, [])
+        self.assertEqual([(e["start"][5:], e["minutes"]) for e in entries if e["kind"] == "task"],
+                         [("01-07T19:00", 90), ("01-07T20:35", 85), ("01-08T19:00", 90), ("01-08T20:35", 85)])
 
     def test_a_window_too_short_still_waits_for_a_whole_block(self):
         # Without a daily cap a short window does not chop a task; it goes whole into the next window.
@@ -519,6 +542,17 @@ class FillTheDayLLM(PlanLLM):
                           for i, m in enumerate(sizes, 1)]}
 
 
+class StubbornLLM(PlanLLM):
+    """Sizes every task to the focus block, however often it is told about the day's slots."""
+
+    async def generate(self, **kwargs):
+        if kwargs["name"] != "execution_tasks":
+            return await super().generate(**kwargs)
+        self.calls.append(kwargs)
+        return {"tasks": [{"title": f"보고서 {i}", "minutes": kwargs["context"]["maxBlockMinutes"],
+                           "doneWhen": "한 부분 완성", "dueDate": None} for i in range(1, 7)]}
+
+
 class FillTheDayTests(unittest.TestCase):
     """The time the user chose is used: a day is full before work moves to the next one."""
 
@@ -548,6 +582,59 @@ class FillTheDayTests(unittest.TestCase):
         monday = [(e["start"][11:], e["minutes"]) for e in state["planDraft"]["entries"]
                   if e["kind"] == "task" and e["start"].startswith("2030-01-07")]
         self.assertEqual(monday, [("19:00", 60), ("20:05", 60), ("21:10", 50)])
+
+
+    def test_out_of_retries_the_day_is_filled_by_cutting(self):
+        answers = {**USER_A, "focusMinutes": 50, "dailyMinutes": 90, "energy": "unknown"}
+        llm = StubbornLLM()
+        with tempfile.TemporaryDirectory() as temp, TestClient(create_app(
+                execution_store=ExecutionStore(Path(temp) / "db.sqlite3"), execution_llm=llm)) as client:
+            state = client.get("/api/execution").json()
+
+            def post(path, method="post", **body):
+                nonlocal state
+                response = getattr(client, method)(f"/api/execution{path}", json={"revision": state["revision"], **body})
+                self.assertEqual(response.status_code, 200, response.text)
+                state = response.json()
+
+            post("/profile", answers=answers)
+            post("/profile/confirm")
+            post("/settings", method="put", settings={"slots": [{"day": d, "hour": h} for d in (0, 1, 2) for h in (9, 10, 11)],
+                                                      "view": "timeline"})
+            post("/plan", goal=GOAL, startDate="2030-01-07", consent=True)
+
+        self.assertEqual(len(llm.calls), 3)  # the first try and both retries asked for the day's slots
+        self.assertIn("가용 시간에 들어가지 않았습니다", llm.calls[1]["context"]["previousErrors"][0])
+        monday = [(e["title"], e["minutes"]) for e in state["planDraft"]["entries"]
+                  if e["kind"] == "task" and e["start"].startswith("2030-01-07")]
+        # Shortened to the 40 minutes left rather than cut into 40 + 10: one task, no sliver the next day.
+        self.assertEqual(monday, [("보고서 1", 50), ("보고서 2", 40)])
+        self.assertEqual(state["planDraft"]["pendingTasks"], [])
+
+
+    def test_out_of_retries_tasks_shrink_to_the_time_left_instead_of_falling_out(self):
+        answers = {**USER_A, "focusMinutes": 90, "dailyMinutes": None, "energy": "unknown"}
+        llm = StubbornLLM()
+        with tempfile.TemporaryDirectory() as temp, TestClient(create_app(
+                execution_store=ExecutionStore(Path(temp) / "db.sqlite3"), execution_llm=llm)) as client:
+            state = client.get("/api/execution").json()
+
+            def post(path, method="post", **body):
+                nonlocal state
+                response = getattr(client, method)(f"/api/execution{path}", json={"revision": state["revision"], **body})
+                self.assertEqual(response.status_code, 200, response.text)
+                state = response.json()
+
+            post("/profile", answers=answers)
+            post("/profile/confirm")
+            post("/settings", method="put", settings={"slots": [{"day": d, "hour": h} for d in (0, 1) for h in (19, 20, 21)],
+                                                      "view": "timeline"})
+            post("/plan", goal=GOAL, startDate="2030-01-07", consent=True)
+
+        self.assertTrue(any("85분이 비었는데" in e for e in llm.calls[1]["context"]["previousErrors"]))  # the retry names the slot it missed
+        placed = [e["minutes"] for e in state["planDraft"]["entries"] if e["kind"] == "task"]
+        self.assertEqual(placed, [90, 85, 90, 85])
+        self.assertEqual(len(state["planDraft"]["pendingTasks"]), 2)  # six 90-minute tasks never fit two evenings
 
 
 if __name__ == "__main__":
