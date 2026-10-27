@@ -3,11 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { AvailabilityGrid } from './AvailabilityGrid'
-import { FixedScheduleEditor } from './FixedScheduleEditor'
 import { ProfileForm } from './ProfileForm'
 import { ExecutionView } from './ExecutionView'
 import { ExecutionLearning } from './ExecutionLearning'
 import { PlannerChat } from './PlannerChat'
+import { CheckIn, checkInTasks } from './CheckIn'
+import { AboutMe } from './AboutMe'
 import { PlanReasons } from './PlanReasons'
 import { ProjectSettings } from './ProjectSettings'
 import { approveProposalAndReplan, planCalendarEvents, planIsStale, replansCurrentPlan, staleProjectIds } from './api'
@@ -64,6 +65,144 @@ it('colors each calendar task by its own project in a multi-project week', () =>
   expect(planCalendarEvents(plan,projects).map(e=>e.projectId)).toEqual(['essay','app',undefined])
 })
 
+describe('screens', () => {
+  const profile = { id: 'profile1', status: 'confirmed', source: 'demo', schemaVersion: '2.0', createdAt: '', learnedPatterns: [],
+    declaredFacts: { roles: ['student'], regularity: 'regular', barriers: ['none'], focusMinutes: 30, dailyMinutes: null, energy: 'unknown', recovery: 'reduce', constraints: '', context: '' },
+    planningPreferences: { blockMinutes: 30, breakMinutes: 5, dailyPlannedMinutes: null, scheduleStyle: 'time_blocks', recoveryPreference: 'reduce', starterMinutes: null, focusTime: 'unknown', status: 'confirmed' },
+    insights: { summary: '요약', strategies: [], followUpQuestions: [] } }
+  const state = { revision: 3, profile, profileDraft: null, settings: { slots: [], view: 'timeline' }, plan: null, planDraft: null,
+    llmAvailable: true, model: 'test' } as unknown as ExecutionState
+  const essay = { id: 'essay', title: '에세이', goal: '초안', startDate: '2030-01-01', dueDate: '2030-01-31', priority: 'high', status: 'active' } as Project
+
+  it('asks for this week\'s hours on the home screen, around the calendar', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 4, settings: { slots: [{ day: 0, hour: 18 }], view: 'timeline' } }) })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ExecutionView state={state} onChange={vi.fn()} projects={[]} milestones={[]} events={[]} section="home" calendar={<p>달력</p>}/>)
+    expect(screen.getByText(/이번 주 계획할 시간 · .* · 아직 안 고름/)).toBeTruthy()
+    expect(screen.getByText(/매주 새로 고르고/)).toBeTruthy()
+    expect(screen.getByText('달력')).toBeTruthy()
+    expect(screen.queryByText(/고정 일정/)).toBeNull()
+    fireEvent.click(screen.getByLabelText('월요일 18시부터 19시'))
+    fireEvent.click(screen.getByText('이번 주 시간 저장'))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/settings')
+  })
+  it('sends a user without a profile to the survey', () => {
+    const open = vi.fn()
+    render(<ExecutionView state={{ ...state, profile: null }} onChange={vi.fn()} projects={[]} milestones={[]} events={[]} section="home" onOpenProfile={open}/>)
+    fireEvent.click(screen.getByText('설문하러 가기'))
+    expect(open).toHaveBeenCalled()
+  })
+  it('opens one project\'s conversation and points to home while this week has no hours', () => {
+    const home = vi.fn()
+    render(<ExecutionView state={state} onChange={vi.fn()} projects={[essay]} milestones={[]} events={[]} section="project" projectId="essay" onGoHome={home}/>)
+    expect(screen.getByRole('heading', { name: '에세이' })).toBeTruthy()
+    fireEvent.click(screen.getByText('홈에서 고르기'))
+    expect(home).toHaveBeenCalled()
+  })
+  it('lists the projects in progress on the home screen with their deadline', () => {
+    const open = vi.fn()
+    render(<ExecutionView state={state} onChange={vi.fn()} projects={[{ ...essay, dueDate: '2099-01-31' }]} milestones={[]} events={[]} section="home" onOpenProject={open}/>)
+    const card = screen.getByRole('region', { name: '진행 중인 프로젝트' })
+    expect(card.textContent).toContain('에세이')
+    expect(card.textContent).toContain('2030-01-01 ~ 2099-01-31 · 마감 D-')
+    fireEvent.click(screen.getByRole('button', { name: /에세이/ }))
+    expect(open).toHaveBeenCalledWith('essay')
+  })
+  it('shows a draft for review only, without boxes to tick, and ends it at the project deadline', () => {
+    const draft = { id: 'd1', goal: '초안', startDate: '2030-01-01', endDate: '2030-01-07', projectId: 'essay',
+      project: { id: 'essay', title: '에세이', dueDate: '2030-01-03' }, pendingTasks: [], personalization: [],
+      entries: [{ id: 't1', kind: 'task', start: '2030-01-02T19:00', end: '2030-01-02T19:30', title: '초안 쓰기', doneWhen: '초안 저장', minutes: 30, completed: false, projectId: 'essay' }] }
+    render(<ExecutionView state={{ ...state, planDraft: draft } as unknown as ExecutionState} onChange={vi.fn()} projects={[essay]} milestones={[]} events={[]} section="project" projectId="essay"/>)
+    const card = screen.getByRole('region', { name: '주간 계획 초안' })
+    expect(card.querySelector('input[type=checkbox]')).toBeNull()
+    expect(card.textContent).toContain('2030-01-01 ~ 2030-01-03 (프로젝트 마감)')
+  })
+  it('moves on once the first profile is confirmed', async () => {
+    const draft = { ...profile, status: 'draft' }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 4 }) }))
+    const confirmed = vi.fn()
+    render(<ExecutionView state={{ ...state, profile: null, profileDraft: draft } as unknown as ExecutionState} onChange={vi.fn()} projects={[]} milestones={[]} events={[]}
+      section="profile" onProfileConfirmed={confirmed}/>)
+    fireEvent.click(screen.getByText('프로필 확정'))
+    await waitFor(() => expect(confirmed).toHaveBeenCalled())
+  })
+})
+
+describe('check-in', () => {
+  const essay = { id: 'essay', title: '에세이', goal: '초안', startDate: '2030-01-01', dueDate: '2030-01-31', priority: 'high', status: 'active' } as Project
+  const task = (id: string, start: string, extra = {}) => ({ id, kind: 'task', start, end: start, title: `작업 ${id}`, doneWhen: '끝', minutes: 30, completed: false, projectId: 'essay', ...extra })
+  const plan = { id: 'p1', projectId: 'essay', entries: [task('a', '2030-01-07T19:00'), task('b', '2030-01-08T19:00'),
+    task('s', '2030-01-07T18:55', { starter: true }), task('c', '2030-01-09T19:00', { completed: true }), task('x', '2030-01-07T20:00', { projectId: 'other' })] }
+  const state = { revision: 5, profile: { id: 'pr' }, settings: { slots: [], view: 'timeline' }, plan, planDraft: null, executionRecords: [],
+    plannerThreads: {}, llmAvailable: true, model: 'test' } as unknown as ExecutionState
+
+  it('asks about this project\'s unrecorded tasks up to today, or the next ones when none are due', () => {
+    expect(checkInTasks(state, 'essay', '2030-01-07').due.map(t => t.id)).toEqual(['a'])
+    expect(checkInTasks(state, 'essay', '2030-01-08').due.map(t => t.id)).toEqual(['a', 'b'])
+    expect(checkInTasks(state, 'essay', '2030-01-06').early.map(t => t.id)).toEqual(['a', 'b'])
+    const recorded = { ...state, executionRecords: [{ planId: 'p1', taskId: 'a', result: 'partial', place: '집' }] } as unknown as ExecutionState
+    expect(checkInTasks(recorded, 'essay', '2030-01-08').due.map(t => t.id)).toEqual(['b'])
+    // Ticked off without saying how it went: asked too, as done.
+    const withTick = { ...state, executionRecords: [{ planId: 'p1', taskId: 'c', result: 'completed', place: null }] } as unknown as ExecutionState
+    const ticked = checkInTasks(withTick, 'essay', '2030-01-09')
+    expect(ticked.due.map(t => t.id)).toEqual(['a', 'b', 'c'])
+    expect([...ticked.ticked]).toEqual(['c'])
+  })
+  it('turns taps and one sentence into a card, saves on confirm, then asks how the plan felt', async () => {
+    const calls: Array<[string, unknown]> = []
+    const card = { kind: 'check_in', revision: 6, payload: { learned: ['말투: 편한 반말'], records: [{ planId: 'p1', taskId: 'a', taskTitle: '작업 a', plannedMinutes: 30, result: 'partial',
+      actualMinutes: 15, reasonCode: 'fatigue', place: '도서관', atmosphere: 'quiet', focus: 'poor', condition: 'poor', note: '' }] } }
+    const run = vi.fn(async (action: () => Promise<ExecutionState>) => { await action(); return true })
+    const next = [{ key: 'tone', label: '말투', question: '제가 어떤 말투로 얘기하면 편하세요?' }]
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (!init?.body) return { ok: true, json: async () => ({ slots: [], next }) }  // what the planner would like to know
+      calls.push([url, JSON.parse(String(init.body))]); return { ok: true, json: async () => state }
+    }))
+    const view = (current: ExecutionState) => <CheckIn state={current} project={essay} busy={false} run={run} consent={true} onConsent={vi.fn()} onClose={vi.fn()}/>
+    const { rerender } = render(view(state))
+    const row = screen.getByText('작업 a').closest('li')!
+    fireEvent.click(row.querySelector('button:nth-child(2)')!)  // 조금 했어요
+    fireEvent.click(screen.getByText('다음'))
+    fireEvent.change(await screen.findByLabelText('답하기 (선택)'), { target: { value: '도서관에서 15분 하다가 피곤해서 멈춤' } })
+    expect(screen.getByText(/답해주시면 다음 계획에 도움이 돼요, 건너뛰어도 괜찮아요/)).toBeTruthy()
+    expect(screen.getByText('제가 어떤 말투로 얘기하면 편하세요?')).toBeTruthy()
+    fireEvent.click(screen.getByText('보내기'))
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0][0]).toBe('/api/execution/chat/check-in')
+    expect(calls[0][1]).toMatchObject({ revision: 5, consent: true, text: '도서관에서 15분 하다가 피곤해서 멈춤', asked: ['tone'], results: [{ taskId: 'a', result: 'partial' }], project: { id: 'essay' } })
+
+    rerender(view({ ...state, revision: 6, plannerThreads: { essay: { messages: [], action: card } } } as unknown as ExecutionState))
+    const shown = screen.getByRole('generic', { name: '체크인 확인 카드' })
+    expect(shown.textContent).toContain('조금 함 · 실제 15분 · 이유: 피로')
+    expect(shown.textContent).toContain('장소 도서관 · 분위기 조용한 곳 · 집중 안 됨 · 컨디션 나쁨')
+    expect(shown.textContent).toContain('대화에서 정리한 내용 (관찰·선호 후보): 말투: 편한 반말')
+    fireEvent.click(screen.getByText('확인하고 기록'))
+    await waitFor(() => expect(calls).toHaveLength(2))
+    expect(calls[1][0]).toBe('/api/execution/chat/check-in/confirm')
+    fireEvent.click(await screen.findByText('많았어요'))
+    expect(calls).toHaveLength(2) // Feedback is optional and saved only on explicit submission.
+    fireEvent.click(screen.getByText('의견 저장'))
+    await waitFor(() => expect(calls).toHaveLength(3))
+    expect(calls[2]).toEqual(['/api/execution/projects/essay/feedback', { revision: 6, load: 'too_much', note: '' }])
+    expect(await screen.findByText(/다음에 이 프로젝트를 계획할 때 참고해요/)).toBeTruthy()
+  })
+})
+
+it('shows what check-ins taught about the user, and which fields are still empty', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ next: [], slots: [
+    { key: 'tone', label: '말투', value: '편한 반말', history: ['casual'], updatedAt: '' },
+    { key: 'place', label: '주로 하는 곳', value: '카페', history: ['도서관', '카페'], updatedAt: '' },
+    { key: 'rest', label: '쉬는 방식', value: null, history: [], updatedAt: null }] }) }))
+  render(<AboutMe revision={1}/>)
+  const card = await screen.findByRole('region', { name: '나에 대해 알게 된 것' })
+  expect(card.textContent).toContain('ABOUT ME · 기록된 항목 2개')
+  expect(card.textContent).toContain('아직 가설')
+  expect(card.textContent).toContain('편한 반말')
+  expect(card.textContent).toContain('도서관, 카페')
+  expect(card.textContent).toContain('아직 기록 없음 · 답변은 선택이에요')
+})
+
 describe('onboarding survey', () => {
   const state: ExecutionState = { revision: 0, profile: null, profileDraft: null, settings: { slots: [], view: 'timeline' }, plan: null, planDraft: null, llmAvailable: false, model: 'test' }
   it('opens a checkbox survey without chat or AI requests', async () => {
@@ -90,52 +229,6 @@ describe('onboarding survey', () => {
     expect(fetcher.mock.calls.filter(c=>c[0].endsWith('/profile/reset'))).toHaveLength(1)
   })
 })
-it('collects fixed weekly schedules and saves them only on request', async () => {
-  const save = vi.fn().mockResolvedValue(true)
-  render(<FixedScheduleEditor items={[]} disabled={false} onSave={save}/>)
-  expect(screen.queryByRole('textbox')).toBeNull()
-  fireEvent.click(screen.getByText('평일 선택'))
-  fireEvent.change(screen.getByLabelText('시작 시간'), {target:{value:'09:00'}})
-  fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'18:00'}})
-  fireEvent.click(screen.getByText('일정 추가'))
-  fireEvent.click(screen.getByText('토요일'))
-  fireEvent.change(screen.getByLabelText('시작 시간'), {target:{value:'18:30'}})
-  fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'23:59'}})
-  fireEvent.click(screen.getByText('일정 추가'))
-  expect(screen.getByText(/토 18:30~24:00/)).toBeTruthy()
-  expect(save).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByText('고정 일정 저장'))
-  expect(save).toHaveBeenCalledWith([{ days: [0, 1, 2, 3, 4], start: '09:00', end: '18:00' }, { days: [5], start: '18:30', end: '23:59' }])
-})
-it('rejects invalid/overlapping fixed schedules and supports removal', () => {
-  const saved = [{ id: 'fixed-1', days: [0], start: '09:00', end: '18:00' }]
-  render(<FixedScheduleEditor items={saved} disabled={false} onSave={vi.fn()}/>)
-  expect((screen.getByText('고정 일정 저장') as HTMLButtonElement).disabled).toBe(true)
-  fireEvent.click(screen.getByText('일정 추가'))
-  expect(screen.getByRole('alert').textContent).toContain('요일')
-  fireEvent.click(screen.getByText('화요일'))
-  fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'08:00'}})
-  fireEvent.click(screen.getByText('일정 추가'))
-  expect(screen.getByRole('alert').textContent).toContain('종료 시간')
-  fireEvent.click(screen.getByText('화요일'))
-  fireEvent.click(screen.getByText('월요일'))
-  fireEvent.change(screen.getByLabelText('종료 시간'), {target:{value:'12:00'}})
-  fireEvent.click(screen.getByText('일정 추가'))
-  expect(screen.getByRole('alert').textContent).toContain('겹치는')
-  fireEvent.click(screen.getByText('월요일'))
-  fireEvent.click(screen.getByLabelText('월 09:00~18:00 삭제'))
-  expect((screen.getByText('고정 일정 저장') as HTMLButtonElement).disabled).toBe(false)
-  expect(screen.getByText('저장한 고정 일정이 없어요.')).toBeTruthy()
-})
-it('shows hours the fixed schedule takes as taken, not as choices', () => {
-  const fixed = [{ id: 'f', days: [0], start: '18:00', end: '19:30' }]
-  render(<AvailabilityGrid slots={[{ day: 0, hour: 18 }, { day: 0, hour: 19 }, { day: 1, hour: 18 }]} onChange={vi.fn()} fixed={fixed}/>)
-  expect(screen.getByLabelText('월요일 18시부터 19시 고정 일정')).toBeTruthy()
-  expect(screen.queryByRole('checkbox', { name: '월요일 18시부터 19시' })).toBeNull()
-  expect((screen.getByLabelText('월요일 19시부터 20시') as HTMLInputElement).checked).toBe(true)  // half of it is still free
-  expect(screen.getByRole('status').textContent).toBe('주 3시간 선택 · 고정 일정 1시간 제외')
-})
-
 it('submits checked survey answers without LLM interaction', async () => {
   const submit = vi.fn().mockResolvedValue(undefined)
   render(<ProfileForm busy={false} onGenerate={submit}/>)
@@ -460,16 +553,15 @@ describe('conversational planner', () => {
     essay: { messages: [{ id: 'e1', role: 'user' as const, content: '에세이 초안 쓰기' }], action: null, updatedAt: '2030-01-02T10:00:00' },
     app: { messages: [{ id: 'a1', role: 'user' as const, content: '로그인 화면' }], action: { kind: 'plan' as const, revision: 4, payload: { goal: '로그인 화면', startDate: '2030-01-07' } }, updatedAt: '2030-01-03T10:00:00' },
   }
-  it('opens the most recent project conversation and switches threads per project', () => {
-    render(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} projects={[essay, app]} onApplyPlan={vi.fn()}/>)
+  it('shows the conversation of the project it is given, in one continuing session', () => {
+    const { rerender } = render(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} project={app} onApplyPlan={vi.fn()}/>)
     expect(screen.getByRole('heading', { name: '앱 개발' })).toBeTruthy()
     expect(screen.getByRole('log').textContent).toContain('로그인 화면')
-    fireEvent.click(screen.getByRole('button', { name: /에세이/ }))
+    expect(screen.queryByText('새 대화')).toBeNull()
+    rerender(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} project={essay} onApplyPlan={vi.fn()}/>)
     expect(screen.getByRole('heading', { name: '에세이' })).toBeTruthy()
     expect(screen.getByRole('log').textContent).toContain('에세이 초안 쓰기')
     expect(screen.getByRole('log').textContent).not.toContain('로그인 화면')
-    fireEvent.click(screen.getByRole('button', { name: /자유 계획/ }))
-    expect(screen.getByRole('log').textContent).toContain('프로젝트와 상관없는 할 일')
   })
   it('asks before fitting a project to what the user said, and applies it to that project only', async () => {
     const card = { kind: 'project_settings' as const, revision: 4, payload: {
@@ -477,7 +569,7 @@ describe('conversational planner', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...base, revision: 5 }) })
     vi.stubGlobal('fetch', fetchMock)
     render(<PlannerChat state={{ ...base, plannerThreads: { essay: { ...threads.essay, action: card, updatedAt: '2030-01-09T10:00:00' } } }}
-      busy={false} run={run} projects={[essay, app]} onApplyPlan={vi.fn()}/>)
+      busy={false} run={run} project={essay} onApplyPlan={vi.fn()}/>)
 
     expect(screen.getByRole('heading', { name: '‘에세이’ 프로젝트를 이렇게 맞출까요?' })).toBeTruthy()
     expect(screen.getByText('한 번에 집중할 시간: 50분 → 25분')).toBeTruthy()
@@ -502,7 +594,7 @@ describe('conversational planner', () => {
     function Harness() {
       const [state, setState] = useState<ExecutionState>({ ...base, plannerThreads: { essay: { ...threads.essay, action: card, updatedAt: '2030-01-09T10:00:00' } } })
       const live = async (action: () => Promise<ExecutionState>) => { setState(await action()); return true }
-      return <PlannerChat state={state} busy={false} run={live} projects={[essay]} onApplyPlan={vi.fn()}/>
+      return <PlannerChat state={state} busy={false} run={live} project={essay} onApplyPlan={vi.fn()}/>
     }
     render(<Harness/>)
     fireEvent.change(screen.getByLabelText('메시지'), { target: { value: '응 그렇게 해 줘' } })
@@ -522,7 +614,7 @@ describe('conversational planner', () => {
     vi.stubGlobal('fetch', fetchMock)
     const close = vi.fn().mockResolvedValue(true)
     const late = { ...essay, startDate: '2020-01-01', dueDate: '2020-01-31' }
-    render(<PlannerChat state={{ ...base, plannerThreads: { essay: threads.essay } }} busy={false} run={run} projects={[late]}
+    render(<PlannerChat state={{ ...base, plannerThreads: { essay: threads.essay } }} busy={false} run={run} project={late}
       onApplyPlan={vi.fn()} onCloseProject={close}/>)
 
     fireEvent.click(screen.getByText('마감 지남 · 끝내기'))  // past its due date, ending it is offered as such
@@ -540,11 +632,8 @@ describe('conversational planner', () => {
       carried: [{ key: 'blockMinutes', label: '한 번에 집중할 시간', from: '30분', to: '20분', because: '' }] }
     const reopen = vi.fn().mockResolvedValue(true)
     render(<PlannerChat state={{ ...base, plannerThreads: threads, closedProjects: { essay: ended } }} busy={false} run={run}
-      projects={[essay, app]} onApplyPlan={vi.fn()} onCloseProject={vi.fn()} onReopenProject={reopen}/>)
+      project={essay} onApplyPlan={vi.fn()} onCloseProject={vi.fn()} onReopenProject={reopen}/>)
 
-    expect(screen.getByRole('heading', { name: '앱 개발' })).toBeTruthy()
-    expect(screen.getByText('끝낸 프로젝트 1개')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /^에세이/ }))
     expect(screen.getByLabelText('끝낸 프로젝트').textContent).toContain('기본 프로필로 넘긴 습관: 한 번에 집중할 시간 30분 → 20분')
     expect(screen.queryByLabelText('메시지')).toBeNull()
     expect(screen.queryByText('프로젝트 끝내기')).toBeNull()
@@ -554,13 +643,13 @@ describe('conversational planner', () => {
   it('opens a project with what it plans with now', () => {
     const state = { ...base, projectProfiles: { essay: { id: 'v1', projectId: 'essay', userId: 'local', version: 1, learnedPatterns: [], createdAt: '', updatedAt: '',
       overrides: { blockMinutes: { value: 20, source: 'learned' as const, proposalId: 'p1' } } } } }
-    render(<PlannerChat state={state} busy={false} run={run} projects={[essay]} onApplyPlan={vi.fn()}/>)
+    render(<PlannerChat state={state} busy={false} run={run} project={essay} onApplyPlan={vi.fn()}/>)
     expect(screen.getByRole('log').textContent).toContain('이 프로젝트만의 값으로 계획해요: 한 번에 집중할 시간 20분.')
   })
   it('sends the selected project with the message after consent', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...base, revision: 5 }) })
     vi.stubGlobal('fetch', fetchMock)
-    render(<PlannerChat state={base} busy={false} run={run} projects={[essay]} onApplyPlan={vi.fn()}/>)
+    render(<PlannerChat state={base} busy={false} run={run} project={essay} onApplyPlan={vi.fn()}/>)
     fireEvent.change(screen.getByLabelText('메시지'), { target: { value: '금요일까지 초안' } })
     expect((screen.getByText('보내기') as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(screen.getByLabelText(/OpenAI에 전송하는 데 동의/))
@@ -571,11 +660,11 @@ describe('conversational planner', () => {
   it('applies a plan card for its own project only while it is current', () => {
     const apply = vi.fn().mockResolvedValue(true)
     const state = { ...base, plannerThreads: threads }
-    const { rerender } = render(<PlannerChat state={state} busy={false} run={run} projects={[essay, app]} onApplyPlan={apply}/>)
+    const { rerender } = render(<PlannerChat state={state} busy={false} run={run} project={app} onApplyPlan={apply}/>)
     fireEvent.click(screen.getByLabelText(/OpenAI에 전송하는 데 동의/))
     fireEvent.click(screen.getByText('확인하고 계획 초안 만들기'))
     expect(apply).toHaveBeenCalledWith('로그인 화면', '2030-01-07', app, true)
-    rerender(<PlannerChat state={{ ...state, revision: 5 }} busy={false} run={run} projects={[essay, app]} onApplyPlan={apply}/>)
+    rerender(<PlannerChat state={{ ...state, revision: 5 }} busy={false} run={run} project={app} onApplyPlan={apply}/>)
     expect(screen.queryByText('확인하고 계획 초안 만들기')).toBeNull()
   })
   it('asks before taking hours out of the week and replanning this project', async () => {
@@ -583,7 +672,7 @@ describe('conversational planner', () => {
       blockedTimes: [{ date: '2030-01-09', startHour: 18, endHour: 21 }], goal: '에세이 초안, 분량 절반', startDate: '2030-01-07' } }
     const adjust = vi.fn().mockResolvedValue(true)
     render(<PlannerChat state={{ ...base, plannerThreads: { essay: { ...threads.essay, action: card, updatedAt: '2030-01-09T10:00:00' } } }}
-      busy={false} run={run} projects={[essay]} onApplyPlan={vi.fn()} onAdjust={adjust}/>)
+      busy={false} run={run} project={essay} onApplyPlan={vi.fn()} onAdjust={adjust}/>)
 
     expect(screen.getByRole('heading', { name: '이번 주 계획을 이렇게 바꿀까요?' })).toBeTruthy()
     expect(screen.getByText('1/9(수) 18~21시')).toBeTruthy()
@@ -596,19 +685,24 @@ describe('conversational planner', () => {
   it('shows a weekly time change as what it adds', () => {
     const card = { kind: 'settings' as const, revision: 4, payload: { slots: [{ day: 0, hour: 9 }, { day: 0, hour: 10 }, { day: 0, hour: 19 }], view: 'timeline' as const },
       change: { added: [{ day: 0, hour: 9 }, { day: 0, hour: 10 }], removed: [] } }
-    render(<PlannerChat state={{ ...base, plannerThreads: { _free: { messages: [], action: card } } }} busy={false} run={run} projects={[]} onApplyPlan={vi.fn()}/>)
+    render(<PlannerChat state={{ ...base, plannerThreads: { essay: { messages: [], action: card } } }} busy={false} run={run} project={essay} onApplyPlan={vi.fn()}/>)
     expect(screen.getByText('월 9~11시')).toBeTruthy()
     expect(screen.getByText(/바꾼 뒤에는 주 3시간/)).toBeTruthy()
   })
+  it('says the plan runs until the project deadline when that comes first', () => {
+    const card = { kind: 'plan' as const, revision: 4, payload: { goal: '초안', startDate: '2030-01-07' } }
+    render(<PlannerChat state={{ ...base, plannerThreads: { essay: { messages: [], action: card } } }} busy={false} run={run}
+      project={{ ...essay, dueDate: '2030-01-09' }} onApplyPlan={vi.fn()}/>)
+    expect(screen.getByText('2030-01-07 ~ 2030-01-09 (프로젝트 마감까지)')).toBeTruthy()
+  })
   it('shows which skill answered and what it looked up', () => {
     const answered = { messages: [{ id: 'm1', role: 'assistant' as const, content: '수요일은 1시간 남았어요.', skill: 'answer', lookups: ['week'] }], action: null }
-    render(<PlannerChat state={{ ...base, plannerThreads: { essay: answered } }} busy={false} run={run} projects={[essay]} onApplyPlan={vi.fn()}/>)
+    render(<PlannerChat state={{ ...base, plannerThreads: { essay: answered } }} busy={false} run={run} project={essay} onApplyPlan={vi.fn()}/>)
     expect(screen.getByText('답하기 · 이번 주 시간표 확인')).toBeTruthy()
   })
   it('opens a fresh conversation for a newly created project', () => {
-    const { rerender } = render(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} projects={[essay, app]} onApplyPlan={vi.fn()}/>)
     const fresh = { ...essay, id: 'new', title: '새 공부' }
-    rerender(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} projects={[essay, app, fresh]} onApplyPlan={vi.fn()}/>)
+    render(<PlannerChat state={{ ...base, plannerThreads: threads }} busy={false} run={run} project={fresh} onApplyPlan={vi.fn()}/>)
     expect(screen.getByRole('heading', { name: '새 공부' })).toBeTruthy()
     expect(screen.getByRole('log').textContent).toContain('‘새 공부’ 대화를 시작해요.')
     expect(screen.getByRole('log').textContent).toContain('이 프로젝트만 다르게 하고 싶은 점')
@@ -648,29 +742,17 @@ it('shows a learned focus time proposal with its numbers', () => {
   expect(screen.getByText('오전 4건 중 1건 완료 · 저녁 5건 중 5건 완료')).toBeTruthy()
 })
 
-it('saves the fixed schedule and says which tasks moved', async () => {
+it('shows that the focus time is learned from records, not asked', () => {
   const profile = { id: 'profile1', status: 'confirmed', source: 'demo', schemaVersion: '2.0', createdAt: '', learnedPatterns: [],
     declaredFacts: { roles: ['student'], regularity: 'regular', barriers: ['none'], focusMinutes: 30, dailyMinutes: null, energy: 'unknown', recovery: 'reduce', constraints: '', context: '' },
     planningPreferences: { blockMinutes: 30, breakMinutes: 5, dailyPlannedMinutes: null, scheduleStyle: 'time_blocks', recoveryPreference: 'reduce', starterMinutes: null, focusTime: 'unknown', status: 'confirmed' },
     insights: { summary: '요약', strategies: [], followUpQuestions: [] } }
   const state = { revision: 3, profile, profileDraft: null, settings: { slots: [{ day: 0, hour: 18 }], view: 'timeline' }, plan: null, planDraft: null,
-    llmAvailable: false, model: 'test', fixedSchedule: [] } as unknown as ExecutionState
-  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 4, relocated: { moved: ['개요 쓰기'], unplaced: [] } }) })
-  vi.stubGlobal('fetch', fetchMock)
-  render(<ExecutionView state={state} onChange={vi.fn()} projects={[]} milestones={[]} events={[{ id: 'e', title: '병원', date: '2030-01-08', startTime: '10:00', endTime: '11:00', isFixed: true }]}/>)
+    llmAvailable: false, model: 'test' } as unknown as ExecutionState
+  render(<ExecutionView state={state} onChange={vi.fn()} projects={[]} milestones={[]} events={[]}/>)
 
-  expect(screen.getByText('아직 몰라요')).toBeTruthy()  // focus time is learned, not asked
+  expect(screen.getByText('아직 몰라요')).toBeTruthy()
   expect(screen.queryByText(/집중이 잘되는 시간:/)).toBeNull()
-  fireEvent.click(screen.getByText('월요일'))
-  fireEvent.click(screen.getByText('일정 추가'))
-  fireEvent.click(screen.getByText('고정 일정 저장'))
-
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-  expect(fetchMock.mock.calls[0][0]).toBe('/api/execution/fixed-schedule')
-  expect(fetchMock.mock.calls[0][1].method).toBe('PUT')
-  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ revision: 3, items: [{ days: [0], start: '09:00', end: '18:00' }],
-    events: [{ date: '2030-01-08', startTime: '10:00', endTime: '11:00' }] })
-  expect((await screen.findAllByText(/겹친 작업 1개를 빈 시간으로 옮겼어요/)).length).toBeGreaterThan(0)
 })
 
 describe('project settings', () => {

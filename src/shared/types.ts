@@ -1,4 +1,4 @@
-export type View = 'calendar' | 'memory' | 'portfolio' | 'execution'
+export type View = 'calendar' | 'memory' | 'portfolio' | 'execution' | 'project'
 
 export type ProjectStatus = 'active' | 'completed' | 'paused'
 export type MilestoneStatus = 'todo' | 'in_progress' | 'done' | 'deferred'
@@ -116,6 +116,7 @@ export type BlockedTime = { id: string; date: string; startHour: number; endHour
 export type ExecutionTask = { title: string; minutes: number; doneWhen: string; dueDate: string | null; projectId?: string | null }
 export type ExecutionEntry = ExecutionTask & {
   id: string; kind: 'task' | 'break'; start: string; end: string; completed: boolean; starter?: boolean
+  environmentSuggestion?: { place: string; optional: true; source?: string; knownFocusDays: number; goodFocusDays: number; goodFocusRatio?: number | null }
   /** The settings version of this entry's own project when it was planned. Absent on older entries. */
   projectProfileId?: string | null
 }
@@ -155,6 +156,9 @@ export type ExecutionState = {
   result?: AdaptiveResult
   /** Projects the user ended, by id, with what carried to the user profile. */
   closedProjects?: Record<string, ClosedProject>
+  projectFeedback?: Record<string, ProjectFeedback[]>
+  checkInSessions?: CheckInSession[]
+  userInsights?: Record<string, { value: string; history: string[]; updatedAt: string }>
 }
 /** A user-profile value a project proved, moved to the user profile when the project ends. */
 export type CarriedHabit = { key: string; label: string; from: string; to: string; because: string }
@@ -198,7 +202,7 @@ export type ProjectProfile = {
  */
 export type PlannerMessage = { id: string; role: 'user' | 'assistant'; content: string; reply?: string; skill?: string; lookups?: string[] }
 export type PlannerThread = { messages: PlannerMessage[]; action: PlannerAction | null; updatedAt?: string }
-export type PlannerAction =
+export type PlannerAction = PlannerActionMetadata & (
   /** freeMinutes: time still free this week, counted by the server; absent when no week is planned yet. */
   | { kind: 'plan'; revision: number; payload: { goal: string; startDate: string }; freeMinutes?: number | null }
   /** The whole weekly time after the change, and what the change adds and removes (worked out by the server). */
@@ -210,8 +214,38 @@ export type PlannerAction =
   /** A change to this week: hours to take out (for every project) and/or this project's work planned again. */
   | { kind: 'adjust'; revision: number; payload: {
       blockedTimes: Array<Omit<BlockedTime, 'id'>>; goal: string | null; startDate: string } }
+  /** A check-in turned into records, saved only when the user confirms. */
+  | { kind: 'check_in'; revision: number; payload: { records: CheckInRecord[]; insights?: Record<string, string>; learned?: string[]; session?: Partial<CheckInSession>; date?: string; knownDaily?: Partial<CheckInSession> } }
+)
+export type PlannerActionMetadata = { id?: string; projectId?: string | null; valid?: boolean; basis?: unknown }
+/** Explicit server validity supersedes the legacy global-revision check. */
+export function plannerActionValid(action: PlannerAction | null | undefined, revision: number, projectId: string): action is PlannerAction {
+  return !!action && (!action.projectId || action.projectId === projectId) && (typeof action.valid === 'boolean' ? action.valid : action.revision === revision)
+}
+export type CheckInSession = {
+  id: string; date: string; projectId: string | null; place?: string | null; atmosphere?: Atmosphere | null
+  focus?: Level | null; condition?: Level | null; note?: string
+}
+
+export type Level = 'good' | 'ok' | 'poor'
+export type Atmosphere = 'quiet' | 'lively'
+export type CheckInRecord = {
+  checkInId?: string | null; checkInDate?: string | null
+  planId: string; taskId: string; taskTitle: string; plannedMinutes: number
+  /** Set when the task was ticked off before: the check-in fills in that record. */
+  recordId?: string | null
+  result: 'completed' | 'partial' | 'not_started'; actualMinutes: number | null; reasonCode: string | null
+  place: string | null; atmosphere?: Atmosphere | null; focus: Level | null; condition: Level | null; note: string
+}
+/** A field the planner learns about the user, and what is known in it. */
+export type InsightSlot = { key: string; label: string; value: string | null; history: string[]; updatedAt: string | null; source?: string; kind?: string; status?: string; confidence?: number | string; evidenceRecordIds?: string[]; evidence?: { confirmations?: number; distinctDays?: number; windowDays?: number } }
+export type InsightPattern = { field: string; value: string; status: string; samples: number; distinctDays: number; knownFocus?: number; unknownFocus?: number; windowDays?: number; projectIds?: string[] }
+export type InsightQuestion = { key: string; label: string; question: string }
+/** How a project's plan felt; only that project uses it, and it goes when the project ends. */
+export type ProjectFeedback = { id: string; load?: 'too_much' | 'right' | 'too_little'; timeFit?: 'too_short' | 'right' | 'too_long' | 'unknown'; note: string; date?: string; planId: string | null; createdAt: string }
 
 export type ExecutionRecord = {
+  checkInId?: string | null; checkInDate?: string | null
   id: string; planId: string; taskId: string; profileId: string; taskTitle: string
   // Absent on records saved before they were added.
   profileVersion?: number | null; projectId?: string | null; projectProfileId?: string | null
@@ -220,6 +254,8 @@ export type ExecutionRecord = {
   result: 'completed' | 'partial' | 'not_started' | 'incomplete'
   reasonCode: string | null; note: string; difficulty: number | null
   recoveryAction: string | null; recoveryDecidedAt?: string; createdAt: string
+  /** How the session went, from a check-in. */
+  place?: string | null; atmosphere?: Atmosphere | null; focus?: Level | null; condition?: Level | null
 }
 export type ProfileUpdateProposal = {
   id: string; profileId: string; appliedProfileId?: string

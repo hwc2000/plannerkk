@@ -5,7 +5,7 @@ import { adaptiveApi, executionApi, replansCurrentPlan } from './api'
 import { focusTimeLabels, options } from './profileLabels'
 import { RecoveryReview } from './RecoveryReview'
 
-const reasons: Record<string, string> = {
+export const reasons: Record<string, string> = {
   time_shortage: '시간 부족', task_too_large: '작업이 너무 큼', fatigue: '피로',
   interruption: '외부 방해', priority_changed: '우선순위 변경', unclear_task: '불명확한 작업',
   underestimated: '시간 과소 추정', other: '기타',

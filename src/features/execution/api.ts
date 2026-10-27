@@ -1,4 +1,4 @@
-import type { CalendarEvent, ClosePreview, ExecutionPlan, ExecutionState, Memory, Milestone, ProfileUpdateProposal, Project } from '../../shared/types'
+import type { CalendarEvent, ClosePreview, ExecutionPlan, ExecutionState, InsightPattern, InsightQuestion, InsightSlot, Memory, Milestone, ProfileUpdateProposal, Project } from '../../shared/types'
 
 type ReplanInput = {
   goal: string
@@ -25,8 +25,31 @@ export async function executionApi(path = '', body?: unknown, method = 'POST'): 
   return requestState(`/api/execution${path}`, body, method)
 }
 
+/** A lost response is not a failed save when the exact session was committed. */
+export async function confirmCheckIn(state: ExecutionState, project: Project, actionId?: string): Promise<ExecutionState> {
+  try {
+    return await executionApi('/chat/check-in/confirm', { revision: state.revision, project: projectContext(project), ...(actionId ? { actionId } : {}) })
+  } catch (error) {
+    if (actionId) {
+      try {
+        const fresh = await executionApi()
+        if (fresh.checkInSessions?.some(session => session.id === actionId && session.projectId === project.id)) return fresh
+      } catch { /* Preserve the original failure when the outcome cannot be verified. */ }
+    }
+    throw error
+  }
+}
+
 export async function adaptiveApi(path: string, body: unknown): Promise<ExecutionState> {
   return requestState(`/api/adaptive${path}`, body)
+}
+
+/** The fields the planner learns about the user, and the few a check-in would ask next. */
+export async function fetchInsights(): Promise<{ slots: InsightSlot[]; next: InsightQuestion[]; candidatePatterns?: InsightPattern[] }> {
+  const response = await fetch('/api/execution/insights')
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '알게 된 것을 불러오지 못했어요.')
+  return data
 }
 
 /** What ending a project would carry to the user profile; nothing changes until the user ends it. */
