@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from server.app.adaptive import build_adaptive_planner_graph
+from server.app.adaptive.full_plan_generator import TASK_DEPTH_INSTRUCTION
+from server.app.adaptive.llm_generator import COMMON_INSTRUCTIONS as RECOVERY_INSTRUCTIONS
 from server.app.adaptive.personalization import (
     PlanPolicy,
     day_slots,
@@ -402,6 +404,12 @@ class TwoUsersApiTests(unittest.TestCase):
             post("/plan/confirm", planId=draft["id"])
             self.assertEqual(state["plan"]["personalization"], draft["personalization"])
             return draft, llm.calls[-1]
+
+    def test_tasks_go_only_as_deep_as_the_planner_can_know(self):
+        # A school exam's range is not visible to the planner; only a public exam's big areas are.
+        _, call = self.plan_for(USER_A)
+        self.assertIn(TASK_DEPTH_INSTRUCTION, call["instructions"])
+        self.assertIn(TASK_DEPTH_INSTRUCTION, RECOVERY_INSTRUCTIONS)  # shrinking a task keeps the same depth
 
     def test_overflow_is_asked_again_with_numbers(self):
         llm = OverflowLLM(overflows=1)

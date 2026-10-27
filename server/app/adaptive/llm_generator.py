@@ -10,6 +10,7 @@ from typing import Any
 
 from ..execution_llm import ExecutionLLM, LLMUnavailableError
 from ..execution_profile import object_schema
+from .full_plan_generator import TASK_DEPTH_INSTRUCTION
 from .ports import GenerationUnavailableError
 from .state import PlannerState
 from .validation import remaining_minutes, shrink_limits
@@ -34,6 +35,8 @@ COMMON_INSTRUCTIONS = (
     "droppedScope에는 이번 복구안에서 빠지는 originalTask의 범위를 사용자가 알 수 있게 구체적으로 쓴다. 빠지는 것이 없으면 빈 배열이다. "
     "previousDraft와 userFeedback이 있으면 피드백이 요구한 부분을 반드시 고치고 나머지는 유지한다. 반영하지 않은 것을 반영했다고 쓰지 않는다. "
     "validationErrors가 있으면 그 오류를 모두 고친다. "
+    + TASK_DEPTH_INSTRUCTION +
+    "줄일 때도 지어낸 세부 주제로 좁히지 말고 양(시간·문제 수처럼 사용자가 확인할 수 있는 분량)으로 줄인다. "
 )
 
 MODE_INSTRUCTIONS = {
