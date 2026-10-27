@@ -98,7 +98,7 @@ class ExecutionTests(unittest.TestCase):
         self.post('/task', planId=plan['id'], taskId=second['id'], completed=False)
         self.assertEqual(self.state['executionRecords'], [partial])
 
-    def test_unchecking_keeps_a_completion_used_as_proposal_evidence(self):
+    def test_unchecking_a_completion_withdraws_a_waiting_suggestion_built_on_it(self):
         self.setup_profile()
         self.post('/plan', goal='연습문제 공부', startDate='2030-01-07', consent=True)
         self.post('/plan/confirm', planId=self.state['planDraft']['id'])
@@ -107,22 +107,30 @@ class ExecutionTests(unittest.TestCase):
         self.post('/task', planId=plan['id'], taskId=task['id'], completed=True)
         record_id = self.state['executionRecords'][0]['id']
         self.assertIsNone(self.state['executionRecords'][0]['projectId'])
-        proposal = {
-            'id': 'proposal-1', 'profileId': self.state['profile']['id'],
-            'proposedChanges': {'blockMinutes': {'from': 30, 'to': 20}}, 'reason': 'reason',
-            'evidenceRecordIds': [record_id], 'ruleVersion': 'test', 'status': 'pending',
-            'createdAt': '2030-01-01T00:00:00+00:00', 'decidedAt': None,
-        }
-        self.store.change(self.state['revision'], lambda doc: doc['profileUpdateProposals'].append(proposal))
-        self.state = self.client.get('/api/execution').json()
 
+        def suggest(status):
+            proposal = {
+                'id': f'proposal-{status}', 'profileId': self.state['profile']['id'],
+                'proposedChanges': {'blockMinutes': {'from': 30, 'to': 20}}, 'reason': 'reason',
+                'evidenceRecordIds': [record_id], 'ruleVersion': 'test', 'status': status,
+                'createdAt': '2030-01-01T00:00:00+00:00', 'decidedAt': None,
+            }
+            self.store.change(self.state['revision'], lambda doc: doc['profileUpdateProposals'].append(proposal))
+            self.state = self.client.get('/api/execution').json()
+
+        suggest('approved')
         response = self.client.post('/api/execution/task', json={
             'revision': self.state['revision'], 'planId': plan['id'], 'taskId': task['id'], 'completed': False})
+        self.assertEqual(response.status_code, 409, response.text)  # an applied change stays explained by its records
 
-        self.assertEqual(response.status_code, 409, response.text)
-        reloaded = ExecutionStore(self.store.path).read()
-        self.assertEqual([r['id'] for r in reloaded['executionRecords']], [record_id])
-        self.assertTrue(next(e for e in reloaded['plan']['entries'] if e['id'] == task['id'])['completed'])
+        self.store.change(self.state['revision'], lambda doc: doc['profileUpdateProposals'].clear())
+        self.state = self.client.get('/api/execution').json()
+        suggest('pending')
+        self.post('/task', planId=plan['id'], taskId=task['id'], completed=False)
+        self.assertEqual(self.state['executionRecords'], [])
+        withdrawn = self.state['profileUpdateProposals'][0]
+        self.assertEqual((withdrawn['status'], withdrawn['closedBy']), ('rejected', 'evidence_withdrawn'))
+        self.assertFalse(next(e for e in self.state['plan']['entries'] if e['id'] == task['id'])['completed'])
 
     def test_rejects_stale_requests_and_requires_consent(self):
         self.setup_profile()

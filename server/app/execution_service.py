@@ -141,8 +141,13 @@ def set_task_completion(state, plan_id, task_id, completed):
     matches = [r for r in state['executionRecords'] if r['planId'] == plan_id and r['taskId'] == task_id]
     if matches and matches[-1]['result'] == 'completed':
         last = matches[-1]
-        if any(last['id'] in p['evidenceRecordIds'] for p in state['profileUpdateProposals']):
-            raise ConflictError('변경 후보의 근거로 사용된 기록은 되돌릴 수 없습니다.')
+        using = [p for p in state['profileUpdateProposals'] if last['id'] in p['evidenceRecordIds']]
+        if any(p['status'] == 'approved' for p in using):
+            raise ConflictError('이 완료 기록으로 이미 프로필을 바꿨어요. 완료 표시는 되돌릴 수 없어요.')
+        # A suggestion still waiting stood on this completion; without it the suggestion goes too.
+        for proposal in using:
+            if proposal['status'] == 'pending':
+                proposal.update(status='rejected', decidedAt=datetime.now(timezone.utc).isoformat(), closedBy='evidence_withdrawn')
         state['executionRecords'].remove(last)
     task['completed'] = False
 
