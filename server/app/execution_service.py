@@ -20,13 +20,17 @@ class ExecutionRecordInput(BaseModel):
     note: str = Field(default="", max_length=2000)
     difficulty: int | None = Field(default=None, ge=1, le=5, strict=True)
     recoveryAction: str | None = Field(default=None, max_length=1000)
+    # How the session went, from the check-in: signals about the user, so they stay with the
+    # user's records after the project ends (planner_checkin.py).
+    place: str | None = Field(default=None, max_length=40)
+    atmosphere: Literal["quiet", "lively"] | None = None
+    focus: Literal["good", "ok", "poor"] | None = None
+    condition: Literal["good", "ok", "poor"] | None = None
 
     @model_validator(mode="after")
     def valid_result(self):
         if self.reasonCode is not None and self.reasonCode not in REASON_CODES:
             raise ValueError("올바른 이유 코드를 선택해 주세요.")
-        if self.result in ("partial", "not_started") and self.reasonCode is None:
-            raise ValueError("미완료 이유를 선택해 주세요.")
         if self.result == "not_started" and self.actualMinutes != 0:
             raise ValueError("미시작 작업의 실제 시간은 0분이어야 합니다.")
         if self.result == "completed" and self.remainingMinutes not in (None, 0):
@@ -78,6 +82,9 @@ class ExecutionService:
 
 def save_execution_record(state, payload, *, allow_follow_up=False):
     request = ExecutionRecordInput.model_validate(payload)
+    # Only the server's recovery-review path can record an approval.
+    if request.recoveryAction is not None:
+        raise ValueError('복구 결정은 복구안을 확인한 뒤 반영해 주세요.')
     plan = state['plan']
     if not plan or plan['id'] != request.planId:
         raise ValueError('현재 확정한 계획을 선택해 주세요.')

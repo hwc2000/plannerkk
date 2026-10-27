@@ -32,7 +32,12 @@ def empty_state():
             "surveyResponses": [], "profileRevisions": [], "memories": [],
             "projectProfiles": {}, "projectProfileRevisions": [], "plannerThreads": {},
             # Projects the user ended, with what carried to the user profile (project_close.py).
-            "closedProjects": {}}
+            "closedProjects": {},
+            # How a project's plans felt (load, notes) from check-ins; only that project uses it,
+            # and it goes when the project ends (planner_checkin.py).
+            "projectFeedback": {},
+            # What the planner learned about the user from check-ins, and when it last asked (user_insights.py).
+            "userInsights": {}, "insightAsks": {}}
 
 
 class ExecutionStore:

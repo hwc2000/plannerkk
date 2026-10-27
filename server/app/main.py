@@ -13,6 +13,7 @@ from .auth import SESSION_COOKIE, AuthStore, UserScopedStore, auth_router, curre
 from .execution_api import execution_router
 from .execution_store import ConflictError, ExecutionStore
 from .planner_chat import planner_chat_router
+from .planner_checkin import checkin_router
 from .execution_llm import ExecutionLLM
 from .planner import PlanGenerationError
 
@@ -46,6 +47,7 @@ def create_app(execution_store=None, execution_llm=None, *, auth: bool | None = 
     app.include_router(execution_router(store, execution_llm))
     app.include_router(adaptive_router(store, execution_llm))
     app.include_router(planner_chat_router(store, execution_llm or ExecutionLLM()))
+    app.include_router(checkin_router(store, execution_llm or ExecutionLLM()))
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

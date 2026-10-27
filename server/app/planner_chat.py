@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .execution_api import BusyEvent, Mutation
 from .execution_store import ConflictError
 from .plan_merge import thread_key
+from .planner_actions import action_valid, public_state, scoped_action
 from .planner_skills import ChatContext, basic_info, run_turn
 
 KST = timezone(timedelta(hours=9))
@@ -38,7 +39,7 @@ def planner_chat_router(store, llm):
     router = APIRouter(prefix="/api/execution/chat")
 
     def envelope(state):
-        public = {key: value for key, value in state.items() if not key.startswith("_")}
+        public = public_state(state)
         return {**public, "llmAvailable": bool(os.getenv("OPENAI_API_KEY", "").strip()),
                 "model": os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini")}
 
@@ -56,12 +57,12 @@ def planner_chat_router(store, llm):
         key = thread_key(request.project.id if request.project else None)
         thread = state.get("plannerThreads", {}).get(key) or {"messages": [], "action": None}
         now = datetime.now(KST).replace(tzinfo=None, second=0, microsecond=0)
-        # A card counts only for the revision it was made for; an older one was replaced or applied.
-        waiting = thread.get("action") if (thread.get("action") or {}).get("revision") == state["revision"] else None
+        project_id = request.project.id if request.project else None
+        waiting = thread.get("action") if action_valid(state, thread.get("action"), project_id) else None
         # This conversation sees the user profile and this project's own values, never another project's.
         ctx = ChatContext(state=state, user_id=store.user_id, today=now.date(), now=now, events=request.events,
                           project=request.project.model_dump(mode="json") if request.project else None,
-                          waiting={k: v for k, v in waiting.items() if k != "revision"} if waiting else None)
+                          waiting=waiting)
         # The model reads its own earlier words only, not the notes code put under them,
         # so it does not learn to repeat them.
         history = [{"role": m["role"], "content": m.get("reply", m["content"])}
@@ -76,8 +77,14 @@ def planner_chat_router(store, llm):
                         # Which skill answered and what it read, so the routing stays visible.
                         {"id": str(uuid4()), "role": "assistant", "content": turn.content, "reply": turn.reply,
                          "skill": turn.skill, "lookups": turn.lookups}]
+            # A repeated/acknowledged card keeps its ORIGINAL basis. Only a genuinely
+            # new proposal is stamped; chatting cannot make an unsafe old card fresh.
+            action = None
+            if turn.action:
+                action = waiting if waiting and turn.action == waiting else scoped_action(
+                    doc, {**turn.action, "revision": request.revision + 1}, project_id)
             threads[key] = {"messages": messages[-HISTORY_LIMIT:],
-                            "action": {**turn.action, "revision": request.revision + 1} if turn.action else None,
+                            "action": action,
                             "updatedAt": now.isoformat(timespec="seconds")}
         return envelope(store.change(request.revision, save))
 

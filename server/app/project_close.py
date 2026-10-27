@@ -166,6 +166,8 @@ def close_project(state, user_id, project, outcome):
         plan["pendingTasks"] = [t for t in plan.get("pendingTasks") or [] if (t.get("projectId") or plan.get("projectId")) != project_id]
         removed = len(gone)
 
+    # How this project's plans felt was about this project only: it ends with it.
+    (state.get("projectFeedback") or {}).pop(project_id, None)
     state.setdefault("closedProjects", {})[project_id] = {
         "title": project["title"], "outcome": outcome, "closedAt": now,
         "carried": summary["carried"], "kept": summary["kept"], "removedTasks": removed,

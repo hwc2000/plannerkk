@@ -20,6 +20,7 @@ from ..execution_learning import refine_new_proposals
 from ..execution_llm import ExecutionLLM
 from ..execution_store import ConflictError, ExecutionStore
 from ..execution_service import replace_plan_draft
+from ..planner_actions import public_state
 from ..planner import ProjectContext
 from .context import to_execution_context
 from .full_plan_generator import LLMFullPlanGenerator
@@ -175,9 +176,9 @@ def adaptive_router(store: ExecutionStore | None = None, llm: ExecutionLLM | Non
         return merge_into(plan, plan_draft, scoped_project, goal)
 
     def respond(saved: dict[str, Any], task_id: str, result: dict[str, Any], **extra: Any) -> dict[str, Any]:
-        public_state = {key: value for key, value in saved.items() if not key.startswith("_")}
+        public = public_state(saved)
         return {
-            **public_state,
+            **public,
             "llmAvailable": bool(os.getenv("OPENAI_API_KEY", "").strip()),
             "model": os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini"),
             "recoveryDraft": drafts_for_plan(saved).get(task_id),

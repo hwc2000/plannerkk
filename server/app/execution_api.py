@@ -10,6 +10,8 @@ from .adaptive.full_plan_generator import LLMFullPlanGenerator
 from .adaptive.graph import build_adaptive_planner_graph
 from .adaptive.personalization import day_slots, plan_policy
 from .execution_store import ExecutionStore, ConflictError, empty_state, this_week
+from .user_insights import insights_for_ai
+from .planner_actions import public_state
 from .execution_profile import generate_profile, validate_insights, SCHEMA
 from .execution_llm import ExecutionLLM
 from .execution_learning import refine_new_proposals
@@ -137,6 +139,7 @@ def build_full_plan_context(
         if item_block < 1:
             raise ValueError(f"‘{item.title}’ 작업을 배치할 여유 시간이 부족합니다.")
         project_settings[item.id] = {
+            "user_insights": insights_for_ai(state, project_id=item.id),
             "max_block_minutes": item_block,
             "project_profile_id": (item_planning.get("projectProfile") or {}).get("id"),
             "user_profile": item_planning["userProfile"],
@@ -158,6 +161,14 @@ def build_full_plan_context(
         "project_id": project.id if project else None,
         "projects": [p.model_dump(mode="json") for p in selected],
         "project_settings": project_settings,
+        # What check-ins taught about the user (shared by every project).
+        "user_insights": {**insights_for_ai(state, project_id=project.id if project else None),
+                          **({"byProject": {p.id: insights_for_ai(state, project_id=p.id) for p in selected}}
+                             if len(selected) > 1 else {})},
+        "project_insights": {p.id: insights_for_ai(state, project_id=p.id) for p in selected},
+        # The user's own words on earlier plans of these projects (check-ins), newest last.
+        "project_feedback": {p.id: [{k: f.get(k) for k in ("load", "timeFit", "date", "note")} for f in (state.get("projectFeedback") or {}).get(p.id, [])[-3:]]
+                             for p in selected if (state.get("projectFeedback") or {}).get(p.id)},
         "existing_tasks": [task.model_dump(mode="json") for task in (existing_tasks or [])],
         "current_plan": [
             {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate", "completed")}
@@ -268,7 +279,7 @@ def execution_router(store=None, llm=None):
     router = APIRouter(prefix="/api/execution")
 
     def envelope(state):
-        public = {key: value for key, value in state.items() if not key.startswith("_")}
+        public = public_state(state)
         return {**public, "llmAvailable": bool(os.getenv("OPENAI_API_KEY", "").strip()),
                 "model": os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini")}
 
