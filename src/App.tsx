@@ -8,6 +8,7 @@ import { MemoryView } from './features/memories/MemoryView'
 import { ProjectForm } from './features/projects/ProjectForm'
 import { ProjectsView } from './features/projects/ProjectsView'
 import { TODAY } from './shared/constants'
+import { setProjectColors } from './shared/projectColors'
 import { SEED_CLEANUP_KEY, withoutOldSeeds } from './shared/oldSeeds'
 import { ExecutionView } from './features/execution/ExecutionView'
 import { executionApi, planCalendarEvents } from './features/execution/api'
@@ -125,6 +126,8 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
     onOpenProfile: () => setActiveView('execution'),
     onOpenProject: openProject,
     onCreateProject: () => setEditor({ kind: 'project' }),
+    onEditProject: (projectId: string) => setEditor({ kind: 'project', id: projectId }),
+    onOpenSchedule: () => setActiveView('schedule'),
   }
   const executionLoading = <section className="execution-card"><h1>내 플래너</h1>
     <p role={executionError ? 'alert' : 'status'}>{executionError || '저장된 프로필을 불러오는 중입니다…'}</p>
@@ -169,12 +172,13 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
     />
   ) : null
 
+  setProjectColors(projects)
+
   return (
     <AppShell
       activeView={activeView}
       onChangeView={setActiveView}
       onCreateProject={() => setEditor({ kind: 'project' })}
-      onShowSettingsNotice={() => setActiveView('execution')}
       projectCount={projects.length}
       projects={projects}
       endedProjectIds={Object.keys(execution?.closedProjects ?? {})}
@@ -192,6 +196,9 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
       {activeView === 'calendar' && (executionProps
         ? <ExecutionView {...executionProps} section="home" calendar={calendarView}/>
         : <>{executionLoading}{calendarView}</>)}
+      {activeView === 'schedule' && (executionProps
+        ? <ExecutionView {...executionProps} section="schedule"/>
+        : executionLoading)}
       {activeView === 'project' && (executionProps
         ? <ExecutionView {...executionProps} section="project" projectId={activeProjectId}
             startCheckIn={checkInFor === activeProjectId} onCheckInStarted={() => setCheckInFor('')}/>
