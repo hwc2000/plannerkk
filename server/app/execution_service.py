@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from .execution_learning import REASON_CODES, propose_focus_time, propose_growth, propose_update
+from .execution_learning import REASON_CODES, close_stale_proposals, propose_all
 from .execution_store import ConflictError
 from .plan_merge import entry_owner
 from .project_profile import apply_project_proposal, entry_settings_version
@@ -73,6 +73,8 @@ class ExecutionService:
                     apply_profile_proposal(state, proposal_id, expected_version=profile['version'])
                 else:
                     apply_project_proposal(state, proposal_id, user_id=self.store.user_id)
+                # Waiting proposals made for the settings just replaced can no longer be approved.
+                close_stale_proposals(state)
                 return
             proposal['status'] = 'approved' if decision == 'approve' else 'rejected'
             proposal['decidedAt'] = datetime.now(timezone.utc).isoformat()
@@ -106,9 +108,7 @@ def save_execution_record(state, payload, *, allow_follow_up=False):
         record = _new_record(plan, task, request)
         state['executionRecords'].append(record)
     task['completed'] = request.result == 'completed'
-    propose_update(state, record.get('projectId'))
-    propose_growth(state, record.get('projectId'))
-    propose_focus_time(state)
+    propose_all(state, record.get('projectId'))
     return record['id']
 
 
@@ -141,9 +141,7 @@ def set_task_completion(state, plan_id, task_id, completed):
         request = ExecutionRecordInput(planId=plan_id, taskId=task_id, result='completed')
         state['executionRecords'].append(_new_record(plan, task, request))
         task['completed'] = True
-        propose_update(state, entry_owner(plan, task))
-        propose_growth(state, entry_owner(plan, task))
-        propose_focus_time(state)
+        propose_all(state, entry_owner(plan, task))
         return
     matches = [r for r in state['executionRecords'] if r['planId'] == plan_id and r['taskId'] == task_id]
     if matches and matches[-1]['result'] == 'completed':

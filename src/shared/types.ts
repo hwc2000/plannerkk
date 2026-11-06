@@ -264,7 +264,12 @@ export type ProfileUpdateProposal = {
   projectId?: string | null; projectProfileId?: string | null; appliedProjectProfileId?: string
   /** Learned values: the focus block, the part of the day the user finishes work best, or (when a project ends) the way back. */
   proposedChanges: { blockMinutes?: { from: number; to: number }; focusTime?: { from: FocusTime; to: FocusTime }
-    recoveryPreference?: { from: string; to: string } }
+    recoveryPreference?: { from: string; to: string }
+    dailyPlannedMinutes?: { from: number | null; to: number }
+    /** How long finished work really takes, in percent of its plan; the plan leaves the rest free. */
+    pacePercent?: { from: number | null; to: number }
+    /** The longest stretch planned in a part of the day. */
+    periodMinutes?: { from: Partial<Record<'morning' | 'afternoon' | 'evening', number>> | null; to: Partial<Record<'morning' | 'afternoon' | 'evening', number>> } }
   /** Set when the change came from ending a project. */
   sourceProjectId?: string
   /** How the new value was set: from the user's records alone, or by the AI reading the tasks too. */

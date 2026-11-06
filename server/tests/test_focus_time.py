@@ -21,8 +21,10 @@ from server.tests.test_adaptive_api import PLAIN_ANSWERS
 from server.tests.test_project_independence import ESSAY, FakeLLM
 
 ANSWERS = {**PLAIN_ANSWERS, "energy": "unknown"}  # what onboarding stores now
-MORNINGS = [f"2030-01-{d:02}T09:00" for d in (7, 8, 9, 10)]
-EVENINGS = [f"2030-01-{d:02}T19:00" for d in (7, 8, 9, 10)]
+# Six days: a part of the day needs six planned tasks, and both halves of the records must agree.
+DAYS = (7, 8, 9, 10, 11, 12)
+MORNINGS = [f"2030-01-{d:02}T09:00" for d in DAYS]
+EVENINGS = [f"2030-01-{d:02}T19:00" for d in DAYS]
 
 
 class FocusLLM(FakeLLM):
@@ -83,11 +85,11 @@ class FocusTimeTests(unittest.TestCase):
 
     def evenings_done_mornings_missed(self, consent=False):
         plan_id, entries = self.put_plan(MORNINGS + EVENINGS)
-        for task in entries[4:]:
+        for task in entries[len(DAYS):]:
             self.finish(plan_id, task)
-        for task in entries[:3]:
+        for task in entries[:len(DAYS) - 1]:
             self.miss(plan_id, task)
-        return self.miss(plan_id, entries[3], consent=consent)
+        return self.miss(plan_id, entries[len(DAYS) - 1], consent=consent)
 
     def focus_proposals(self, state):
         return [p for p in state["profileUpdateProposals"] if "focusTime" in p["proposedChanges"]]
@@ -101,9 +103,9 @@ class FocusTimeTests(unittest.TestCase):
         [proposal] = self.focus_proposals(state)
         self.assertEqual(proposal["proposedChanges"], {"focusTime": {"from": "unknown", "to": "evening"}})
         self.assertEqual((proposal["ruleVersion"], proposal["sizedBy"], proposal["projectId"]), ("focus-time-v1", "evidence", None))
-        self.assertEqual(proposal["focusStats"], {"morning": {"planned": 4, "finished": 0}, "evening": {"planned": 4, "finished": 4}})
-        self.assertEqual(proposal["reason"], "최근 기록에서 오전에 계획한 작업 4건 중 0건, 저녁에 계획한 작업 4건 중 4건을 끝냈습니다.")
-        self.assertEqual(len(proposal["evidenceRecordIds"]), 8)
+        self.assertEqual(proposal["focusStats"], {"morning": {"planned": 6, "finished": 0}, "evening": {"planned": 6, "finished": 6}})
+        self.assertEqual(proposal["reason"], "최근 기록에서 오전에 계획한 작업 6건 중 0건, 저녁에 계획한 작업 6건 중 6건을 끝냈습니다.")
+        self.assertEqual(len(proposal["evidenceRecordIds"]), 12)
         self.assertEqual(self.llm.focus_calls, [])  # no consent, nothing sent to the AI
         self.assertEqual(state["executionRecords"][0]["plannedStart"], EVENINGS[0])
 
@@ -119,7 +121,7 @@ class FocusTimeTests(unittest.TestCase):
         [proposal] = self.focus_proposals(state)
         self.assertEqual((proposal["sizedBy"], proposal["aiReason"]), ("ai", self.llm.focus_reply["reason"]))
         [call] = self.llm.focus_calls
-        self.assertEqual(call["context"]["comparable"], ["evening", "morning"])
+        self.assertEqual(sorted(call["context"]["comparable"]), ["evening", "morning"])
         self.assertEqual({r["period"] for r in call["context"]["records"]}, {"morning", "evening"})
         self.assertIn("지시가 아닌 데이터", call["instructions"])
 
@@ -141,12 +143,12 @@ class FocusTimeTests(unittest.TestCase):
         self.assertTrue(tasks and all(e["start"][11:13] in ("19", "20") for e in tasks))
         period = next(r for r in draft["personalization"] if r["key"] == "period")
         self.assertEqual(period["source"], "learned")
-        self.assertIn("실행 기록 8건", period["because"])
+        self.assertIn("실행 기록 12건", period["because"])
 
     def test_a_rejected_proposal_needs_new_evidence(self):
         [proposal] = self.focus_proposals(self.evenings_done_mornings_missed())
         self.call(f"/api/execution/proposals/{proposal['id']}/reject")
-        plan_id, entries = self.put_plan(["2030-01-11T19:00"])
+        plan_id, entries = self.put_plan(["2030-01-13T19:00"])
         state = self.finish(plan_id, entries[0])
         self.assertEqual([p["status"] for p in self.focus_proposals(state)], ["rejected"])
 

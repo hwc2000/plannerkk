@@ -99,6 +99,92 @@ def day_slots(windows: Sequence[Window], policy: PlanPolicy, block: int) -> list
     return [{"date": day, "minutes": slots} for day, slots in days.items() if slots]
 
 
+MIN_SHAPED_MINUTES = 10  # a stretch shorter than this after shaping is not worth a task
+
+
+def shape_windows(windows: Sequence[Window], prefs: Mapping[str, Any]) -> list[Window]:
+    """The chosen time as the plan may use it, after learned limits (approved values only).
+
+    A part of the day with a learned length holds at most that many minutes per
+    stretch, and when finished work takes ``pacePercent`` of its plan, only that
+    share of each stretch is planned: the rest stays free for the work to run long.
+    """
+    pace = (prefs.get("pacePercent") or 100) / 100
+    caps = prefs.get("periodMinutes") or {}
+    shaped = []
+    for begin, end in windows:
+        minutes = (end - begin).total_seconds() / 60
+        period = next((name for name, (low, high) in PERIODS.items() if low <= begin.hour < high), None)
+        if period in caps:
+            minutes = min(minutes, caps[period])
+        minutes = int(minutes / pace)
+        if minutes >= MIN_SHAPED_MINUTES:
+            shaped.append((begin, begin + timedelta(minutes=minutes)))
+    return shaped
+
+
+ODDS_DAYS = 28  # records this recent decide how likely each part of the day is picked
+
+
+def period_odds(records: Sequence[Mapping[str, Any]], today: str) -> dict[str, float]:
+    """How likely each part of the day is to be kept when a daily cap cuts the chosen time.
+
+    (finished + 1) / (planned + 2) of the recent tasks planned in it: with no records every
+    part is even, and a part that keeps going badly is still picked now and then, so it is
+    tried again and the odds can change.
+    """
+    cutoff = (datetime.fromisoformat(today) - timedelta(days=ODDS_DAYS)).date().isoformat()
+    counts: dict[str, list[int]] = {}
+    for r in records:
+        start = r.get("plannedStart") or ""
+        if not start or start[:10] < cutoff:
+            continue
+        period = next((name for name, (low, high) in PERIODS.items() if low <= int(start[11:13]) < high), None)
+        if period:
+            item = counts.setdefault(period, [0, 0])
+            item[0] += 1
+            item[1] += r.get("result") == "completed"
+    return {period: (finished + 1) / (planned + 2) for period, (planned, finished) in counts.items()}
+
+
+def pick_windows_for_cap(windows: Sequence[Window], cap: int, odds: Mapping[str, float], seed: str,
+                         preferred: str | None = None) -> list[Window]:
+    """Which of a day's chosen stretches a daily cap keeps: drawn by each part of the day's odds, not the earliest first.
+
+    Whole stretches are kept (the scheduler still stops at the cap and keeps its breaks); a
+    known best part of the day (approved or declared) is kept first.  The draw is seeded by
+    the user and the day, so the same plan request gives the same week.
+    """
+    import random
+    by_day: dict[str, list[Window]] = {}
+    for window in windows:
+        by_day.setdefault(window[0].date().isoformat(), []).append(window)
+    kept: list[Window] = []
+    for day, items in by_day.items():
+        total = sum((end - begin).total_seconds() / 60 for begin, end in items)
+        if total <= cap:
+            kept += items
+            continue
+        rng = random.Random(f"{seed}:{day}")
+        left, chosen = cap, []
+        pool = [w for w in items if _period_of(w[0]) != preferred]
+        for window in [w for w in items if _period_of(w[0]) == preferred]:
+            if left > 0:
+                chosen.append(window)
+                left -= (window[1] - window[0]).total_seconds() / 60
+        while pool and left > 0:
+            weights = [odds.get(_period_of(begin), 0.5) for begin, _ in pool]
+            window = pool.pop(rng.choices(range(len(pool)), weights=weights)[0])
+            chosen.append(window)
+            left -= (window[1] - window[0]).total_seconds() / 60
+        kept += sorted(chosen)
+    return kept
+
+
+def _period_of(moment: datetime) -> str | None:
+    return next((name for name, (low, high) in PERIODS.items() if low <= moment.hour < high), None)
+
+
 def preferred_windows(windows: Sequence[Window], period: str) -> list[Window]:
     start_hour, end_hour = PERIODS[period]
     result = []
@@ -151,6 +237,12 @@ RECOVERY_LABELS = {"replan": "시간을 다시 배치", "reduce": "할 일을 �
 def _value_text(field: str, value: Any) -> str:
     if field == "recoveryPreference":
         return RECOVERY_LABELS.get(value, str(value))
+    if value is None:
+        return "없음"
+    if field == "pacePercent":
+        return f"{value}%"
+    if field == "periodMinutes":
+        return ", ".join(f"{PERIOD_LABELS[k]} {v}분" for k, v in value.items()) or "없음"
     return f"{value}분"
 
 
@@ -292,6 +384,17 @@ def personalization_reasons(
     if prefs.get("dailyPlannedMinutes"):
         reasons.append(project_or("dailyCap", f"하루에 최대 {prefs['dailyPlannedMinutes']}분만 계획했습니다.",
                                   "dailyPlannedMinutes", "하루 계획량", lambda: _daily_cap(facts, prefs, survey)))
+    if prefs.get("pacePercent"):
+        pace = prefs["pacePercent"]
+        reasons.append(project_or("pace", f"작업이 계획한 시간의 {pace}%쯤 걸려서, 고른 시간의 {round(10000 / pace)}%만 작업으로 채우고 나머지는 비웠습니다.",
+                                  "pacePercent", "걸리는 시간",
+                                  lambda: _reason("pace", f"고른 시간의 {round(10000 / pace)}%만 작업으로 채웠습니다.",
+                                                  f"확정한 프로필의 걸리는 시간 {pace}%를 따랐습니다.", "profile", ["pacePercent"])))
+    if prefs.get("periodMinutes"):
+        text = ", ".join(f"{PERIOD_LABELS[k]}에는 한 번에 {v}분까지" for k, v in prefs["periodMinutes"].items())
+        reasons.append(project_or("periodLength", f"{text}만 계획했습니다.", "periodMinutes", "시간대별 길이",
+                                  lambda: _reason("periodLength", f"{text}만 계획했습니다.",
+                                                  "확정한 프로필의 시간대별 길이를 따랐습니다.", "profile", ["periodMinutes"])))
     if placement is not None:
         reasons.append(_period(prefs, patterns, placement))
     style = _schedule_style(facts, prefs, survey)

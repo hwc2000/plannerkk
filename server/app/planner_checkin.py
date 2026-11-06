@@ -27,7 +27,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .execution_api import Mutation
-from .execution_learning import REASON_CODES, propose_update
+from .execution_learning import REASON_CODES, propose_all
 from .execution_profile import object_schema
 from .execution_service import save_execution_record
 from .execution_store import ConflictError
@@ -398,7 +398,7 @@ def checkin_router(store, llm):
                     saved = next(r for r in doc["executionRecords"] if r["id"] == saved_id)
                 saved.update(checkInId=session["id"], checkInDate=session["date"])
             if revised:
-                propose_update(doc, request.project.id)
+                propose_all(doc, request.project.id)
             doc.setdefault("checkInSessions", []).append({**session, "createdAt": datetime.now(timezone.utc).isoformat()})
             apply_insights(doc, insights, event_id=session["id"], date=session["date"], project_id=request.project.id)
             learned = [f"{SLOTS[k][0]} {value_text(k, v)}" for k, v in insights.items()]
@@ -433,6 +433,8 @@ def checkin_router(store, llm):
                           "date": datetime.now(KST).date().isoformat(),
                           "planId": plan["id"] if plan else None, "createdAt": datetime.now(timezone.utc).isoformat()})
             del items[:-FEEDBACK_LIMIT]
+            # Feedback can ask for longer or shorter tasks (feedback-size-v1).
+            propose_all(doc, project_id)
         return envelope(store.change(request.revision, save))
 
     return router

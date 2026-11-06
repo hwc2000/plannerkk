@@ -1,10 +1,19 @@
 """Learning from execution records: changes to the user's settings, proposed for approval.
 
-Three rules run after every record:
+Rules run after every record (``propose_all``):
 
 - long-task-v2: a shorter focus block when it keeps proving too long.
-- focus-grow-v1: a longer focus block when block-sized work keeps getting done.
+- grow-revert-v1: back to the block before a longer one that made things worse.
+- focus-grow-v1: a longer focus block when block-sized work keeps getting done,
+  and most of everything planned since the last change was finished.
+- daily-cap-v1: a daily plan the user can really get through, from the days they ran out.
+- pace-v1: how much longer than planned finished work really takes; the plan leaves that time free.
+- period-cap-v1: a shorter stretch for one part of the day that keeps falling short
+  while the rest goes well.
 - focus-time-v1: the part of the day the user finishes work best.
+
+Misses that the day's load explains (the user had already worked about as much as
+they manage in a day) do not count against a part of the day.
 
 When to propose is a rule, so it is testable and never loops.  The value comes
 from the user's own records (the minutes they managed, the share of tasks they
@@ -27,11 +36,16 @@ REASON_CODES = ('time_shortage', 'task_too_large', 'fatigue', 'interruption',
 RULE_VERSION = 'long-task-v2'
 WINDOW_DAYS = 14
 EVIDENCE_COUNT = 3
+# 'underestimated' (it took longer than planned) is not a reason to shorten: that calls for more time (pace-v1).
 SIZE_REASONS = ('time_shortage', 'task_too_large')
+SIZE_QUANTILE = 0.25    # aim below the user's typical day, so most days the task fits
+SIZE_MIN_DAYS = 2       # misses on one bad day are not "keeps falling short"
+MIN_LEARNED_BLOCK = 15  # a learned block never goes below this
 MIN_SIZE_REASONS = 2
 FULL_BLOCK_SHARE = 0.5  # tasks of at least half the focus block are focus-block work
 MIN_BLOCK_MINUTES = 5
 STEP_MINUTES = 5
+STEP_DOWN_SHARE = 0.25  # without the minutes the user managed, one step shorter
 
 SIZE_SCHEMA = object_schema({"blockMinutes": {"type": "integer"}, "reason": {"type": "string"}})
 SIZE_INSTRUCTIONS = (
@@ -43,12 +57,150 @@ SIZE_INSTRUCTIONS = (
 )
 
 
-def evidence_block(records, block):
-    """A shorter block from what the user actually managed: the middle of their actual minutes, in 5-minute steps."""
-    managed = sorted(r['actualMinutes'] for r in records if type(r.get('actualMinutes')) is int and r['actualMinutes'] > 0)
+LOAD_REASONS = ('fatigue', 'time_shortage', 'underestimated')
+LOAD_EXPLAINS = 0.9   # a miss after this share of the day's capacity is the day's load, not the hour
+
+
+def floor_step(minutes):
+    return int(minutes) // STEP_MINUTES * STEP_MINUTES
+
+
+def median(values):
+    values = sorted(values)
+    return values[len(values) // 2] if values else None
+
+
+def worked_minutes(record):
+    """Minutes the user worked on a task; a partial task without minutes counts 0 (a lower bound)."""
+    if record['result'] == 'not_started':
+        return 0
+    actual = record.get('actualMinutes')
+    if type(actual) is int and actual > 0:
+        return actual
+    return record['plannedMinutes'] if record['result'] == 'completed' else 0
+
+
+def record_day(record):
+    """The day a task was planned for (older records without it: the day it was saved)."""
+    return (record.get('plannedStart') or record.get('createdAt') or '')[:10]
+
+
+def by_day(records):
+    days = {}
+    for record in sorted(records, key=lambda r: r.get('plannedStart') or r.get('createdAt') or ''):
+        days.setdefault(record_day(record), []).append(record)
+    return days
+
+
+def pace_explained(records):
+    """Ids of time shortages that follow an earlier task of the same day running past its plan."""
+    explained = set()
+    for items in by_day(records).values():
+        overran = False
+        for r in items:
+            if overran and r['result'] != 'completed' and r.get('reasonCode') in ('time_shortage', None):
+                explained.add(r['id'])
+            actual = r.get('actualMinutes')
+            overran = overran or (type(actual) is int and actual > r['plannedMinutes'])
+    return explained
+
+
+def ran_out_days(records):
+    """Days the user got through part of the plan and then ran out, with the minutes worked and planned.
+
+    A day with nothing finished says the tasks were too big, not that the day was too long;
+    a shortage after an overrun says work takes longer than planned (pace), not that energy ran out.
+    """
+    out = []
+    paced = pace_explained(records)
+    for day, items in by_day(records).items():
+        if not any(r['result'] == 'completed' for r in items):
+            continue
+        if not any(r['id'] not in paced and (r['result'] == 'not_started' or
+                                             (r['result'] != 'completed' and r.get('reasonCode') in LOAD_REASONS))
+                   for r in items):
+            continue
+        worked = [worked_minutes(r) for r in items]
+        if None in worked:
+            continue
+        out.append({'date': day, 'worked': sum(worked), 'planned': sum(r['plannedMinutes'] for r in items)})
+    return out
+
+
+def load_explained(records):
+    """Ids of misses that come after the user had worked about a day's worth (their own median)."""
+    capacity = median([d['worked'] for d in ran_out_days(records)])
+    if not capacity:
+        return set()
+    explained = set()
+    for items in by_day(records).values():
+        before = 0
+        for r in items:
+            if r['result'] != 'completed' and before >= capacity * LOAD_EXPLAINS:
+                explained.add(r['id'])
+            worked = worked_minutes(r)
+            before += worked or 0
+    return explained
+
+
+def _pending(state, profile, project_id, key):
+    return any(p['status'] == 'pending' and p['profileId'] == profile['id'] and p.get('projectId') == project_id
+               and key in p['proposedChanges'] for p in state['profileUpdateProposals'])
+
+
+def _scope(state, project_id):
+    """(profile, project profile, effective preferences) of one scope, or None when it cannot learn."""
+    profile = state['profile']
+    if not profile:
+        return None
+    project_profile = (state.get('projectProfiles') or {}).get(project_id) if project_id else None
+    try:
+        prefs, _ = effective_preferences(profile, project_profile)
+    except ValueError:
+        return None
+    return profile, project_profile, prefs
+
+
+def _propose(state, profile, project_profile, project_id, changes, reason, sizing, ids, rule):
+    state['profileUpdateProposals'].append({
+        'id': str(uuid4()), 'profileId': profile['id'],
+        'projectId': project_id, 'projectProfileId': (project_profile or {}).get('id'),
+        'proposedChanges': changes, 'reason': reason, 'sizing': sizing, 'sizedBy': 'evidence',
+        'evidenceRecordIds': ids, 'ruleVersion': rule,
+        'status': 'pending', 'createdAt': datetime.now(timezone.utc).isoformat(), 'decidedAt': None,
+    })
+
+
+def close_stale_proposals(state):
+    """Waiting proposals made for settings that have since changed can never be approved: close them."""
+    profile = state.get('profile') or {}
+    for p in state['profileUpdateProposals']:
+        if p['status'] != 'pending':
+            continue
+        project_profile = (state.get('projectProfiles') or {}).get(p.get('projectId')) if p.get('projectId') else None
+        if p['profileId'] != profile.get('id') or (p.get('projectId') and (project_profile or {}).get('id') != p.get('projectProfileId')):
+            p.update(status='rejected', decidedAt=datetime.now(timezone.utc).isoformat(), closedBy='settings_changed')
+
+
+def stopped_early(record):
+    """Minutes kept at a missed task that stopped before its planned time (None otherwise)."""
+    actual = record.get('actualMinutes')
+    return actual if type(actual) is int and 0 < actual < record['plannedMinutes'] else None
+
+
+def evidence_block(records, block, finished=(), pace=1.0):
+    """A shorter block from what the user actually managed, in 5-minute steps.
+
+    The minutes kept at missed tasks that stopped early (in planned minutes: divided by
+    how much longer work takes), together with the planned minutes of tasks finished at
+    this length, and a low quartile of them: the block should fit most days, not the
+    average one.  Returns None without such minutes, or when the block holds up.
+    """
+    managed = [stopped_early(r) / pace for r in records if stopped_early(r)]
     if not managed:
         return None
-    value = max(MIN_BLOCK_MINUTES, managed[len(managed) // 2] // STEP_MINUTES * STEP_MINUTES)
+    values = sorted(managed + [r['plannedMinutes'] for r in finished])
+    value = max(MIN_BLOCK_MINUTES, floor_step(values[int(len(values) * SIZE_QUANTILE)]))
     return value if value < block else None
 
 
@@ -71,21 +223,50 @@ def propose_update(state, project_id=None):
     if block <= MIN_BLOCK_MINUTES:
         return
     project_profile_id = (project_profile or {}).get('id')
-    records = _scope_records(state, profile, project_id, project_profile_id, block, FULL_BLOCK_SHARE)[-EVIDENCE_COUNT:]
+    scoped = _scope_records(state, profile, project_id, project_profile_id, block, FULL_BLOCK_SHARE)
+    paced = pace_explained(scoped)
+    # A part of the day with its own learned length is judged by that rule, not this one.
+    own = set(prefs.get('periodMinutes') or {})
+    scoped = [r for r in scoped if r['id'] not in paced and period_of(r.get('plannedStart') or '2000-01-01T00:00') not in own]
+    records = scoped[-EVIDENCE_COUNT:]
     if len(records) != EVIDENCE_COUNT or any(r['result'] == 'completed' for r in records):
         return
     size_reasons = sum(r['reasonCode'] in SIZE_REASONS for r in records)
     if size_reasons < MIN_SIZE_REASONS:
+        return
+    # Only what the user told: every miss needs the minutes they kept at it, over more than one day.
+    if not all(stopped_early(r) for r in records) or len({record_day(r) for r in records}) < SIZE_MIN_DAYS:
         return
     ids = [r['id'] for r in records]
     if any(p['profileId'] == profile['id'] and 'blockMinutes' in p['proposedChanges'] and
            ((p['status'] == 'pending' and p.get('projectId') == project_id) or set(p['evidenceRecordIds']) & set(ids))
            for p in state['profileUpdateProposals']):
         return
-    to = evidence_block(records, block)
-    if to is None:
-        return  # without minutes the user actually managed there is nothing to size a change by
-    managed = ', '.join(str(r['actualMinutes']) for r in records if type(r.get('actualMinutes')) is int and r['actualMinutes'] > 0)
+    finished = [r for r in scoped if r['result'] == 'completed' and r['plannedMinutes'] >= block * GROW_FULL_SHARE][-EVIDENCE_COUNT * 2:]
+    pace = (prefs.get('pacePercent') or 100) / 100
+    # The block is what fits the part of the day that goes best; a worse part gets its own length (period-cap-v1).
+    misses_by = {}
+    when = lambda r: period_of(r['plannedStart']) if r.get('plannedStart') else None  # noqa: E731
+    for r in scoped[-EVIDENCE_COUNT * 3:]:
+        if r['result'] != 'completed':
+            misses_by.setdefault(when(r), []).append(r)
+    estimates = []
+    for period, misses in misses_by.items():
+        done = [r for r in finished if when(r) == period]
+        if stopped_early(misses[0]) is not None or done:
+            estimates.append(evidence_block(misses, block, done, pace) or block)
+    for period in {when(r) for r in finished} - set(misses_by):
+        estimates.append(block)  # a part of the day where this length still works
+    to = max(estimates) if estimates else None
+    if to is None or to >= block:
+        return  # tasks of this length still get finished in some part of the day
+    to = max(to, MIN_LEARNED_BLOCK)
+    if to >= block:
+        return
+    managed = ', '.join(str(stopped_early(r)) for r in records)
+    sizing = (f'그 작업들에서 실제로 집중한 시간({managed}분)'
+              + (f'과 이 길이로 끝낸 작업 {len(finished)}건' if finished else '')
+              + f'을 보고, 대부분의 날에 맞는 {to}분을 제안합니다.')
     scope = '이 프로젝트에서 ' if project_id else ''
     state['profileUpdateProposals'].append({
         'id': str(uuid4()), 'profileId': profile['id'],
@@ -93,7 +274,7 @@ def propose_update(state, project_id=None):
         'proposedChanges': {'blockMinutes': {'from': block, 'to': to}},
         'reason': (f'{scope}최근 {WINDOW_DAYS}일 동안 집중 구간({block}분)에 맞춘 작업 {EVIDENCE_COUNT}건이 모두 끝나지 않았고, '
                    f'{size_reasons}건은 시간이 부족하거나 작업이 컸습니다.'),
-        'sizing': f'그 작업들에서 실제로 집중한 시간({managed}분)의 가운데 값에 맞춰 {to}분을 제안합니다.',
+        'sizing': sizing,
         'sizedBy': 'evidence',
         'evidenceRecordIds': ids, 'ruleVersion': RULE_VERSION,
         'status': 'pending', 'createdAt': datetime.now(timezone.utc).isoformat(), 'decidedAt': None,
@@ -106,6 +287,12 @@ GROW_EVIDENCE_COUNT = 4   # the last block-sized tasks, all finished
 GROW_FULL_SHARE = 0.8     # a task of at least this share of the block used the whole block
 GROW_STEP_SHARE = 0.2     # grow by a fifth of the block, in 5-minute steps
 MAX_BLOCK_MINUTES = 180   # the profile's upper bound
+GROW_NEEDS = 0.8          # share of everything planned since the last change that must be finished
+
+# grow-revert-v1: a longer block that made things worse goes back.
+REVERT_RULE_VERSION = 'grow-revert-v1'
+REVERT_MIN_RECORDS = 4
+REVERT_BELOW = 0.6        # finished share after growing that means the longer block did not work
 
 
 def _scope_records(state, profile, project_id, project_profile_id, block, share):
@@ -152,6 +339,10 @@ def propose_growth(state, project_id=None):
     records = _scope_records(state, profile, project_id, project_profile_id, block, GROW_FULL_SHARE)[-GROW_EVIDENCE_COUNT:]
     if len(records) != GROW_EVIDENCE_COUNT or any(r['result'] != 'completed' for r in records):
         return
+    # Four in a row are not enough while other work is being missed (another part of the day, a long day).
+    since = _scope_records(state, profile, project_id, project_profile_id, block, FULL_BLOCK_SHARE)
+    if sum(r['result'] == 'completed' for r in since) < GROW_NEEDS * len(since):
+        return
     ids = [r['id'] for r in records]
     if any(p['profileId'] == profile['id'] and 'blockMinutes' in p['proposedChanges'] and
            ((p['status'] == 'pending' and p.get('projectId') == project_id) or set(p['evidenceRecordIds']) & set(ids))
@@ -174,6 +365,203 @@ def propose_growth(state, project_id=None):
         'evidenceRecordIds': ids, 'ruleVersion': GROW_RULE_VERSION,
         'status': 'pending', 'createdAt': datetime.now(timezone.utc).isoformat(), 'decidedAt': None,
     })
+
+
+def propose_revert(state, project_id=None):
+    """Back to the previous block when the block was grown and, since then, most work went unfinished."""
+    scope = _scope(state, project_id)
+    if not scope:
+        return
+    profile, project_profile, prefs = scope
+    block = prefs['blockMinutes']
+    grown = [p for p in state['profileUpdateProposals']
+             if p['status'] == 'approved' and p.get('projectId') == project_id
+             and p.get('ruleVersion') in (GROW_RULE_VERSION, FEEDBACK_RULE_VERSION)
+             and (p['proposedChanges'].get('blockMinutes') or {}).get('to') == block
+             and p['proposedChanges']['blockMinutes']['to'] > p['proposedChanges']['blockMinutes']['from']]
+    if not grown or _pending(state, profile, project_id, 'blockMinutes'):
+        return
+    before = grown[-1]['proposedChanges']['blockMinutes']['from']
+    records = _scope_records(state, profile, project_id, (project_profile or {}).get('id'), block, FULL_BLOCK_SHARE)
+    if len(records) < REVERT_MIN_RECORDS:
+        return
+    done = sum(r['result'] == 'completed' for r in records)
+    if done >= REVERT_BELOW * len(records):
+        return
+    scope_text = '이 프로젝트에서 ' if project_id else ''
+    _propose(state, profile, project_profile, project_id, {'blockMinutes': {'from': block, 'to': before}},
+             f'{scope_text}집중 구간을 {before}분에서 {block}분으로 늘린 뒤 작업 {len(records)}건 중 {done}건만 끝냈습니다.',
+             f'늘리기 전의 {before}분으로 되돌리자고 제안합니다.', [r['id'] for r in records], REVERT_RULE_VERSION)
+
+
+# daily-cap-v1: a daily plan the user can get through.
+CAP_RULE_VERSION = 'daily-cap-v1'
+CAP_MIN_DAYS = 3
+CAP_RECENT_DAYS = 5
+CAP_SHARE = 0.85          # propose only when the user manages clearly less than what was planned
+
+
+def propose_daily_cap(state, project_id=None):
+    """A daily plan as long as the user really works before running out, from their own days."""
+    scope = _scope(state, project_id)
+    if not scope:
+        return
+    profile, project_profile, prefs = scope
+    if _pending(state, profile, project_id, 'dailyPlannedMinutes'):
+        return
+    records = _scope_records(state, profile, project_id, (project_profile or {}).get('id'), 0, 0)
+    days = ran_out_days(records)[-CAP_RECENT_DAYS:]
+    if len(days) < CAP_MIN_DAYS:
+        return
+    worked, planned = median([d['worked'] for d in days]), median([d['planned'] for d in days])
+    if worked >= planned * CAP_SHARE:
+        return
+    current = prefs.get('dailyPlannedMinutes')
+    to = max(floor_step(worked), prefs['blockMinutes'])
+    if current is not None and to >= current:
+        return
+    ids = [r['id'] for r in records if r['plannedStart'][:10] in {d['date'] for d in days}]
+    scope_text = '이 프로젝트에서 ' if project_id else ''
+    _propose(state, profile, project_profile, project_id, {'dailyPlannedMinutes': {'from': current, 'to': to}},
+             f'{scope_text}최근 {len(days)}일은 하루 {planned}분쯤 계획했는데 {worked}분쯤 하고 지치거나 시간이 모자랐습니다.',
+             f'하루에 {to}분까지만 계획하자고 제안합니다.', ids, CAP_RULE_VERSION)
+
+
+# pace-v1: how much longer than planned finished work takes.
+PACE_RULE_VERSION = 'pace-v1'
+PACE_MIN_RECORDS = 4
+PACE_FROM = 1.2           # finished work taking at least this many times the plan leaves time free
+MAX_PACE_PERCENT = 300
+
+
+def propose_pace(state, project_id=None):
+    """When finished tasks keep taking longer than planned, plan less into each stretch of time."""
+    scope = _scope(state, project_id)
+    if not scope:
+        return
+    profile, project_profile, prefs = scope
+    if _pending(state, profile, project_id, 'pacePercent'):
+        return
+    records = [r for r in _scope_records(state, profile, project_id, (project_profile or {}).get('id'), 0, 0)
+               if type(r.get('actualMinutes')) is int and r['actualMinutes'] > 0
+               and (r['result'] == 'completed' or (r.get('reasonCode') == 'underestimated' and r['actualMinutes'] >= r['plannedMinutes']))]
+    if len(records) < PACE_MIN_RECORDS:
+        return
+    ratio = median([r['actualMinutes'] / r['plannedMinutes'] for r in records])
+    current = prefs.get('pacePercent') or 100
+    to = min(MAX_PACE_PERCENT, int(round(ratio * 100 / STEP_MINUTES)) * STEP_MINUTES)
+    if ratio < PACE_FROM or to <= current:
+        return
+    scope_text = '이 프로젝트에서 ' if project_id else ''
+    _propose(state, profile, project_profile, project_id, {'pacePercent': {'from': prefs.get('pacePercent'), 'to': to}},
+             f'{scope_text}작업 {len(records)}건이 계획한 시간의 {ratio:.1f}배쯤 걸렸습니다.',
+             f'계획할 때 시간의 {round(10000 / to)}%만 작업으로 채우고 나머지는 비워 두자고 제안합니다.',
+             [r['id'] for r in records], PACE_RULE_VERSION)
+
+
+# period-cap-v1: a shorter stretch in a part of the day that keeps falling short.
+PERIOD_RULE_VERSION = 'period-cap-v1'
+PERIOD_EVIDENCE = 3
+PERIOD_OTHERS_DONE = 0.7  # the rest of the day must go well, or the block itself is the problem
+PERIOD_MIN_OTHERS = 4
+
+
+def propose_period_minutes(state, project_id=None):
+    """A part of the day whose latest tasks all stopped early, while the other parts went well."""
+    scope = _scope(state, project_id)
+    if not scope:
+        return
+    profile, project_profile, prefs = scope
+    if _pending(state, profile, project_id, 'periodMinutes'):
+        return
+    block = prefs['blockMinutes']
+    records = _scope_records(state, profile, project_id, (project_profile or {}).get('id'), block, FULL_BLOCK_SHARE)
+    explained = load_explained(records)
+    current = dict(prefs.get('periodMinutes') or {})
+    for period in FOCUS_PERIODS:
+        mine = [r for r in records if r.get('plannedStart') and period_of(r['plannedStart']) == period]
+        latest = mine[-PERIOD_EVIDENCE:]
+        if len(latest) < PERIOD_EVIDENCE or any(r['result'] != 'partial' or r.get('reasonCode') not in ('fatigue', 'task_too_large')
+                                                 or r['id'] in explained or type(r.get('actualMinutes')) is not int
+                                                 for r in latest):
+            continue
+        others = [r for r in records if r not in mine and r['id'] not in explained]
+        if len(others) < PERIOD_MIN_OTHERS or sum(r['result'] == 'completed' for r in others) < PERIOD_OTHERS_DONE * len(others):
+            continue
+        to = max(STEP_MINUTES, floor_step(median([r['actualMinutes'] for r in latest])))
+        if to >= min(current.get(period, block), block):
+            continue
+        label = PERIOD_LABELS[period]
+        _propose(state, profile, project_profile, project_id,
+                 {'periodMinutes': {'from': prefs.get('periodMinutes'), 'to': {**current, period: to}}},
+                 f'{label}에 계획한 최근 작업 {len(latest)}건은 모두 {to}분쯤에서 멈췄고, 다른 때 작업은 대부분 끝냈습니다.',
+                 f'{label}에는 한 번에 {to}분까지만 계획하자고 제안합니다.', [r['id'] for r in latest + others], PERIOD_RULE_VERSION)
+        return
+
+
+# feedback-size-v1: the user's own weekly feedback asks for longer or shorter tasks.
+FEEDBACK_RULE_VERSION = 'feedback-size-v1'
+FEEDBACK_IN_A_ROW = 2
+FEEDBACK_STEP_SHARE = 0.2
+
+
+def propose_feedback_size(state, project_id=None):
+    """Longer or shorter tasks when the user said so in two weekly feedbacks in a row (since the last change).
+
+    "Time was too short" with tasks running past their plan is about pace (pace-v1 leaves
+    time free); without overruns it asks for longer tasks.
+    """
+    if not project_id:
+        return
+    scope = _scope(state, project_id)
+    if not scope:
+        return
+    profile, project_profile, prefs = scope
+    if _pending(state, profile, project_id, 'blockMinutes'):
+        return
+    changed = max([p.get('decidedAt') or '' for p in state['profileUpdateProposals']
+                   if p['status'] == 'approved' and p.get('projectId') == project_id and 'blockMinutes' in p['proposedChanges']],
+                  default='')
+    notes = [f for f in (state.get('projectFeedback') or {}).get(project_id) or [] if (f.get('createdAt') or '') > changed]
+    latest = [f.get('timeFit') for f in notes[-FEEDBACK_IN_A_ROW:]]
+    if len(latest) < FEEDBACK_IN_A_ROW or len(set(latest)) != 1 or latest[0] not in ('too_short', 'too_long'):
+        return
+    block = prefs['blockMinutes']
+    step = max(STEP_MINUTES, floor_step(block * FEEDBACK_STEP_SHARE))
+    records = _scope_records(state, profile, project_id, (project_profile or {}).get('id'), 0, 0)
+    if not records:
+        return  # an approved change keeps its evidence: the records the feedback was about
+    if latest[0] == 'too_short':
+        if any(type(r.get('actualMinutes')) is int and r['actualMinutes'] > r['plannedMinutes'] for r in records):
+            return  # work ran past its plan: more time per task is pace-v1's job
+        ceiling, _ = grow_ceiling(state, profile['id'], project_id, prefs)
+        to = min(block + step, ceiling, MAX_BLOCK_MINUTES)
+        said = '작업 시간이 짧았다'
+    else:
+        to = max(block - step, MIN_LEARNED_BLOCK)
+        said = '작업 시간이 길었다'
+    if to == block:
+        return
+    _propose(state, profile, project_profile, project_id, {'blockMinutes': {'from': block, 'to': to}},
+             f'이 프로젝트의 주간 의견에 {FEEDBACK_IN_A_ROW}번 연속 "{said}"고 남기셨습니다.',
+             f'한 단계 {"늘린" if to > block else "줄인"} {to}분을 제안합니다.',
+             [r['id'] for r in records[-EVIDENCE_COUNT:]], FEEDBACK_RULE_VERSION)
+
+
+def propose_all(state, project_id=None):
+    """Every rule, after a record is saved.  At most one waiting change per value and scope.
+
+    A longer block comes only from the user's own feedback (feedback-size-v1), not from
+    finishing a few tasks in a row: longer is something the user asks for.
+    """
+    close_stale_proposals(state)
+    propose_update(state, project_id)
+    propose_revert(state, project_id)
+    propose_feedback_size(state, project_id)
+    propose_daily_cap(state, project_id)
+    propose_pace(state, project_id)
+    propose_period_minutes(state, project_id)
+    propose_focus_time(state)
 
 
 async def ai_size(llm, proposal, records, project_title=None):
@@ -204,8 +592,9 @@ def apply_ai_size(state, proposal_id, to, reason):
 # focus-time-v1 rule parameters (system rule; the period comes from the user's own records).
 FOCUS_RULE_VERSION = 'focus-time-v1'
 FOCUS_WINDOW_DAYS = 28
-FOCUS_MIN_PER_PERIOD = 4  # a part of the day needs this many planned tasks to be compared
+FOCUS_MIN_PER_PERIOD = 6  # a part of the day needs this many planned tasks to be compared
 FOCUS_MIN_LEAD = 0.25     # its share of finished tasks must lead every other part by this much
+FOCUS_SAME_LENGTH = 0.8   # only tasks at least this share of the current block are compared
 PERIOD_LABELS = {'morning': '오전', 'afternoon': '오후', 'evening': '저녁'}
 
 FOCUS_SCHEMA = object_schema({'focusTime': {'type': 'string', 'enum': [*FOCUS_PERIODS, 'unclear']},
@@ -259,6 +648,20 @@ def propose_focus_time(state):
     records = [r for r in state['executionRecords']
                if r.get('profileId') == profile['id'] and r.get('plannedStart') and period_of(r['plannedStart'])
                and datetime.fromisoformat(r['createdAt']) > since]
+    # A task missed after a day's worth of work says nothing about the hour it was in.
+    explained = set()
+    for project_id in {r.get('projectId') for r in records}:
+        explained |= load_explained([r for r in records if r.get('projectId') == project_id])
+    # Compare like with like: a part of the day given short tasks would look better just for that.
+    blocks = {}
+    for pid in {r.get('projectId') for r in records}:
+        scope = _scope(state, pid)
+        blocks[pid] = scope[2]['blockMinutes'] if scope else None
+    current = {pid: ((state.get('projectProfiles') or {}).get(pid) or {}).get('id') for pid in blocks}
+    records = sorted([r for r in records if r['id'] not in explained
+                      and r.get('projectProfileId') == current.get(r.get('projectId'))
+                      and (blocks.get(r.get('projectId')) is None or r['plannedMinutes'] >= FOCUS_SAME_LENGTH * blocks[r.get('projectId')])],
+                     key=lambda r: r['plannedStart'])
     periods = focus_evidence(records)
     comparable = {k: v for k, v in periods.items() if v['planned'] >= FOCUS_MIN_PER_PERIOD}
     if len(comparable) < 2:
@@ -267,6 +670,15 @@ def propose_focus_time(state):
     best = max(share, key=share.get)
     if any(share[best] - value < FOCUS_MIN_LEAD for key, value in share.items() if key != best):
         return
+    # The earlier and the later half of the records must each point to the same part of the day.
+    half = len(records) // 2
+    for part in (records[:half], records[half:]):
+        counts = {k: v for k, v in focus_evidence(part).items() if k in comparable}
+        if len(counts) < len(comparable) or any(v['planned'] < 2 for v in counts.values()):
+            return
+        shares = {k: v['finished'] / v['planned'] for k, v in counts.items()}
+        if any(shares[best] - value < FOCUS_MIN_LEAD / 2 for key, value in shares.items() if key != best):
+            return
     current = profile['planningPreferences'].get('focusTime', 'unknown')
     if best == current:
         return
