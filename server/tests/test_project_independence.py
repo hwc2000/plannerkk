@@ -143,7 +143,7 @@ class ProjectIndependenceTests(unittest.TestCase):
                     "profileVersion": doc["profile"]["version"], "projectId": "essay", "projectProfileId": None,
                     "taskTitle": "긴 작업", "plannedMinutes": 50, "actualMinutes": 20, "remainingMinutes": 30,
                     "result": "partial", "reasonCode": "time_shortage", "note": "", "difficulty": None,
-                    "recoveryAction": None, "createdAt": datetime.now(timezone.utc).isoformat(),
+                    "recoveryAction": None, "plannedStart": f"2030-01-0{7 + i}T19:00", "createdAt": datetime.now(timezone.utc).isoformat(),
                 })
             propose_update(doc, "essay")
         self.revision = self.store.change(self.revision, fail_essay)["revision"]

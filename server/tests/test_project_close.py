@@ -63,7 +63,8 @@ class ProjectCloseTests(unittest.TestCase):
                 "profileId": doc["profile"]["id"], "profileVersion": doc["profile"]["version"], "projectId": project_id,
                 "projectProfileId": None, "taskTitle": "작업", "plannedMinutes": BASE_BLOCK, "actualMinutes": None,
                 "remainingMinutes": None, "result": "completed", "reasonCode": None, "note": "", "difficulty": None,
-                "recoveryAction": None, "createdAt": datetime.now(timezone.utc).isoformat(), **fields})
+                "recoveryAction": None, "plannedStart": f"2030-01-{7 + i % 5:02}T19:00",
+                "createdAt": datetime.now(timezone.utc).isoformat(), **fields})
 
     def learn_essay_block(self):
         """The essay learns a 20-minute block from its records, then finishes most tasks at that length."""

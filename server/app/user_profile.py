@@ -1,7 +1,7 @@
 """A-owned profile contract and transactional update boundary (camelCase)."""
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -42,6 +42,10 @@ class PlanningPreferences(BaseModel):
     starterMinutes: int | None = Field(default=None, ge=1, le=180, strict=True)
     # Part of the day the user finishes work best; learned from records and approved.
     focusTime: Literal["morning", "afternoon", "evening", "variable", "unknown"] = "unknown"
+    # Learned from a project's records (project layer first): how long planned work really takes,
+    # in percent of the plan, and the longest stretch of work a part of the day holds.
+    pacePercent: int | None = Field(default=None, ge=100, le=300, strict=True)
+    periodMinutes: dict[Literal["morning", "afternoon", "evening"], Annotated[int, Field(ge=5, le=180, strict=True)]] | None = None
     status: Literal["provisional", "confirmed"]
 
     @model_validator(mode="after")
@@ -167,7 +171,7 @@ def confirm_profile_draft(state):
 
 
 # User-profile values a learning rule may propose to change (recoveryPreference: when a project ends).
-LEARNABLE_KEYS = {"blockMinutes", "focusTime", "recoveryPreference"}
+LEARNABLE_KEYS = {"blockMinutes", "focusTime", "recoveryPreference", "dailyPlannedMinutes", "pacePercent", "periodMinutes"}
 
 
 def apply_profile_proposal(state, proposal_id, *, expected_version):
@@ -192,10 +196,10 @@ def apply_profile_proposal(state, proposal_id, *, expected_version):
         raise ValueError("제안의 근거 실행 기록이 올바르지 않습니다.")
     changes = proposal.get("proposedChanges", {})
     if not changes or set(changes) - LEARNABLE_KEYS:
-        raise ValueError("학습으로 바꿀 수 있는 값은 집중 구간, 집중이 잘 되는 시간대, 계획이 틀어졌을 때의 방식뿐입니다.")
+        raise ValueError("학습으로 바꿀 수 있는 값은 집중 구간, 시간대, 하루 계획량, 걸리는 시간, 시간대별 길이, 복구 방식뿐입니다.")
     updated = deepcopy(p)
     for key, change in changes.items():
-        if set(change) != {"from", "to"} or updated["planningPreferences"][key] != change["from"]:
+        if set(change) != {"from", "to"} or updated["planningPreferences"].get(key) != change["from"]:
             raise ConflictError("제안 이후 프로필 값이 변경되었습니다.")
         updated["planningPreferences"][key] = change["to"]
     prefs = updated["planningPreferences"]

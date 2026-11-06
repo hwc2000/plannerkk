@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .adaptive.context import to_profile_change_context
 from .adaptive.full_plan_generator import LLMFullPlanGenerator
 from .adaptive.graph import build_adaptive_planner_graph
-from .adaptive.personalization import day_slots, plan_policy
+from .adaptive.personalization import day_slots, period_odds, pick_windows_for_cap, plan_policy, shape_windows
 from .execution_store import ExecutionStore, ConflictError, empty_state, this_week
 from .user_insights import insights_for_ai
 from .planner_actions import public_state
@@ -116,6 +116,17 @@ def build_full_plan_context(
     planning = get_planning_context(user_id, project, state=state, memories=memories or [],
                                     extra_project_ids=tuple(p.id for p in selected))
     prefs = planning["userProfile"]["planningPreferences"]
+    # Learned limits (slack for work that runs long, a short stretch for a weak part of the day).
+    windows = shape_windows(windows, prefs)
+    if prefs.get("dailyPlannedMinutes"):
+        # A daily cap keeps part of each day: which part is drawn by how each part of the day went, not the earliest.
+        ids = {p.id for p in selected} or {None}
+        records = [r for r in state.get("executionRecords") or [] if r.get("projectId") in ids]
+        odds = period_odds(records, start_date.isoformat())
+        windows = pick_windows_for_cap(windows, prefs["dailyPlannedMinutes"], odds, f"{user_id}:{sorted(map(str, ids))}",
+                                       prefs.get("focusTime") if prefs.get("focusTime") in ("morning", "afternoon", "evening") else None)
+    if not windows:
+        raise ValueError("배운 설정을 적용하니 이번 주에 계획할 시간이 남지 않았습니다. 가용 시간을 늘려 주세요.")
     policy = plan_policy(planning["userProfile"])
     style = prefs.get("scheduleStyle")
     # Each day's first task carries the starter, so only the rest goes to tasks.
@@ -169,6 +180,8 @@ def build_full_plan_context(
         # The user's own words on earlier plans of these projects (check-ins), newest last.
         "project_feedback": {p.id: [{k: f.get(k) for k in ("load", "timeFit", "date", "note")} for f in (state.get("projectFeedback") or {}).get(p.id, [])[-3:]]
                              for p in selected if (state.get("projectFeedback") or {}).get(p.id)},
+        # Each project's own past: what is done, what was missed and why (project layer, code-made).
+        "project_history": project_history(state, selected, start_date),
         "existing_tasks": [task.model_dump(mode="json") for task in (existing_tasks or [])],
         "current_plan": [
             {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate", "completed")}
@@ -185,6 +198,49 @@ def build_full_plan_context(
         "slots": state["settings"]["slots"],
         "source_planning_context": planning,
     }
+
+
+HISTORY_DAYS = 28
+HISTORY_TITLES = 20
+
+
+def project_history(state, projects, start_date):
+    """What each project's own records say, summed up by code for the plan AI (project layer only).
+
+    finished: tasks already done (not to plan again); unfinished: the latest misses and why;
+    recent: counts over the last two weeks.  Another project's records never appear here.
+    """
+    cutoff = (start_date - timedelta(days=HISTORY_DAYS)).isoformat()
+    recent_from = (start_date - timedelta(days=14)).isoformat()
+    history = {}
+    for project in projects:
+        records = [r for r in state.get("executionRecords") or []
+                   if r.get("projectId") == project.id and (r.get("plannedStart") or "") >= cutoff
+                   and (r.get("plannedStart") or "") < start_date.isoformat()]
+        if not records:
+            continue
+        latest = {}
+        for record in sorted(records, key=lambda r: r.get("plannedStart") or ""):
+            latest[record["taskId"]] = record
+        finished = list(dict.fromkeys(r["taskTitle"] for r in latest.values() if r["result"] == "completed"))
+        unfinished = [{"title": r["taskTitle"], "result": r["result"], "reason": r.get("reasonCode")}
+                      for r in latest.values() if r["result"] != "completed"]
+        recent = [r for r in latest.values() if (r.get("plannedStart") or "") >= recent_from]
+        done = [r for r in recent if r["result"] == "completed"]
+        ratios = sorted(r["actualMinutes"] / r["plannedMinutes"] for r in done
+                        if type(r.get("actualMinutes")) is int and r["actualMinutes"] > 0)
+        reasons = {}
+        for r in recent:
+            if r.get("reasonCode"):
+                reasons[r["reasonCode"]] = reasons.get(r["reasonCode"], 0) + 1
+        history[project.id] = {
+            "finished": finished[-HISTORY_TITLES:],
+            "unfinished": unfinished[-10:],
+            "recent": {"planned": len(recent), "finished": len(done),
+                       "actualToPlanned": round(ratios[len(ratios) // 2], 2) if ratios else None,
+                       "reasons": reasons},
+        }
+    return history
 
 
 class WeeklyRequest(Mutation):
