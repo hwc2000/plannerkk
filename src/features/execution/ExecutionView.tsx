@@ -158,7 +158,12 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
       project: plan?.project ?? null,
       events: busyEvents,
       existingTasks: existingTasksFor(milestones, planProjectIds(plan)),
-    }), approvalMessage(state.profileUpdateProposals?.find(p => p.id === proposalId)))
+    }), (next: ExecutionState) => {
+      const proposal = state.profileUpdateProposals?.find(p => p.id === proposalId)
+      return replansCurrentPlan(state, proposal) && !next.planDraft
+        ? '변경을 적용했어요. 이번 주에는 남은 시간이 없어서 다음 계획부터 반영돼요.'
+        : approvalMessage(proposal)
+    })
   }
 
   function approvalMessage(proposal: ProfileUpdateProposal | undefined) {

@@ -107,12 +107,20 @@ export async function approveProposalAndReplan(
     ? state
     : await executionApi(`/proposals/${proposalId}/approve`, { revision: state.revision })
   if (!replan) return approved
-  return executionApi('/plan', {
-    revision: approved.revision,
-    ...input,
-    profileChangeProposalId: proposalId,
-  })
+  try {
+    return await executionApi('/plan', {
+      revision: approved.revision,
+      ...input,
+      profileChangeProposalId: proposalId,
+    })
+  } catch (error) {
+    // Late in the week no chosen time may be left to replan in: the change is saved and applies from the next plan.
+    if (error instanceof Error && NO_TIME_LEFT.test(error.message)) return approved
+    throw error
+  }
 }
+
+const NO_TIME_LEFT = /사용 가능한 시간이 없습니다|계획할 시간이 남지 않았습니다/
 
 export function projectContext(project: Project | undefined) {
   if (!project) return null
