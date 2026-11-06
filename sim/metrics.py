@@ -146,10 +146,12 @@ def extraction(week):
             hits += ok
             invented += truth is None and got is not None and not ok
             if not ok:
-                misses.append({"date": day["date"], "task": task, "field": field, "truth": truth, "got": got,
-                               "words": next((o["sentence"] for o in day["outcomes"] if o["title"] == task), day.get("text", "")[-160:])})
+                # The words the app read: the AI-written answer, or the fixed sentence when the writer fell back.
+                words = (next((o["sentence"] for o in day["outcomes"] if o["title"] == task), None)
+                         if day.get("words") == "template" else None) or day.get("text", "")[:240]
+                misses.append({"date": day["date"], "task": task, "field": field, "truth": truth, "got": got, "words": words})
     rate = round(hits / total, 2) if total else None
-    return {"value": rate, "target": f"≥ {EXTRACTION_TARGET:.0%}, 지어낸 값 0", "invented": invented,
+    return {"value": rate, "target": f"≥ {EXTRACTION_TARGET:.0%}, 지어낸 값 0", "invented": invented, "checks": total,
             "pass": rate is not None and rate >= EXTRACTION_TARGET and invented == 0, "misses": misses}
 
 
