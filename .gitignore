@@ -12,3 +12,6 @@ __pycache__/
 *.local
 .DS_Store
 ~$*.pptx
+
+# check-in experiment output (sim/run.py)
+sim/out/
