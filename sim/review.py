@@ -311,6 +311,8 @@ def truth_line(p):
 
 
 def shown(app, key):
+    if key == "pace":
+        return f"{app}%" if app else "모름(100%)"
     if app is None:
         return "없음" if key == "daily" else "모름"
     if key == "focusTime":
@@ -324,7 +326,7 @@ def truth_shown(truth, key):
     if key == "daily":
         return f"{truth}분" if truth else "제한 없음"
     if key == "pace":
-        return f"×{truth}"
+        return f"{truth}%"
     return f"{truth}분"
 
 

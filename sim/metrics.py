@@ -287,6 +287,14 @@ def belief_state(app, truth, *, unknown=(None,), lower_is_safe=True):
     return "under" if lower_is_safe and app < truth else "wrong"
 
 
+def pace_belief(state, prof, who):
+    app = (state.get("projectOverrides") or {}).get("pacePercent") or prof.get("pacePercent")
+    truth = round(who.pace * 100)
+    if who.pace == 1:
+        return {"app": app, "truth": truth, "state": "right" if app in (None, 100) else "under"}
+    return {"app": app, "truth": truth, "state": belief_state(app or 100, truth, lower_is_safe=False)}
+
+
 def beliefs(p, result):
     """What the app believes at each week's end, against the truth that week."""
     rows = []
@@ -314,8 +322,8 @@ def beliefs(p, result):
                 "app": block, "truth": round(min(who.focus * who.off_focus, STRETCH) / who.pace),
                 "state": belief_state(block, min(who.focus * who.off_focus, STRETCH) / who.pace) if isinstance(block, int) else "under"},
             "daily": {"app": daily, "truth": who.capacity, "state": daily_state},
-            # The app has no field for how much longer than planned work takes.
-            "pace": {"app": None, "truth": who.pace, "state": "right" if who.pace == 1 else "nofield"},
+            # How much longer than planned work takes (percent); not knowing it plans too tight.
+            "pace": pace_belief(state, prof, who),
         })
     return rows
 
