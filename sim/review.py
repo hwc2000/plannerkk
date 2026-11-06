@@ -760,7 +760,7 @@ def comparison_html(compare):
         return ""
     if "sets" in compare:
         intro = ('<section class="sheet lead"><h2>앱 수정 전과 후</h2><p>같은 사람, 같은 날, 같은 씨앗으로 수정 전 앱(main)과 수정 후 앱을 '
-                 '각각 돌렸어요. 체크인 글은 매번 다른 AI(gpt-4.1)가 새로 쓰고, 앱은 gpt-6.1-terra로 읽어요. '
+                 '각각 돌렸어요. 체크인 글은 AI가 매번 새로 쓰고(위 실행들은 gpt-4.1), 앱은 gpt-6.1-terra로 읽어요. '
                  '<b>검증 씨앗</b>은 규칙을 고친 뒤 처음 돌려서 결과를 보고 고친 적이 없는 것이고, <b>개발 씨앗</b>은 고치는 동안 들여다본 것이에요. '
                  '믿을 만한 건 검증 씨앗 쪽이에요.</p></section>')
         return intro + "".join(_comparison_set(item["title"], item["data"]) for item in compare["sets"])

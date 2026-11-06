@@ -1,8 +1,9 @@
 """Check-in words written fresh by an AI for each day, checked against the truth by code.
 
-The app reads check-ins with its own model; the words are written by a different
-model (``SIM_WRITER_MODEL``, default gpt-4.1) so the reader does not get text in
-its own style.  The writer reports what it actually said (minutes, reasons, how
+The words are written by the app's own model (``OPENAI_PLAN_MODEL``, now
+gpt-6.1-terra) unless ``SIM_WRITER_MODEL`` names another one.  A different
+writer would keep the reader from getting text in its own style; the team chose
+one model for both on 2026-11-07, so the reading score may read a little high.  The writer reports what it actually said (minutes, reasons, how
 the day went); code checks every stated fact against what really happened and
 retries, then falls back to the fixed sentences in behavior.py.  The reading
 test scores the app against what the words say, never against what was not said.
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from openai import OpenAI
 
-MODEL = os.getenv("SIM_WRITER_MODEL", "gpt-4.1")
+MODEL = os.getenv("SIM_WRITER_MODEL") or os.getenv("OPENAI_PLAN_MODEL") or "gpt-6.1-terra"
 ATTEMPTS = 2
 REASONS = ["time_shortage", "task_too_large", "fatigue", "interruption", "underestimated"]
 LEVELS = ["good", "ok", "poor"]

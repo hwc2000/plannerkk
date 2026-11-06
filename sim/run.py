@@ -76,7 +76,7 @@ def main(argv=None):
     model = "fake" if args.fake else os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini")
     (out_dir / "run.json").write_text(json.dumps({
         "weeks": args.weeks, "personas": ids, "model": model, "seed": args.seed,
-        "writer": "template" if os.environ["SIM_WRITER"] == "0" else os.getenv("SIM_WRITER_MODEL", "gpt-4.1"),
+        "writer": "template" if os.environ["SIM_WRITER"] == "0" else (os.getenv("SIM_WRITER_MODEL") or os.getenv("OPENAI_PLAN_MODEL") or "gpt-6.1-terra"),
         "fresh": [specs[i] for i in ids if i in specs],
         "started": datetime.now().isoformat(timespec="seconds")}, ensure_ascii=False))
     print(f"run {run}: {len(ids)} users x {args.weeks} weeks, model {model}", flush=True)
