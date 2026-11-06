@@ -242,6 +242,18 @@ class CheckTask(Mutation):
     completed: bool = Field(strict=True)
 
 
+class RemoveTask(Mutation):
+    planId: str
+    taskId: str
+
+
+def drop_task(entries: list[dict], task_id: str) -> list[dict]:
+    task = next((e for e in entries if e["id"] == task_id and e["kind"] == "task"), None)
+    if task is None:
+        return entries
+    return [e for e in entries if e is not task and not (e["kind"] == "break" and e["start"] == task["end"])]
+
+
 class ExecutionRecordRequest(ExecutionRecordInput, Mutation):
     # Optional: lets the AI read the tasks and notes to size a proposed change.
     consent: bool = False
@@ -564,6 +576,20 @@ def execution_router(store=None, llm=None):
             for entry in (state.get("planDraft") or {}).get("entries", []):
                 if entry["id"] == request.taskId:
                     entry["completed"] = request.completed
+        return change(request.revision, update)
+
+    @router.post("/task/remove")
+    def remove_task(request: RemoveTask):
+        def update(state):
+            plan = state["plan"]
+            if not plan or plan["id"] != request.planId:
+                raise ValueError("계획이 변경되었습니다. 다시 불러와 주세요.")
+            if not any(e["id"] == request.taskId and e["kind"] == "task" for e in plan["entries"]):
+                raise ValueError("작업을 찾을 수 없습니다.")
+            plan["entries"] = drop_task(plan["entries"], request.taskId)
+            if state.get("planDraft"):
+                state["planDraft"]["entries"] = drop_task(state["planDraft"]["entries"], request.taskId)
+            (state.get("recoveryDrafts") or {}).pop(request.taskId, None)
         return change(request.revision, update)
 
     @router.post("/records")

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { CheckIn, checkInTasks, type CheckInDraft } from './CheckIn'
 import { AboutMe } from './AboutMe'
 import { PlannerChat } from './PlannerChat'
@@ -9,7 +9,7 @@ import { confirmCheckIn } from './api'
 import type { ExecutionState, Project } from '../../shared/types'
 import { dateKey } from '../../shared/constants'
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear() })
 const a = { id: 'a', title: '에세이', goal: '초안', startDate: '2020-01-01', dueDate: '2030-12-31', priority: 'high', status: 'active' } as Project
 const b = { ...a, id: 'b', title: '발표' }
 function state(count = 1): ExecutionState {
@@ -39,7 +39,7 @@ it('shows an evidence-backed place as an optional hint without changing task tit
   entry.environmentSuggestion = { place: '도서관', optional: true, knownFocusDays: 4, goodFocusDays: 3 }
   render(<ExecutionView state={s} onChange={vi.fn()} projects={[a]} events={[]} milestones={[]} memories={[]} section="home"/>)
   expect(screen.getByText(/장소 제안 \(선택\): 도서관/)).toBeTruthy()
-  expect(screen.getByText('작업0')).toBeTruthy()
+  expect(within(screen.getByRole('region', { name: '확정한 주간 계획' })).getByText('작업0')).toBeTruthy()
 })
 it('starts a fresh batch after a completed draft instead of reopening the thank-you screen', () => {
   const draft = { planId: 'plan', tasks: [], results: {}, questions: [], step: 'done', said: '', text: '', note: '' } as CheckInDraft
@@ -55,9 +55,11 @@ it('offers the remaining batch after twenty confirmed tasks', () => {
   s.executionRecords = s.plan!.entries.slice(0, 20).map(t => ({ planId: 'plan', taskId: t.id, result: 'completed', checkInId: 'batch-one' })) as ExecutionState['executionRecords']
   const draft = { planId: 'plan', tasks: [], results: {}, questions: [], step: 'done', said: '', text: '', note: '' } as CheckInDraft
   render(<CheckIn {...props(s)} draft={draft}/> )
-  expect(screen.getAllByRole('button', { name: '다 했어요' })).toHaveLength(3)
-  expect(screen.getByText('작업20')).toBeTruthy()
-  expect(screen.queryByText('작업0')).toBeNull()
+  const [batch, again] = screen.getAllByRole('list')
+  expect(within(batch).getAllByRole('button', { name: '다 했어요' })).toHaveLength(3)
+  expect(within(batch).getByText('작업20')).toBeTruthy()
+  expect(within(batch).queryByText('작업0')).toBeNull()
+  expect(within(again).getByText('작업0')).toBeTruthy()
 })
 it('does not mistake a different project session for committed confirmation', async () => {
   const failure = new Error('confirmation failed')
@@ -186,7 +188,8 @@ it('labels mixed-project drafts using task ownership and hides them from unrelat
   const s = state(2)
   s.planDraft = { ...s.plan!, id: 'draft', status: 'draft', projectId: null, project: null, entries: s.plan!.entries.map((e, i) => ({ ...e, projectId: i ? 'b' : 'a' })) }
   const view = render(<ExecutionView state={s} onChange={vi.fn()} projects={[a, b, { ...a, id: 'c' }]} milestones={[]} events={[]} section="project" projectId="a"/> )
-  expect(screen.getByText('여러 프로젝트 공동 계획:').parentElement?.textContent).toContain('에세이 · 발표')
+  const owners = screen.getByRole('list', { name: '이 계획의 프로젝트' })
+  expect([...owners.querySelectorAll('li')].map(li => li.textContent)).toEqual(['에세이', '발표'])
   view.rerender(<ExecutionView state={s} onChange={vi.fn()} projects={[a, b, { ...a, id: 'c' }]} milestones={[]} events={[]} section="project" projectId="c"/> )
   expect(screen.queryByLabelText('주간 계획 초안')).toBeNull()
 })
@@ -244,11 +247,13 @@ it('shows prior-merged-plan checkbox completions but excludes confirmed siblings
     { planId: 'prior-plan', taskId: 't1', result: 'completed', checkInId: 'saved' },
   ] as ExecutionState['executionRecords']
   render(<CheckIn {...props(s)}/> )
-  const completed = screen.getByRole('button', { name: '다 했어요' }) as HTMLButtonElement
+  const [batch, again] = screen.getAllByRole('list')
+  const completed = within(batch).getByRole('button', { name: '다 했어요' }) as HTMLButtonElement
   expect(completed.getAttribute('aria-pressed')).toBe('true')
   expect(completed.disabled).toBe(true)
-  expect(screen.getByText('작업0')).toBeTruthy()
-  expect(screen.queryByText('작업1')).toBeNull()
+  expect(within(batch).getByText('작업0')).toBeTruthy()
+  expect(within(batch).queryByText('작업1')).toBeNull()
+  expect(within(again).getByText('작업1')).toBeTruthy()
   expect((screen.getByText('다음') as HTMLButtonElement).disabled).toBe(false)
 })
 
@@ -305,4 +310,22 @@ it('shows declaration evidence separately from provisional observation metadata'
   expect(patterns.textContent).toContain('체크인 2회 · 1일')
   expect(patterns.textContent).toContain('집중 미응답 1회')
   expect(patterns.textContent).toContain('연관성이지 원인은 아니에요')
+})
+it('lets an already checked-in task be told again and sends it with the new result', async () => {
+  const s = state(2)
+  s.plan!.entries[0].completed = true
+  s.executionRecords = [{ id: 'r0', planId: 'plan', taskId: 't0', result: 'completed', checkInId: 'earlier' }] as ExecutionState['executionRecords']
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ slots: [], next: [] }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => s })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<CheckIn {...props(s)}/> )
+  const [, again] = screen.getAllByRole('list')
+  expect(within(again).getByText(/지난 기록: 다 함/)).toBeTruthy()
+  fireEvent.click(within(again).getByRole('button', { name: '조금 했어요' }))
+  fireEvent.click(screen.getByText('다음'))
+  fireEvent.click(await screen.findByText('덧붙일 말 없이 기록'))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+  expect(fetchMock.mock.calls[1][0]).toBe('/api/execution/chat/check-in')
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body).results).toEqual([{ taskId: 't0', result: 'partial' }])
 })

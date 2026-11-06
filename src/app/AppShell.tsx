@@ -2,11 +2,11 @@ import { useState, type ReactNode } from 'react'
 import {
   Brain,
   CalendarDays,
+  Clock,
   LogOut,
   Menu,
   MoreHorizontal,
   Plus,
-  Settings2,
   Sparkles,
   Target,
   UserRound,
@@ -19,7 +19,6 @@ type AppShellProps = {
   activeView: View
   onChangeView: (view: View) => void
   onCreateProject: () => void
-  onShowSettingsNotice: () => void
   projectCount: number
   /** Projects in the sidebar, like channels; the ended ones fold away below. */
   projects: Project[]
@@ -36,6 +35,7 @@ type AppShellProps = {
 
 const mobileNavigation: ReadonlyArray<readonly [View, string]> = [
   ['calendar', '홈'],
+  ['schedule', '이번 주 시간'],
   ['execution', '내 프로필'],
   ['memory', '기억'],
   ['portfolio', '전체 계획'],
@@ -46,6 +46,7 @@ function viewTitle(view: View, project?: Project) {
   if (view === 'execution') return '내 프로필'
   if (view === 'portfolio') return '전체 계획'
   if (view === 'calendar') return '이번 주'
+  if (view === 'schedule') return '이번 주 시간'
   return '기억 관리'
 }
 
@@ -53,7 +54,6 @@ export function AppShell({
   activeView,
   onChangeView,
   onCreateProject,
-  onShowSettingsNotice,
   projectCount,
   projects,
   endedProjectIds,
@@ -88,6 +88,9 @@ export function AppShell({
           <button className={`nav-item ${activeView === 'calendar' ? 'active' : ''}`} onClick={() => onChangeView('calendar')}>
             <CalendarDays size={18} />홈
           </button>
+          <button className={`nav-item ${activeView === 'schedule' ? 'active' : ''}`} onClick={() => onChangeView('schedule')}>
+            <Clock size={18} />이번 주 시간
+          </button>
           <div className="nav-section" role="group" aria-label="프로젝트">
             <span className="nav-heading">프로젝트</span>
             {ongoing.map(projectButton)}
@@ -105,15 +108,14 @@ export function AppShell({
           </button>
         </nav>
         <div className="sidebar-bottom">
-          <button className="nav-item" onClick={onShowSettingsNotice}>
-            <Settings2 size={18} />설정
-          </button>
-          <div className="profile">
-            <div className="avatar">{(user?.displayName ?? '나').slice(0, 1).toUpperCase()}</div>
-            <div>
-              <strong>{user?.displayName ?? '로컬 사용자'}</strong>
-              <span className="profile-email" title={user?.email}>{user ? user.email : `프로젝트 ${projectCount}개`}</span>
-            </div>
+          <div className={`profile ${activeView === 'execution' ? 'active' : ''}`}>
+            <button className="profile-open" onClick={() => onChangeView('execution')} title="내 프로필 열기">
+              <span className="avatar">{(user?.displayName ?? '나').slice(0, 1).toUpperCase()}</span>
+              <span className="profile-text">
+                <strong>{user?.displayName ?? '로컬 사용자'}</strong>
+                <span className="profile-email" title={user?.email}>{user ? user.email : `프로젝트 ${projectCount}개`}</span>
+              </span>
+            </button>
             {onLogout
               ? <button className="profile-logout" onClick={onLogout} aria-label="로그아웃" title="로그아웃"><LogOut size={16} /></button>
               : <MoreHorizontal size={17} />}

@@ -87,19 +87,38 @@ class CheckInTests(unittest.TestCase):
         state = self.call("/api/execution/chat/check-in/confirm", project=ESSAY)
         self.assertEqual(state["executionRecords"][0]["result"], "completed")
 
-    def test_only_this_projects_tasks_and_each_told_about_once(self):
+    def test_only_this_projects_tasks_and_telling_again_revises_the_record(self):
         self.check_in(status=400, project=APP, **{self.first["id"]: "completed"})
         self.llm.replies["planner_checkin"] = answer(session={"place": ("집", "집에서"), "focus": ("good", "집중 잘 됐어")})
         self.check_in(text="집에서 했고 집중 잘 됐어", **{self.first["id"]: "completed"})
         self.call("/api/execution/chat/check-in/confirm", project=ESSAY)
-        self.check_in(status=400, **{self.first["id"]: "completed"})
+        self.check_in(**{self.first["id"]: "partial"})
+        state = self.call("/api/execution/chat/check-in/confirm", project=ESSAY)
+        [record] = state["executionRecords"]
+        self.assertEqual(record["result"], "partial")
+        task = next(e for e in state["plan"]["entries"] if e["id"] == self.first["id"])
+        self.assertFalse(task["completed"])
+        self.assertEqual(len(state["checkInSessions"]), 2)
+
+    def test_the_screen_confirms_the_card_it_shows_by_its_id(self):
+        card = self.check_in(**{self.first["id"]: "completed"})["plannerThreads"]["essay"]["action"]
+        self.call("/api/execution/chat/check-in/confirm", 409, project=ESSAY, actionId="another-card")
+        state = self.call("/api/execution/chat/check-in/confirm", project=ESSAY, actionId=card["id"])
+        self.assertEqual(len(state["executionRecords"]), 1)
+
+    def test_a_record_used_as_proposal_evidence_cannot_be_told_again(self):
+        self.check_in(**{self.first["id"]: "completed"})
+        state = self.call("/api/execution/chat/check-in/confirm", project=ESSAY)
+        record_id = state["executionRecords"][0]["id"]
+        self.revision = self.store.change(self.revision, lambda d: d["profileUpdateProposals"].append(
+            {"id": "p1", "evidenceRecordIds": [record_id], "status": "pending"}))["revision"]
+        self.check_in(status=400, **{self.first["id"]: "partial"})
 
     def test_a_task_ticked_off_earlier_gets_how_the_session_went(self):
         plan_id = self.week["id"]
         self.call("/api/execution/task", planId=plan_id, taskId=self.first["id"], completed=True)
         self.llm.replies["planner_checkin"] = answer(session={
             "place": ("도서관", "도서관에서"), "atmosphere": ("quiet", "조용히"), "focus": ("good", "잘 됐어"), "condition": ("ok", "괜찮았어")})
-        self.check_in(status=400, **{self.first["id"]: "partial"})  # what was ticked off stays done
         self.check_in(text="도서관에서 조용히 했어. 집중 잘 됐어, 컨디션 괜찮았어", **{self.first["id"]: "completed"})
         state = self.call("/api/execution/chat/check-in/confirm", project=ESSAY)
         [record] = state["executionRecords"]

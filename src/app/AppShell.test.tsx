@@ -11,7 +11,7 @@ const project = (id: string, title: string) =>
 
 it('lists projects in the sidebar like channels, with the ended ones folded away', () => {
   const open = vi.fn()
-  render(<AppShell activeView="project" onChangeView={vi.fn()} onCreateProject={vi.fn()} onShowSettingsNotice={vi.fn()} projectCount={2}
+  render(<AppShell activeView="project" onChangeView={vi.fn()} onCreateProject={vi.fn()} projectCount={2}
     projects={[project('essay', '에세이'), project('toeic', '토익')]} endedProjectIds={['toeic']} activeProjectId="essay" onOpenProject={open}
     notice="" onCloseNotice={vi.fn()} editor={null}><p>본문</p></AppShell>)
 

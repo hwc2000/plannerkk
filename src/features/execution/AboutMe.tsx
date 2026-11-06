@@ -13,8 +13,8 @@ export function AboutMe({ revision }: { revision: number }) {
   }, [revision])
   if (!slots) return null
   const known = slots.filter(s => s.value).length
-  return <section className="execution-card" aria-label="나에 대해 알게 된 것">
-    <p className="section-kicker">ABOUT ME · 기록된 항목 {known}개</p><h2>나에 대해 알게 된 것</h2>
+  return <section className="execution-card profile-section about-me-section" aria-label="나에 대해 알게 된 것">
+    <header className="profile-section-head"><h3>나에 대해 알게 된 것</h3><span>ABOUT ME · 기록된 항목 {known}개</span></header>
     <p className="execution-help">직접 말한 선호와 실행에서 관찰한 내용은 달라요. 관찰·후보 패턴은 아직 가설이며, 항목이 채워져도 나를 모두 이해했다는 뜻은 아니에요. 추가 질문은 선택이고 건너뛰어도 괜찮아요.</p>
     <ul className="about-me">{slots.map(s => <li key={s.key} className={s.value ? '' : 'empty'}>
       <strong>{s.label}</strong>

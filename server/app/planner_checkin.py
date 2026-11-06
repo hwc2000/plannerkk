@@ -27,7 +27,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .execution_api import Mutation
-from .execution_learning import REASON_CODES
+from .execution_learning import REASON_CODES, propose_update
 from .execution_profile import object_schema
 from .execution_service import save_execution_record
 from .execution_store import ConflictError
@@ -116,6 +116,7 @@ class CheckInRequest(Mutation):
 
 class CheckInConfirm(Mutation):
     project: ChatProject
+    actionId: str | None = Field(default=None, max_length=200)
 
 
 class FeedbackRequest(Mutation):
@@ -154,11 +155,11 @@ def checkin_tasks(state, project_id, results):
         record = latest.get(task["id"])
         if record and record.get("projectId") != project_id:
             raise ValueError("작업과 실행 기록의 프로젝트가 달라요. 현재 계획을 확인해 주세요.")
-        bare = (record and record["result"] == "completed" and not record.get("checkInId")
-                and not any(record.get(f) for f in SESSION_FIELDS))
-        if (record or task.get("completed")) and not (bare and item.result == "completed"):
+        if record and any(record["id"] in p.get("evidenceRecordIds", []) for p in state.get("profileUpdateProposals") or []):
+            raise ValueError(f"‘{task['title']}’ 기록은 변경 제안의 근거로 쓰여서 다시 남길 수 없어요.")
+        if task.get("completed") and not record:
             raise ValueError(f"‘{task['title']}’은 이미 기록했어요.")
-        tasks.append((task, item.result, record["id"] if bare else None))
+        tasks.append((task, item.result, record["id"] if record else None))
     return plan, tasks
 
 
@@ -358,6 +359,8 @@ def checkin_router(store, llm):
             action = thread.get("action") or {}
             if action.get("kind") != "check_in" or not action_valid(doc, action, request.project.id):
                 raise ConflictError("확인할 체크인이 없어요. 다시 답해 주세요.")
+            if request.actionId and action.get("id") != request.actionId:
+                raise ConflictError("확인하려던 체크인 카드가 바뀌었어요. 다시 확인해 주세요.")
             records, insights = action["payload"]["records"], action["payload"].get("insights") or {}
             try:
                 plan, tasks = checkin_tasks(doc, request.project.id, [TaskResult(taskId=r["taskId"], result=r["result"]) for r in records])
@@ -374,20 +377,28 @@ def checkin_router(store, llm):
                                      for field in SESSION_FIELDS}}
             records = [{**record, **{field: record.get(field) if field in reported else None
                                      for field in SESSION_FIELDS}} for record in records]
+            revised = False
             for record, (_, _, record_id) in zip(records, tasks):
                 if record.get("recordId") != record_id:
                     raise ConflictError("실행 기록이 바뀌었어요. 다시 답해 주세요.")
                 if record_id:
                     # Ticked off before: the check-in only adds how that session went.
                     saved = next(r for r in doc["executionRecords"] if r["id"] == record_id)
-                    saved.update({f: record[f] for f in SESSION_FIELDS}, note=record["note"] or saved.get("note", ""))
+                    saved.update({f: record[f] for f in SESSION_FIELDS}, note=record["note"] or saved.get("note", ""),
+                                 result=record["result"], reasonCode=record["reasonCode"])
                     if record["actualMinutes"] is not None:
                         saved["actualMinutes"] = record["actualMinutes"]
+                    entry = next((e for e in plan["entries"] if e["id"] == record["taskId"]), None)
+                    if entry is not None:
+                        entry["completed"] = record["result"] == "completed"
+                    revised = True
                 else:
                     saved_id = save_execution_record(doc, {**{k: record[k] for k in (
                         "taskId", "result", "actualMinutes", "reasonCode", *SESSION_FIELDS, "note")}, "planId": plan["id"]})
                     saved = next(r for r in doc["executionRecords"] if r["id"] == saved_id)
                 saved.update(checkInId=session["id"], checkInDate=session["date"])
+            if revised:
+                propose_update(doc, request.project.id)
             doc.setdefault("checkInSessions", []).append({**session, "createdAt": datetime.now(timezone.utc).isoformat()})
             apply_insights(doc, insights, event_id=session["id"], date=session["date"], project_id=request.project.id)
             learned = [f"{SLOTS[k][0]} {value_text(k, v)}" for k, v in insights.items()]

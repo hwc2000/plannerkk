@@ -7,14 +7,14 @@ import { ProfileForm } from './ProfileForm'
 import { ExecutionView } from './ExecutionView'
 import { ExecutionLearning } from './ExecutionLearning'
 import { PlannerChat } from './PlannerChat'
-import { CheckIn, checkInTasks } from './CheckIn'
+import { CheckIn, checkInCounts, checkInLabel, checkInTasks } from './CheckIn'
 import { AboutMe } from './AboutMe'
 import { PlanReasons } from './PlanReasons'
 import { ProjectSettings } from './ProjectSettings'
 import { approveProposalAndReplan, planCalendarEvents, planIsStale, replansCurrentPlan, staleProjectIds } from './api'
 import type { AvailabilitySlot, ExecutionPlan, ExecutionState, Project } from '../../shared/types'
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); localStorage.clear() })
 it('selects and deselects weekly hours without duplicates', () => {
   function Harness() { const [slots,setSlots]=useState<AvailabilitySlot[]>([]); return <AvailabilityGrid slots={slots} onChange={setSlots}/> }
   render(<Harness/>);
@@ -74,13 +74,19 @@ describe('screens', () => {
     llmAvailable: true, model: 'test' } as unknown as ExecutionState
   const essay = { id: 'essay', title: '에세이', goal: '초안', startDate: '2030-01-01', dueDate: '2030-01-31', priority: 'high', status: 'active' } as Project
 
-  it('asks for this week\'s hours on the home screen, around the calendar', async () => {
+  it('asks for this week\'s hours on its own page and points there from home', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...state, revision: 4, settings: { slots: [{ day: 0, hour: 18 }], view: 'timeline' } }) })
     vi.stubGlobal('fetch', fetchMock)
-    render(<ExecutionView state={state} onChange={vi.fn()} projects={[]} milestones={[]} events={[]} section="home" calendar={<p>달력</p>}/>)
+    const openSchedule = vi.fn()
+    const home = render(<ExecutionView state={state} onChange={vi.fn()} projects={[]} milestones={[]} events={[]} section="home" calendar={<p>달력</p>} onOpenSchedule={openSchedule}/>)
+    expect(screen.getByText('달력')).toBeTruthy()
+    expect(screen.queryByLabelText('월요일 18시부터 19시')).toBeNull()
+    fireEvent.click(screen.getByText('시간 고르기'))
+    expect(openSchedule).toHaveBeenCalled()
+    home.unmount()
+    render(<ExecutionView state={state} onChange={vi.fn()} projects={[]} milestones={[]} events={[]} section="schedule"/>)
     expect(screen.getByText(/이번 주 계획할 시간 · .* · 아직 안 고름/)).toBeTruthy()
     expect(screen.getByText(/매주 새로 고르고/)).toBeTruthy()
-    expect(screen.getByText('달력')).toBeTruthy()
     expect(screen.queryByText(/고정 일정/)).toBeNull()
     fireEvent.click(screen.getByLabelText('월요일 18시부터 19시'))
     fireEvent.click(screen.getByText('이번 주 시간 저장'))
@@ -93,12 +99,12 @@ describe('screens', () => {
     fireEvent.click(screen.getByText('설문하러 가기'))
     expect(open).toHaveBeenCalled()
   })
-  it('opens one project\'s conversation and points to home while this week has no hours', () => {
-    const home = vi.fn()
-    render(<ExecutionView state={state} onChange={vi.fn()} projects={[essay]} milestones={[]} events={[]} section="project" projectId="essay" onGoHome={home}/>)
+  it('opens one project\'s conversation and points to the weekly hours page while this week has no hours', () => {
+    const schedule = vi.fn()
+    render(<ExecutionView state={state} onChange={vi.fn()} projects={[essay]} milestones={[]} events={[]} section="project" projectId="essay" onOpenSchedule={schedule}/>)
     expect(screen.getByRole('heading', { name: '에세이' })).toBeTruthy()
-    fireEvent.click(screen.getByText('홈에서 고르기'))
-    expect(home).toHaveBeenCalled()
+    fireEvent.click(screen.getByText('시간 고르기'))
+    expect(schedule).toHaveBeenCalled()
   })
   it('lists the projects in progress on the home screen with their deadline', () => {
     const open = vi.fn()
@@ -804,4 +810,75 @@ describe('project settings', () => {
     expect(screen.getByRole('alert').textContent).toContain('1~720')
     expect(run).not.toHaveBeenCalled()
   })
+})
+
+describe('home check-in count', () => {
+  const entry = (id: string, day: string, completed = false) => ({ id, kind: 'task', title: id, minutes: 30, doneWhen: '끝', dueDate: null,
+    start: `${day}T19:00`, end: `${day}T19:30`, completed, projectId: 'p1' })
+  const state = (startDate: string, endDate: string, entries: ReturnType<typeof entry>[]) => ({
+    revision: 1, profile: null, profileDraft: null, settings: { slots: [], view: 'timeline' }, planDraft: null, llmAvailable: true, model: 'test',
+    executionRecords: [], plan: { id: 'w', profileId: 'p', projectId: null, project: null, goal: '', startDate, endDate, timezone: 'Asia/Seoul',
+      status: 'confirmed', slots: [], entries, pendingTasks: [] },
+  }) as unknown as ExecutionState
+
+  it('counts today separately from earlier unfinished work this week', () => {
+    const week = state('2030-01-07', '2030-01-13', [entry('a', '2030-01-07'), entry('b', '2030-01-09'), entry('c', '2030-01-09'),
+      entry('d', '2030-01-08', true), entry('e', '2030-01-10')])
+    expect(checkInCounts(week, 'p1', '2030-01-09')).toEqual({ today: 2, late: 1 })
+    expect(checkInLabel({ today: 2, late: 1 })).toBe('오늘 체크인 · 2개 · 밀린 1개')
+    expect(checkInLabel({ today: 0, late: 1 })).toBe('밀린 체크인 · 1개')
+    expect(checkInLabel({ today: 0, late: 0 })).toBe('')
+  })
+
+  it('does not count a week that has already ended', () => {
+    const ended = state('2030-01-07', '2030-01-13', [entry('a', '2030-01-07'), entry('b', '2030-01-10')])
+    expect(checkInTasks(ended, 'p1', '2030-01-20').due).toHaveLength(2)
+    expect(checkInCounts(ended, 'p1', '2030-01-20')).toEqual({ today: 0, late: 0 })
+  })
+})
+
+
+describe('weekly plan editing and one-time consent', () => {
+  const plan = { id: 'w', profileId: 'p', projectId: null, project: null, goal: '', startDate: '2030-01-07', endDate: '2030-01-13', timezone: 'Asia/Seoul',
+    status: 'confirmed', slots: [], pendingTasks: [], entries: [
+      { id: 't1', kind: 'task', title: '자료 조사', minutes: 30, doneWhen: '메모', dueDate: null, start: '2030-01-07T19:00', end: '2030-01-07T19:30', completed: false, projectId: 'essay' },
+      { id: 'b1', kind: 'break', title: '휴식', minutes: 5, doneWhen: '', dueDate: null, start: '2030-01-07T19:30', end: '2030-01-07T19:35', completed: false }] }
+  const base = { revision: 7, profile: null, profileDraft: null, settings: { slots: [], view: 'timeline' }, planDraft: null,
+    llmAvailable: true, model: 'test', executionRecords: [], plan } as unknown as ExecutionState
+  const essay = { id: 'essay', title: '에세이', goal: '초안', startDate: '2030-01-01', dueDate: '2030-01-31', priority: 'high', status: 'active' } as Project
+
+  it('asks again before deleting a task and only then removes it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...base, revision: 8 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+    render(<ExecutionView state={base} onChange={vi.fn()} projects={[essay]} milestones={[]} events={[]} section="home"/>)
+    const card = screen.getByRole('region', { name: '확정한 주간 계획' })
+    expect(card.textContent).not.toContain('휴식')
+    fireEvent.click(screen.getByRole('button', { name: '자료 조사 삭제' }))
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '자료 조사 삭제' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/execution/task/remove', expect.objectContaining({ method: 'POST' })))
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ revision: 7, planId: 'w', taskId: 't1' })
+  })
+
+  it('shows the AI consent checkbox until it is given once', () => {
+    const props = { state: base, busy: false, run: vi.fn(), project: essay, onApplyPlan: vi.fn() }
+    const { unmount } = render(<PlannerChat {...props}/>)
+    fireEvent.click(screen.getByLabelText(/OpenAI에 전송하는 데 동의/))
+    expect(screen.queryByLabelText(/OpenAI에 전송하는 데 동의/)).toBeNull()
+    unmount()
+    render(<PlannerChat {...props}/>)
+    expect(screen.queryByLabelText(/OpenAI에 전송하는 데 동의/)).toBeNull()
+  })
+})
+
+it('colors deadlines by how close they are', async () => {
+  const { deadlineTone, daysUntil } = await import('../../shared/deadline')
+  const now = new Date('2030-01-10T09:00:00')
+  expect(daysUntil('2030-01-13', now)).toBe(3)
+  expect(deadlineTone('2030-01-09', now)).toBe('danger')
+  expect(deadlineTone('2030-01-13', now)).toBe('danger')
+  expect(deadlineTone('2030-01-17', now)).toBe('warn')
+  expect(deadlineTone('2030-01-30', now)).toBe('neutral')
 })

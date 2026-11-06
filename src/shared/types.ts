@@ -1,4 +1,4 @@
-export type View = 'calendar' | 'memory' | 'portfolio' | 'execution' | 'project'
+export type View = 'calendar' | 'schedule' | 'memory' | 'portfolio' | 'execution' | 'project'
 
 export type ProjectStatus = 'active' | 'completed' | 'paused'
 export type MilestoneStatus = 'todo' | 'in_progress' | 'done' | 'deferred'
@@ -12,6 +12,7 @@ export type Project = {
   dueDate: string
   priority: 'high' | 'medium' | 'low'
   status: ProjectStatus
+  color?: string
 }
 
 export type Milestone = {

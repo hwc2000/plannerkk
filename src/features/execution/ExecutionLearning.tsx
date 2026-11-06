@@ -81,16 +81,18 @@ export function ExecutionLearning({ state, busy, run, approveProposal, events = 
     }
   }
 
-  return <section className="execution-card" id="check-in"><h2>실행 결과와 개선 제안</h2>
-    <p className="execution-help">실제 실행을 기록하면 반복되는 어려움을 바탕으로 변경을 제안합니다. 승인 전에는 프로필이 바뀌지 않습니다. 작업당 한 번 기록할 수 있습니다.</p>
-    {missed.length > 0 && <div className="execution-fieldset" aria-label="지난 작업 확인">
-      <strong>시간이 지난 작업 {missed.length}개, 어떻게 됐나요?</strong>
-      <p className="execution-help">기록한 작업만 학습에 쓰여요. 못 한 작업은 결과를 남기면 다시 넣을 방법을 제안해요.</p>
-      <ul className="fixed-list">{missed.map(e => <li key={e.id}>{e.start.slice(5, 10).replace('-', '/')} {e.start.slice(11)} · {e.title}
-        <button type="button" className="secondary-button" disabled={busy} onClick={() => { void run(() => executionApi('/task', { revision: state.revision, planId: state.plan!.id, taskId: e.id, completed: true }), '완료를 실행 기록에 남겼습니다.') }}>했어요</button>
-        <button type="button" className="secondary-button" disabled={busy} onClick={() => { setTaskId(e.id); setResult('not_started') }}>못 했어요</button></li>)}</ul>
+  return <section className="record-panel" id="check-in">
+    <p className="record-intro">체크인 대화 없이 실행 결과를 바로 남겨요. 기록이 쌓이면 반복되는 어려움을 보고 바꿀 점을 제안하고, 승인하기 전에는 프로필이 바뀌지 않아요.</p>
+    {missed.length > 0 && <div className="record-block" aria-label="지난 작업 확인">
+      <h3>시간이 지난 작업 {missed.length}개, 어떻게 됐나요?</h3>
+      <ul className="record-missed">{missed.map(e => <li key={e.id}>
+        <span className="record-missed-title"><small>{e.start.slice(5, 10).replace('-', '/')} {e.start.slice(11)} · {e.minutes}분</small>{e.title}</span>
+        <span className="record-missed-actions">
+          <button type="button" className="secondary-button compact" disabled={busy} onClick={() => { void run(() => executionApi('/task', { revision: state.revision, planId: state.plan!.id, taskId: e.id, completed: true }), '완료를 실행 기록에 남겼습니다.') }}>했어요</button>
+          <button type="button" className="secondary-button compact" disabled={busy} onClick={() => { setTaskId(e.id); setResult('not_started') }}>못 했어요</button>
+        </span></li>)}</ul>
     </div>}
-    {choice && <div className="execution-fieldset" aria-label="복구 방법 고르기">
+    {choice && <div className="record-block" aria-label="복구 방법 고르기">
       <strong>어떻게 다시 넣을까요?</strong>{choice.reason && <p className="execution-help">{choice.reason}</p>}
       <div className="execution-actions">{choice.options.map(option => <button key={option} type="button" className="secondary-button" disabled={busy}
         onClick={() => { void run(checkInAgain(choice.taskId, choice.checkIn, option), recoveryMessage(choice.taskId, choice.checkIn)) }}>{STRATEGIES[option]}</button>)}
@@ -144,24 +146,30 @@ export function ExecutionLearning({ state, busy, run, approveProposal, events = 
           form.reset(); setTaskId(''); setResult('completed'); setReasonCode(''); setAdaptiveConsent(false)
         }
       })
-    }}><fieldset className="execution-fieldset" disabled={busy}>
-      <label className="execution-label">작업<select required value={taskId} onChange={e => setTaskId(e.target.value)}><option value="">작업 선택</option>{tasks.map(t => <option key={t.id} value={t.id}>{t.title} · 예정 {t.minutes}분</option>)}</select></label>
+    }} className="record-block"><h3>실행 결과 기록</h3><fieldset className="record-form" disabled={busy}>
+      <div className="record-grid">
+      <label className="execution-label record-wide">작업<select required value={taskId} onChange={e => setTaskId(e.target.value)}><option value="">작업 선택</option>{tasks.map(t => <option key={t.id} value={t.id}>{t.title} · 예정 {t.minutes}분</option>)}</select></label>
       <label className="execution-label">실행 결과<select value={result} onChange={e => { const next = e.target.value as ExecutionRecord['result']; setResult(next); if (next === 'completed') { setReasonCode(''); setAdaptiveConsent(false) } }}><option value="completed">완료</option><option value="partial">부분 완료</option><option value="not_started">미시작</option></select></label>
       <label className="execution-label">실제 시간(분)<input name="actualMinutes" type="number" min="0" max={result === 'not_started' ? 0 : 1440} required /></label>
-      <label className="execution-label">남은 작업 예상 시간(분)<input name="remainingMinutes" type="number" min={priorityChanged ? 1 : 0} max="1440" disabled={result === 'completed'} /></label>
-      <label className="execution-label">미완료·지연 이유<select name="reasonCode" value={reasonCode} onChange={e => { setReasonCode(e.target.value); if (e.target.value !== 'priority_changed') setAdaptiveConsent(false) }} required={result !== 'completed'}><option value="">해당 없음</option>{Object.entries(reasons).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+      {result !== 'completed' && <label className="execution-label">미완료·지연 이유<select name="reasonCode" value={reasonCode} onChange={e => { setReasonCode(e.target.value); if (e.target.value !== 'priority_changed') setAdaptiveConsent(false) }} required><option value="">이유 선택</option>{Object.entries(reasons).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>}
+      {result !== 'completed' && <label className="execution-label">남은 작업 예상 시간(분)<input name="remainingMinutes" type="number" min={priorityChanged ? 1 : 0} max="1440" /></label>}
+      </div>
+      <details className="record-more"><summary>더 적기 (선택) · 난이도·메모{!priorityChanged && !recover ? '·다시 시도할 방법' : ''}</summary>
+      <div className="record-grid">
       <label className="execution-label">난이도<select name="difficulty"><option value="">미입력</option>{[1,2,3,4,5].map(n => <option key={n} value={n}>{n}{n === 1 ? ' · 쉬움' : n === 5 ? ' · 어려움' : ''}</option>)}</select></label>
-      <label className="execution-label">메모<textarea name="note" maxLength={priorityChanged ? 1500 : 2000}/></label>
       {!priorityChanged && !recover && <label className="execution-label">다시 시도할 방법<input name="recoveryAction" maxLength={1000}/></label>}
+      <label className="execution-label record-wide">메모<textarea name="note" maxLength={priorityChanged ? 1500 : 2000}/></label>
+      </div>
+      </details>
       {result !== 'completed' && !priorityChanged && <label className="execution-inline"><input type="checkbox" checked={recoveryConsent} onChange={e => setRecoveryConsent(e.target.checked)}/>못 한 작업을 다시 넣을 방법(다른 빈 시간으로 옮기기·줄이기)을 제안받기 위해 작업·체크인 정보와 반복 패턴 판단에 필요한 기록을 AI에 전송하는 데 동의합니다. 제안은 승인해야 반영돼요.</label>}
       {!priorityChanged && !recover && <label className="execution-inline"><input type="checkbox" checked={sizingConsent} onChange={e => setSizingConsent(e.target.checked)}/>(선택) 작업 이름·시간·메모를 AI에 보내, 기록에서 반복되는 패턴(한 번에 할 길이, 집중이 잘 되는 시간대)을 작업 내용까지 보고 판단받는 데 동의합니다.</label>}
       {priorityChanged && <>
         <p className="execution-help">우선순위 변경은 현재 계획을 바로 바꾸지 않고 새 주간 계획 초안을 만듭니다.</p>
         <label className="execution-inline"><input type="checkbox" checked={adaptiveConsent} onChange={e => setAdaptiveConsent(e.target.checked)}/>목표·프로필·기억·가용 시간·프로젝트·현재 계획·작업·체크인 정보를 LLM에 전송해 재계획 초안을 만드는 데 동의합니다.</label>
       </>}
-      <button className="primary-button" disabled={priorityChanged && !adaptiveConsent}>{priorityChanged ? '재계획 초안 만들기' : recover ? '결과 저장하고 다시 넣을 방법 받기' : '실행 결과 저장'}</button>
+      <div className="record-submit"><button className="primary-button" disabled={priorityChanged && !adaptiveConsent}>{priorityChanged ? '재계획 초안 만들기' : recover ? '결과 저장하고 다시 넣을 방법 받기' : '실행 결과 저장'}</button></div>
     </fieldset></form>}
-    {(state.profileUpdateProposals ?? []).map(p => { const replan = replansCurrentPlan(state, p); return <article key={p.id}>
+    {(state.profileUpdateProposals ?? []).map(p => { const replan = replansCurrentPlan(state, p); return <article key={p.id} className="record-block record-proposal">
       <h3>{proposalTitle(p)}</h3>
       {p.projectId && <p className="execution-help">이 프로젝트에만 적용: {projectTitle(p.projectId)} · 다른 프로젝트와 기본 프로필은 그대로입니다.{!replan && p.status === 'pending' && ' 지금 계획은 그대로 두고 이 프로젝트의 다음 계획부터 반영합니다.'}</p>}
       <p>{p.reason}</p>
@@ -181,6 +189,6 @@ export function ExecutionLearning({ state, busy, run, approveProposal, events = 
         </div>
       </>}
     </article> })}
-    <details><summary>실행 기록 {records.length}건</summary>{[...records].reverse().map(r => <p key={r.id}>{r.projectId && `[${projectTitle(r.projectId)}] `}{r.taskTitle} · {{ completed: '완료', partial: '부분 완료', not_started: '미시작', incomplete: '미완료' }[r.result]}<br/>예정 {r.plannedMinutes}분 / 실제 {r.actualMinutes ?? '미입력'}분 · 차이 {r.actualMinutes === null ? '미정' : r.actualMinutes - r.plannedMinutes}분{r.reasonCode && ` · ${reasons[r.reasonCode]}`}<br/>{r.note}{r.recoveryAction && ` · 다음 시도: ${r.recoveryAction}`}</p>)}</details>
+    <details className="record-history"><summary>실행 기록 {records.length}건</summary>{[...records].reverse().map(r => <p key={r.id}>{r.projectId && `[${projectTitle(r.projectId)}] `}{r.taskTitle} · {{ completed: '완료', partial: '부분 완료', not_started: '미시작', incomplete: '미완료' }[r.result]}<br/>예정 {r.plannedMinutes}분 / 실제 {r.actualMinutes ?? '미입력'}분 · 차이 {r.actualMinutes === null ? '미정' : r.actualMinutes - r.plannedMinutes}분{r.reasonCode && ` · ${reasons[r.reasonCode]}`}<br/>{r.note}{r.recoveryAction && ` · 다음 시도: ${r.recoveryAction}`}</p>)}</details>
   </section>
 }

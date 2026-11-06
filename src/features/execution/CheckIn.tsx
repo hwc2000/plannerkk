@@ -26,7 +26,7 @@ export function checkInDate(date = new Date()) {
 /** Keep checkbox-only completions eligible, but not an already confirmed check-in. */
 export function checkInTasks(state: ExecutionState, projectId: string, today = checkInDate()) {
   const plan = state.plan
-  if (!plan) return { due: [] as Task[], early: [] as Task[], ticked: new Set<string>() }
+  if (!plan) return { due: [] as Task[], early: [] as Task[], ticked: new Set<string>(), recorded: [] as Task[] }
   // Shared-week merges retain task IDs while replacing the plan ID.
   const latest = new Map((state.executionRecords ?? []).map(r => [r.taskId, r]))
   const ticked = new Set<string>()
@@ -39,7 +39,24 @@ export function checkInTasks(state: ExecutionState, projectId: string, today = c
     return bare
   })
   const due = open.filter(e => e.start.slice(0, 10) <= today)
-  return { due, early: due.length ? [] : open.filter(e => !ticked.has(e.id)).slice(0, 5), ticked }
+  const evidence = new Set((state.profileUpdateProposals ?? []).flatMap(p => p.evidenceRecordIds))
+  const recorded = plan.entries.filter(e => e.kind === 'task' && !e.starter && (e.projectId ?? plan.projectId ?? null) === projectId
+    && e.start.slice(0, 10) <= today && !open.includes(e) && latest.has(e.id) && !evidence.has(latest.get(e.id)!.id))
+  return { due, early: due.length ? [] : open.filter(e => !ticked.has(e.id)).slice(0, 5), ticked, recorded }
+}
+
+export function checkInCounts(state: ExecutionState, projectId: string, today = checkInDate()) {
+  const { due } = checkInTasks(state, projectId, today)
+  const weekIsOpen = !!state.plan && state.plan.endDate >= today
+  return {
+    today: due.filter(e => e.start.slice(0, 10) === today).length,
+    late: weekIsOpen ? due.filter(e => e.start.slice(0, 10) < today).length : 0,
+  }
+}
+
+export function checkInLabel({ today, late }: { today: number; late: number }) {
+  if (today) return `오늘 체크인 · ${today}개${late ? ` · 밀린 ${late}개` : ''}`
+  return late ? `밀린 체크인 · ${late}개` : ''
 }
 
 /** Memory-only draft owned by the signed-in workspace, never browser storage. */
@@ -53,7 +70,8 @@ export function CheckIn({ state, project, busy, run, consent, onConsent, onClose
   consent: boolean; onConsent: (value: boolean) => void; onClose: () => void
   draft?: CheckInDraft; onDraftChange?: (draft: CheckInDraft) => void
 }) {
-  const { due, early, ticked } = checkInTasks(state, project.id)
+  const { due, early, ticked, recorded } = checkInTasks(state, project.id)
+  const lastResult = new Map((state.executionRecords ?? []).map(r => [r.taskId, r.result]))
   const action = state.plannerThreads?.[project.id]?.action
   const card = plannerActionValid(action, state.revision, project.id) && action.kind === 'check_in' ? action : null
   const [data, setData] = useState<CheckInDraft>(() => {
@@ -77,7 +95,14 @@ export function CheckIn({ state, project, busy, run, consent, onConsent, onClose
     setData(next)
   }
   const { tasks, results, questions, step, said, text, note, load, timeFit } = data
-  const chosen = tasks.filter(t => results[t.id])
+  const again = recorded.filter(t => !tasks.some(x => x.id === t.id))
+  function toggleAgain(taskId: string, value: Result) {
+    const next = { ...results }
+    if (next[taskId] === value) delete next[taskId]
+    else next[taskId] = value
+    update({ results: next })
+  }
+  const chosen = [...tasks, ...again].filter(t => results[t.id])
   const today = checkInDate()
   const known: Partial<CheckInSession> = (card?.payload.date ?? card?.payload.session?.date) === today ? { ...card?.payload.knownDaily } : {}
   for (const session of state.checkInSessions ?? []) {
@@ -107,17 +132,24 @@ export function CheckIn({ state, project, busy, run, consent, onConsent, onClose
     const ok = await run(() => executionApi(`/projects/${encodeURIComponent(project.id)}/feedback`, { revision: state.revision, ...(load ? { load } : {}), ...(timeFit ? { timeFit } : {}), note }), `‘${project.title}’ 계획에 대한 의견을 저장했어요.`)
     if (ok) update({ step: 'done' })
   }
-  if (!tasks.length && !card && step !== 'load' && step !== 'done') return <div className="profile-chat-message assistant checkin" aria-label="체크인"><small>{project.title} · 체크인</small>
-    <p>지금은 기록할 작업이 없어요. 확정한 계획의 작업이 생기면 여기서 알려 주세요.</p><button type="button" onClick={onClose}>닫기</button></div>
+  if (!tasks.length && !again.length && !card && step !== 'load' && step !== 'done') return <div className="profile-chat-message assistant checkin" aria-label="체크인"><small>{project.title} · 체크인</small>
+    <p>지금은 기록할 작업이 없어요. 확정한 계획의 작업이 생기면 여기서 알려 주세요.</p><div className="checkin-footer"><button type="button" className="secondary-button" onClick={onClose}>닫기</button></div></div>
   return <div className="checkin" aria-label="체크인">
     <h3>{project.title} · 체크인</h3>
     {step !== 'done' && <button type="button" className="secondary-button" onClick={onClose}>취소·나중에 이어하기</button>}
     {step === 'results' && <div className="profile-chat-message assistant"><small>플래너</small>
-      <p>{due.length ? '오늘까지 계획한 작업이에요. 알려 주고 싶은 작업만 골라 주세요. 이미 완료 체크한 작업도 상태를 덧붙일 수 있어요.' : '먼저 한 작업이 있으면 알려 주세요.'} 한 번에 최대 20개씩 기록해요.</p>
+      <p>{due.length ? '오늘까지 계획한 작업이에요. 알려 주고 싶은 작업만 골라 주세요. 이미 완료 체크한 작업도 상태를 덧붙일 수 있어요.' : tasks.length ? '먼저 한 작업이 있으면 알려 주세요.' : '이번에 새로 기록할 작업은 없어요. 이미 기록한 작업을 다시 남길 수 있어요.'} 한 번에 최대 20개씩 기록해요.</p>
       <ul className="checkin-tasks">{tasks.map(t => <li key={t.id}>
         <span><b>{t.title}</b><small>{t.start.slice(5, 10).replace('-', '/')} {t.start.slice(11)} · {t.minutes}분</small></span>
         <span className="checkin-choices">{RESULTS.map(([value, label]) => <button type="button" key={value} aria-pressed={results[t.id] === value} disabled={busy || ticked.has(t.id)} onClick={() => update({ results: { ...results, [t.id]: value } })}>{label}</button>)}</span>
       </li>)}</ul>
+      {again.length > 0 && <>
+        <p className="checkin-again-title">이미 기록한 작업 · 다시 남기면 지난 기록을 고쳐요</p>
+        <ul className="checkin-tasks">{again.map(t => <li key={t.id}>
+          <span><b>{t.title}</b><small>{t.start.slice(5, 10).replace('-', '/')} {t.start.slice(11)} · 지난 기록: {RESULT_TEXT[lastResult.get(t.id) as Result] ?? '기록함'}</small></span>
+          <span className="checkin-choices">{RESULTS.map(([value, label]) => <button type="button" key={value} aria-pressed={results[t.id] === value} disabled={busy} onClick={() => toggleAgain(t.id, value)}>{label}</button>)}</span>
+        </li>)}</ul>
+      </>}
       <button type="button" className="primary-button" disabled={busy || !chosen.length} onClick={() => { void next() }}>다음</button>
     </div>}
     {step === 'details' && <div className="profile-chat-message assistant"><small>플래너</small>
@@ -148,12 +180,14 @@ export function CheckIn({ state, project, busy, run, consent, onConsent, onClose
       <div className="execution-actions">{LOADS.map(([value, label]) => <button type="button" key={value} disabled={busy} aria-pressed={load === value} onClick={() => update({ load: value })}>{label}</button>)}</div>
       <p>작업에 배정한 시간은 알맞았나요? (선택)</p>
       <div className="execution-actions">{TIMES.map(([value, label]) => <button type="button" key={value} disabled={busy} aria-pressed={timeFit === value} onClick={() => update({ timeFit: value })}>{label}</button>)}</div>
-      <label className="execution-label">더 하고 싶은 말 (선택)<textarea maxLength={500} value={note} disabled={busy} onChange={e => update({ note: e.target.value })}/></label>
+      <label className="execution-label">더 하고 싶은 말 (선택)<textarea maxLength={500} value={note} disabled={busy} placeholder="예: 분량은 괜찮았는데 첫 작업이 조금 길었어요." onChange={e => update({ note: e.target.value })}/></label>
       <p className="execution-help">이 프로젝트의 다음 계획에만 참고해요. 기본 프로필을 바꾸지 않아요.</p>
-      <button type="button" disabled={busy || (!load && !timeFit && !note.trim())} onClick={() => { void feedback() }}>의견 저장</button>
-      <button type="button" disabled={busy} onClick={() => update({ step: 'done' })}>건너뛰기</button>
+      <div className="checkin-footer">
+        <button type="button" className="secondary-button" disabled={busy} onClick={() => update({ step: 'done' })}>건너뛰기</button>
+        <button type="button" className="primary-button" disabled={busy || (!load && !timeFit && !note.trim())} onClick={() => { void feedback() }}>의견 저장</button>
+      </div>
     </div>}
-    {step === 'done' && <div className="profile-chat-message assistant"><p>알려 줘서 고마워요. 다음에 이 프로젝트를 계획할 때 참고해요.</p><button type="button" onClick={onClose}>닫기</button></div>}
+    {step === 'done' && <div className="profile-chat-message assistant"><p>알려 줘서 고마워요. 다음에 이 프로젝트를 계획할 때 참고해요.</p><div className="checkin-footer"><button type="button" className="secondary-button" onClick={onClose}>닫기</button></div></div>}
   </div>
 }
 function sessionLine(record: Partial<CheckInSession> | undefined) {

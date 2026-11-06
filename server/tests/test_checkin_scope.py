@@ -30,7 +30,7 @@ class CheckInScopeTests(unittest.TestCase):
         record = ExecutionRecordInput(planId="p", taskId="t", result="partial", actualMinutes=45)
         self.assertIsNone(record.reasonCode)
 
-    def test_session_is_stored_once_and_bare_completion_cannot_be_enriched_twice(self):
+    def test_session_is_stored_once_and_telling_again_revises_the_same_records(self):
         self.call("/api/execution/task", planId=self.week["id"], taskId=self.first["id"], completed=True)
         card = self.check_in(**{self.first["id"]: "completed", self.second["id"]: "completed"})["plannerThreads"]["essay"]["action"]
         self.assertTrue(card["valid"])
@@ -44,7 +44,10 @@ class CheckInScopeTests(unittest.TestCase):
         self.assertEqual(session["projectId"], "essay")
         for r in state["executionRecords"]:
             self.assertEqual((r["checkInId"], r["checkInDate"]), (session["id"], session["date"]))
-        self.check_in(status=400, **{self.first["id"]: "completed"})
+        self.check_in(**{self.first["id"]: "completed"})
+        state = self.call("/api/execution/chat/check-in/confirm", project=ESSAY)
+        self.assertEqual(len(state["executionRecords"]), 2)
+        self.assertEqual(len(state["checkInSessions"]), 2)
 
     def test_bare_record_must_belong_to_the_task_project(self):
         self.call("/api/execution/task", planId=self.week["id"], taskId=self.first["id"], completed=True)
