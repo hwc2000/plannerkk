@@ -108,7 +108,7 @@ export type ExecutionProfile = {
 }
 
 export type AvailabilitySlot = { day: number; hour: number }
-export type PlannerSettings = { slots: AvailabilitySlot[]; view: 'timeline' | 'checklist' }
+export type PlannerSettings = { slots: AvailabilitySlot[]; view: 'timeline' | 'checklist'; fill?: 'free' | 'full' }
 export type FocusTime = 'morning' | 'afternoon' | 'evening' | 'variable' | 'unknown'
 /** A weekly commitment (class, work): the same hours on each listed day, Monday = 0. Never planned in. */
 export type FixedBlock = { id: string; days: number[]; start: string; end: string }
@@ -194,7 +194,7 @@ export type AdaptiveResult = {
 /** Values that differ for one project, on top of the user profile. Absent keys follow the user profile. */
 export type ProjectProfile = {
   id: string; projectId: string; userId: string; version: number
-  overrides: Record<string, { value: number | string | null; source: 'declared' | 'learned'; proposalId: string | null }>
+  overrides: Record<string, { value: number | string | AvailabilitySlot[] | null; source: 'declared' | 'learned'; proposalId: string | null }>
   learnedPatterns: LearnedPattern[]; createdAt: string; updatedAt: string
 }
 /**
@@ -207,10 +207,10 @@ export type PlannerAction = PlannerActionMetadata & (
   /** freeMinutes: time still free this week, counted by the server; absent when no week is planned yet. */
   | { kind: 'plan'; revision: number; payload: { goal: string; startDate: string }; freeMinutes?: number | null }
   /** The whole weekly time after the change, and what the change adds and removes (worked out by the server). */
-  | { kind: 'settings'; revision: number; payload: PlannerSettings; change?: { added: AvailabilitySlot[]; removed: AvailabilitySlot[] } }
+  | { kind: 'settings'; revision: number; payload: PlannerSettings; change?: { added: AvailabilitySlot[]; removed: AvailabilitySlot[]; fill?: 'free' | 'full' } }
   /** What the user said about how to work on this project, waiting for a click to apply. */
   | { kind: 'project_settings'; revision: number; payload: {
-      projectId: string; overrides: Record<string, number | string | null>
+      projectId: string; overrides: Record<string, number | string | AvailabilitySlot[] | null>
       changes: Record<string, { from: number | string | null; to: number | string | null }> } }
   /** A change to this week: hours to take out (for every project) and/or this project's work planned again. */
   | { kind: 'adjust'; revision: number; payload: {

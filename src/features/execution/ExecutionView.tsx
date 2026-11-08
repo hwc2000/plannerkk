@@ -12,7 +12,7 @@ import { AvailabilityGrid, blockedLabel } from './AvailabilityGrid'
 import { PlanReasons } from './PlanReasons'
 import { ProjectSettings } from './ProjectSettings'
 import { answerLabels, focusTimeText, formatAnswer, notAsked } from './profileLabels'
-import { approveProposalAndReplan, executionApi, existingTasksFor, planIsStale, planProjectIds, projectContext, replansCurrentPlan, staleProjectIds } from './api'
+import { approveProposalAndReplan, executionApi, existingTasksFor, planIsStale, planProjectIds, projectContext, replansCurrentPlan, staleProjectIds, weekProjects } from './api'
 import { projectColor } from '../../shared/projectColors'
 import { useAiConsent } from '../../shared/aiConsent'
 import { deadlineTone } from '../../shared/deadline'
@@ -96,10 +96,11 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
   async function generatePlan(goal: string, startDate: string, project: Project | null, consent: boolean) {
     return run(async () => {
       let current = state
-      if (slotsDirty) current = await executionApi('/settings', { revision: current.revision, settings: { slots, view: current.settings.view } }, 'PUT')
+      if (slotsDirty) current = await executionApi('/settings', { revision: current.revision, settings: { ...current.settings, slots } }, 'PUT')
       return executionApi('/plan', {
         revision: current.revision, goal, startDate, consent, memories, project: projectContext(project ?? undefined), merge: true, events: busyEvents,
-        existingTasks: existingTasksFor(milestones, project ? [project.id] : []),
+        projects: project ? weekProjects(projects, current.closedProjects, startDate) : [],
+        existingTasks: existingTasksFor(milestones, project ? weekProjects(projects, current.closedProjects, startDate).map(p => p.id) : []),
       })
     }, '계획 초안을 만들었습니다. 검토 후 확정하면 캘린더에도 표시됩니다.')
   }
@@ -122,7 +123,8 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
       if (!goal) return current
       const next = await executionApi('/plan', {
         revision: current.revision, goal, startDate, consent, memories, project: projectContext(project ?? undefined), merge: true, events: busyEvents,
-        existingTasks: existingTasksFor(milestones, project ? [project.id] : []),
+        projects: project ? weekProjects(projects, current.closedProjects, startDate) : [],
+        existingTasks: existingTasksFor(milestones, project ? weekProjects(projects, current.closedProjects, startDate).map(p => p.id) : []),
       })
       return { ...next, relocated: current.relocated }
     }, withRelocation(goal ? '계획 조정 초안을 만들었어요. 검토 후 확정해 주세요.' : '그 시간을 비웠어요.'))
@@ -374,7 +376,7 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
 
       <div className="profile-stats">
         <div><span>첫 집중 구간</span><strong>{prefs.blockMinutes}분</strong><small>한 번에 이어서 하는 시간</small></div>
-        <div><span>하루 계획량</span><strong>{prefs.dailyPlannedMinutes ? `${prefs.dailyPlannedMinutes}분` : '고른 시간 전부'}</strong><small>하루에 넣는 작업 합계</small></div>
+        <div><span>하루 계획량</span><strong>{prefs.dailyPlannedMinutes ? `${prefs.dailyPlannedMinutes}분` : '고른 시간에 여유를 두고'}</strong><small>하루에 넣는 작업 합계</small></div>
         <div><span>집중이 잘 되는 시간대</span><strong>{focusTimeText(shownProfile).value}</strong><small>{focusTimeText(shownProfile).source}</small></div>
         <div><span>계획 방식</span><strong>{prefs.scheduleStyle === 'time_blocks' ? '시간 지정형' : '작업량 지정형'}</strong><small>{prefs.scheduleStyle === 'time_blocks' ? '예: 18:30~19:00 공부' : '예: A 1시간, B 2시간'}</small></div>
       </div>
