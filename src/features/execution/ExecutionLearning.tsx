@@ -23,12 +23,18 @@ function nowKey(now = new Date()) {
 
 /** What a proposal changes, in the user's words. */
 function proposalTitle(p: ProfileUpdateProposal) {
-  const { blockMinutes, focusTime, recoveryPreference } = p.proposedChanges
+  const { blockMinutes, focusTime, recoveryPreference, dailyPlannedMinutes, pacePercent, periodMinutes } = p.proposedChanges
   const recovery = (value: string) => options.recovery.find(([code]) => code === value)?.[1] ?? value
+  const minutes = (value: number | null) => (value == null ? '제한 없음' : `${value}분`)
+  const periods = (value: Partial<Record<string, number>> | null) =>
+    Object.entries(value ?? {}).map(([period, m]) => `${periodLabel(period)} ${m}분`).join(', ') || '제한 없음'
   return [
     blockMinutes && `집중 구간 ${blockMinutes.from}분 → ${blockMinutes.to}분`,
     focusTime && `집중이 잘 되는 시간대 ${periodLabel(focusTime.from)} → ${periodLabel(focusTime.to)}`,
     recoveryPreference && `계획이 틀어졌을 때 ${recovery(recoveryPreference.from)} → ${recovery(recoveryPreference.to)}`,
+    dailyPlannedMinutes && `하루 계획량 ${minutes(dailyPlannedMinutes.from)} → ${minutes(dailyPlannedMinutes.to)}`,
+    pacePercent && `실제로 걸리는 시간 ${pacePercent.from ?? 100}% → ${pacePercent.to}% (그만큼 시간을 비워 둠)`,
+    periodMinutes && `시간대별 한 번에 하는 시간 ${periods(periodMinutes.from)} → ${periods(periodMinutes.to)}`,
   ].filter(Boolean).join(' · ')
 }
 

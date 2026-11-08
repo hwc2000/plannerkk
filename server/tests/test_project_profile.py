@@ -69,7 +69,7 @@ class ProjectProfileTests(unittest.TestCase):
                     "projectProfileId": project_profile.get("id"), "taskTitle": "긴 작업", "plannedMinutes": 50,
                     "actualMinutes": 20, "remainingMinutes": 30, "result": "partial", "reasonCode": "time_shortage",
                     "note": "", "difficulty": None, "recoveryAction": None,
-                    "createdAt": datetime.now(timezone.utc).isoformat(),
+                    "plannedStart": f"2030-01-0{7 + i}T19:00", "createdAt": datetime.now(timezone.utc).isoformat(),
                 })
             propose_update(doc, None)  # records of a project never make a user-profile change
             propose_update(doc, project_id)

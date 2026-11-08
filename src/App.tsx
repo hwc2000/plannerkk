@@ -11,8 +11,9 @@ import { TODAY } from './shared/constants'
 import { setProjectColors } from './shared/projectColors'
 import { SEED_CLEANUP_KEY, withoutOldSeeds } from './shared/oldSeeds'
 import { ExecutionView } from './features/execution/ExecutionView'
-import { executionApi, planCalendarEvents } from './features/execution/api'
+import { executionApi, planCalendarEvents, saveProjectHours } from './features/execution/api'
 import type {
+  AvailabilitySlot,
   CalendarEvent,
   Editor,
   Entity,
@@ -92,7 +93,7 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
     setNotice('프로젝트를 삭제했습니다.')
   }
 
-  function saveEntity(kind: EntityKind, value: Entity) {
+  function saveEntity(kind: EntityKind, value: Entity, hours?: AvailabilitySlot[]) {
     const replace = <T extends { id: string }>(items: T[], item: T) => (
       items.some((current) => current.id === item.id)
         ? items.map((current) => current.id === item.id ? item : current)
@@ -105,6 +106,11 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
       if (!projects.some((current) => current.id === item.id)) openProject(item.id)
       setProjects((items) => replace(items, item))
       setSelectedProjectId(item.id)
+      // When the project is done lives with its settings on the server (its conversation can change it too).
+      if (hours && execution) {
+        saveProjectHours(execution, item.id, hours).then(setExecution)
+          .catch((error) => setNotice(error instanceof Error ? error.message : '요일·시간을 저장하지 못했어요.'))
+      }
     }
     if (kind === 'milestone') setMilestones((items) => replace(items, value as Milestone))
     if (kind === 'event') setEvents((items) => replace(items, value as CalendarEvent))
@@ -152,8 +158,10 @@ function App({ initial, onPersist, user, onLogout, saveError }: AppProps) {
       editor={editor}
       projects={projects}
       milestones={milestones}
+      projectHours={editor.kind === 'project' && editor.id
+        ? (execution?.projectProfiles?.[editor.id]?.overrides?.timeSlots?.value as AvailabilitySlot[] | undefined) ?? null : null}
       onClose={() => setEditor(null)}
-      onSave={(value) => saveEntity(editor.kind, value)}
+      onSave={(value, hours) => saveEntity(editor.kind, value, hours)}
     />
   ) : editor?.kind === 'event' ? (
     <EventForm

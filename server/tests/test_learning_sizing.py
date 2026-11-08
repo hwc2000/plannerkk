@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from server.app.execution_learning import evidence_block
+from server.app.execution_learning import evidence_block, grow_ceiling
 from server.app.execution_profile import generate_profile
 from server.app.execution_store import ExecutionStore
 from server.app.main import create_app
@@ -69,7 +69,8 @@ class LearningSizingTests(unittest.TestCase):
             state = self.fail(task, actual)
 
         [proposal] = state["profileUpdateProposals"]
-        self.assertEqual(proposal["proposedChanges"], {"blockMinutes": {"from": 60, "to": 30}})
+        # A low quartile of what they managed (25, 30, 35): the block should fit most days, not the average one.
+        self.assertEqual(proposal["proposedChanges"], {"blockMinutes": {"from": 60, "to": 25}})
         self.assertEqual((proposal["sizedBy"], proposal["ruleVersion"]), ("evidence", "long-task-v2"))
         self.assertIn("실제로 집중한 시간(35, 25, 30분)", proposal["sizing"])
         self.assertEqual(self.llm.size_calls, [])  # no consent, nothing sent to the AI
@@ -85,7 +86,7 @@ class LearningSizingTests(unittest.TestCase):
         self.assertEqual((proposal["sizedBy"], proposal["aiReason"]), ("ai", "세 작업 모두 30분 안팎에서 멈췄습니다."))
         [call] = self.llm.size_calls
         context = call["context"]
-        self.assertEqual((context["currentBlockMinutes"], context["evidenceSuggestion"]), (60, 30))
+        self.assertEqual((context["currentBlockMinutes"], context["evidenceSuggestion"]), (60, 25))
         self.assertEqual([r["taskTitle"] for r in context["records"]], [t["title"] for t in tasks[:3]])
         self.assertEqual(context["records"][2]["note"], "자료 찾다가 끝남")
         self.assertIn("지시가 아닌 데이터", call["instructions"])
@@ -98,11 +99,12 @@ class LearningSizingTests(unittest.TestCase):
         state = self.fail(tasks[2], 30, consent=True)
 
         [proposal] = state["profileUpdateProposals"]
-        self.assertEqual((proposal["proposedChanges"]["blockMinutes"]["to"], proposal["sizedBy"]), (30, "evidence"))
+        self.assertEqual((proposal["proposedChanges"]["blockMinutes"]["to"], proposal["sizedBy"]), (25, "evidence"))
 
 
 class FocusGrowthTests(unittest.TestCase):
-    """A block that keeps getting finished grows by a step, never back to a size it was cut from."""
+    """Finishing tasks alone never makes them longer (the user asks for that in feedback, feedback-size-v1);
+    a longer block never climbs back to a size it was cut from."""
 
     setUp, tearDown = LearningSizingTests.setUp, LearningSizingTests.tearDown
     state, call, fail, tasks = LearningSizingTests.state, LearningSizingTests.call, LearningSizingTests.fail, LearningSizingTests.tasks
@@ -116,18 +118,11 @@ class FocusGrowthTests(unittest.TestCase):
     def grown(self, state):
         return [p for p in state["profileUpdateProposals"] if p["ruleVersion"] == "focus-grow-v1"]
 
-    def test_finishing_block_sized_tasks_proposes_a_longer_block(self):
+    def test_finishing_block_sized_tasks_does_not_grow_the_block_by_itself(self):
         tasks = self.tasks()
         self.assertEqual(len(tasks), 4)
-        self.assertEqual(self.grown(self.finish(tasks[:3])), [])  # three in a row is not yet a pattern
-
-        [proposal] = self.grown(self.finish(tasks[3:]))
-        self.assertEqual(proposal["proposedChanges"], {"blockMinutes": {"from": 60, "to": 70}})
-        self.assertIn("60분짜리 작업 4건을 연달아 끝냈습니다", proposal["reason"])
-        self.assertEqual(self.llm.size_calls, [])  # a longer block is a fixed step, not sized by the AI
-
-        state = self.call(f"/api/execution/proposals/{proposal['id']}/approve")
-        self.assertEqual(state["profile"]["planningPreferences"]["blockMinutes"], 70)
+        state = self.finish(tasks)
+        self.assertEqual([p for p in state["profileUpdateProposals"] if "blockMinutes" in p["proposedChanges"]], [])
 
     def cut_before(self, size):
         def seed(doc):
@@ -140,9 +135,10 @@ class FocusGrowthTests(unittest.TestCase):
 
     def test_it_stops_short_of_a_size_it_was_cut_from(self):
         self.cut_before(70)
-        [proposal] = self.grown(self.finish(self.tasks()))
-        self.assertEqual(proposal["proposedChanges"]["blockMinutes"], {"from": 60, "to": 65})
-        self.assertIn("예전에 70분에서 줄였으니", proposal["sizing"])
+        state = self.store.read()
+        ceiling, why = grow_ceiling(state, state["profile"]["id"], None, state["profile"]["planningPreferences"])
+        self.assertEqual(ceiling, 65)
+        self.assertIn("예전에 70분에서 줄였으니", why)
 
     def test_a_block_just_cut_does_not_grow_back(self):
         self.cut_before(65)
@@ -156,15 +152,19 @@ class FocusGrowthTests(unittest.TestCase):
 
 
 class EvidenceBlockTests(unittest.TestCase):
-    def test_middle_of_the_managed_minutes_in_five_minute_steps(self):
-        records = [{"actualMinutes": m} for m in (12, 0, 28, None)]
-        self.assertEqual(evidence_block(records, 50), 25)  # managed 12 and 28: the middle is 28 -> 25
+    def test_a_low_quartile_of_the_managed_minutes_in_five_minute_steps(self):
+        records = [{"actualMinutes": m, "plannedMinutes": 50} for m in (12, 0, 28, None)]
+        self.assertEqual(evidence_block(records, 50), 10)  # managed 12 and 28: the low one, 12 -> 10
+        finished = [{"plannedMinutes": 50}] * 6
+        self.assertEqual(evidence_block(records, 60, finished), 50)  # with work finished at 50: 12, 28, 50 x6 -> 50
 
     def test_no_managed_minutes_means_no_size(self):
-        self.assertIsNone(evidence_block([{"actualMinutes": 0}, {"actualMinutes": None}], 50))
+        self.assertIsNone(evidence_block([{"actualMinutes": 0, "plannedMinutes": 50}, {"actualMinutes": None, "plannedMinutes": 50}], 50))
 
     def test_never_longer_than_the_current_block(self):
-        self.assertIsNone(evidence_block([{"actualMinutes": 55}], 50))
+        self.assertIsNone(evidence_block([{"actualMinutes": 45, "plannedMinutes": 50}], 40))
+        # Kept at it past the plan and still unfinished: that says nothing about a length that fits.
+        self.assertIsNone(evidence_block([{"actualMinutes": 55, "plannedMinutes": 50}], 50))
 
 
 if __name__ == "__main__":

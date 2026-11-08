@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .adaptive.context import to_profile_change_context
 from .adaptive.full_plan_generator import LLMFullPlanGenerator
 from .adaptive.graph import build_adaptive_planner_graph
-from .adaptive.personalization import day_slots, plan_policy
+from .adaptive.personalization import (
+    day_slots, leave_free, paced_block, period_odds, pick_windows_for_cap, plan_policy, shape_windows,
+)
 from .execution_store import ExecutionStore, ConflictError, empty_state, this_week
 from .user_insights import insights_for_ai
 from .planner_actions import public_state
@@ -51,6 +53,8 @@ class PlannerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     slots: list[Slot] = Field(max_length=105)
     view: Literal["timeline", "checklist"]
+    # "free": part of each chosen stretch stays free (the default); "full": the user asked to fill it.
+    fill: Literal["free", "full"] = "free"
 
     @model_validator(mode="after")
     def unique_slots(self):
@@ -96,8 +100,13 @@ def build_full_plan_context(
     memories: list[dict] | None = None,
     now: datetime | None = None,
     projects: list[ProjectContext] | None = None,
+    held_entries: list[dict] | None = None,
 ) -> dict:
-    """Build C's full-plan input from the persisted A/B execution state."""
+    """Build C's full-plan input from the persisted A/B execution state.
+
+    ``held_entries``: tasks of other projects that stay in the week; their minutes count
+    against the user's daily cap, which is one limit for the whole day.
+    """
     selected = list({p.id: p for p in (projects or ([project] if project else []))}.values())
     project = selected[0] if len(selected) == 1 else None
     settings = PlannerSettings.model_validate(state["settings"])
@@ -110,31 +119,73 @@ def build_full_plan_context(
     for entry in completed_entries:
         start, end = datetime.fromisoformat(entry["start"]), datetime.fromisoformat(entry["end"])
         held_events.append(BusyEvent(date=start.date(), startTime=start.time(), endTime=end.time()))
-    windows = availability_windows(start_date, settings.slots, held_events, project, now=now)
-    if not windows:
-        raise ValueError("선택한 주에 사용 가능한 시간이 없습니다. 가용 시간, 기존 일정, 프로젝트 기간을 확인해 주세요.")
     planning = get_planning_context(user_id, project, state=state, memories=memories or [],
                                     extra_project_ids=tuple(p.id for p in selected))
     prefs = planning["userProfile"]["planningPreferences"]
+    item_plannings = {item.id: planning if item is project else get_planning_context(
+        user_id, item, state=state, memories=memories or []) for item in selected}
+    # The hours a project is done in, set by the user for it: its tasks go there and only there,
+    # every week, whether or not those hours are ticked in the week's grid.  No other project uses them.
+    own, reserved = {}, []
+    for item in selected:
+        item_prefs = item_plannings[item.id]["userProfile"]["planningPreferences"]
+        if item_prefs.get("timeSlots"):
+            raw = availability_windows(start_date, [Slot.model_validate(s) for s in item_prefs["timeSlots"]],
+                                       held_events, item, now=now)
+            reserved += [BusyEvent(date=b.date(), startTime=b.time(), endTime=e.time()) for b, e in raw]
+            if raw:
+                own[item.id] = shape_windows(raw, item_prefs)
+    # The week's chosen hours, for every project without hours of its own.
+    shared_needed = not selected or any(item.id not in own for item in selected)
+    windows = availability_windows(start_date, settings.slots, [*held_events, *reserved],
+                                   project if project and project.id not in own else None, now=now) if shared_needed else []
+    if not windows and not own:
+        raise ValueError("선택한 주에 사용 가능한 시간이 없습니다. 가용 시간, 기존 일정, 프로젝트 기간을 확인해 주세요.")
+    # Work the day already holds (other projects' tasks, finished tasks): one daily limit for all of it.
+    daily_used = {}
+    for entry in {e["id"]: e for e in [*(held_entries or []), *completed_entries] if e.get("kind", "task") == "task"}.values():
+        daily_used[entry["start"][:10]] = daily_used.get(entry["start"][:10], 0) + entry["minutes"]
+    # Learned limits (slack for work that runs long, a short stretch for a weak part of the day).
+    windows = shape_windows(windows, prefs)
+    free_minutes = {}
+    for begin, end in windows:
+        free_minutes[begin.date().isoformat()] = free_minutes.get(begin.date().isoformat(), 0) + (end - begin).total_seconds() / 60
+    if prefs.get("dailyPlannedMinutes"):
+        # A daily cap keeps part of each day: which part is drawn by how each part of the day went, not the earliest.
+        ids = {p.id for p in selected} or {None}
+        records = [r for r in state.get("executionRecords") or [] if r.get("projectId") in ids]
+        odds = period_odds(records, start_date.isoformat())
+        windows = pick_windows_for_cap(windows, prefs["dailyPlannedMinutes"], odds, f"{user_id}:{sorted(map(str, ids))}",
+                                       prefs.get("focusTime") if prefs.get("focusTime") in ("morning", "afternoon", "evening") else None,
+                                       daily_used)
+    # Part of each stretch stays free (a task that runs long, a pause), unless the user asked to fill the time.
+    windows = leave_free(windows, paced_block(prefs), prefs.get("dailyPlannedMinutes"), free_minutes, daily_used,
+                         share=1.0 if settings.fill == "full" else None)
+    shared = windows
+    windows = sorted([*windows, *(w for items in own.values() for w in items)])
+    if not windows:
+        raise ValueError("배운 설정을 적용하니 이번 주에 계획할 시간이 남지 않았습니다. 가용 시간을 늘려 주세요.")
     policy = plan_policy(planning["userProfile"])
     style = prefs.get("scheduleStyle")
     # Each day's first task carries the starter, so only the rest goes to tasks.
     starter = policy.starter_minutes or 0
-    budgets = daily_budgets(windows, policy.daily_cap_minutes)
+    budgets = daily_budgets(windows, policy.daily_cap_minutes, daily_used)
+    if not any(budgets.values()):
+        raise ValueError("하루 계획량을 이미 다른 작업이 채워서 이번 주에 더 넣을 시간이 없습니다.")
     longest = max(int((end - start).total_seconds() // 60) for start, end in windows)
     # Both schedule styles cap a task at the user's focus block.
     block = min(policy.block_minutes, longest - starter, max(budgets.values()) - starter)
     if block < 1:
         raise ValueError("작업을 배치할 빈 시간이 부족합니다.")
     # All the chosen time, as the tasks that fill it (breaks between them are not work time).
-    budget = sum(sum(day["minutes"]) for day in day_slots(windows, policy, block))
+    budget = sum(sum(day["minutes"]) for day in day_slots(windows, policy, block, daily_used))
     # Each project's tasks follow that project's own settings on top of the user
     # profile; one project's settings never reach another project's tasks.
     project_settings = {}
     for item in selected:
-        item_planning = planning if item is project else get_planning_context(
-            user_id, item, state=state, memories=memories or [])
-        item_block = min(plan_policy(item_planning["userProfile"]).block_minutes, longest - starter,
+        item_planning = item_plannings[item.id]
+        item_longest = max(int((end - begin).total_seconds() // 60) for begin, end in own[item.id]) if item.id in own else longest
+        item_block = min(plan_policy(item_planning["userProfile"]).block_minutes, item_longest - starter,
                          max(budgets.values()) - starter)
         if item_block < 1:
             raise ValueError(f"‘{item.title}’ 작업을 배치할 여유 시간이 부족합니다.")
@@ -143,6 +194,9 @@ def build_full_plan_context(
             "max_block_minutes": item_block,
             "project_profile_id": (item_planning.get("projectProfile") or {}).get("id"),
             "user_profile": item_planning["userProfile"],
+            # The project's own hours this week (only its tasks go there); absent: the shared hours.
+            **({"own_windows": [[b.isoformat(timespec="minutes"), e.isoformat(timespec="minutes")] for b, e in own[item.id]]}
+               if item.id in own else {}),
         }
     serialized_project = project.model_dump(mode="json") if project else None
     return {
@@ -157,6 +211,8 @@ def build_full_plan_context(
             [start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")]
             for start, end in windows
         ],
+        # The week's chosen hours left for projects without hours of their own.
+        "shared_windows": [[b.isoformat(timespec="minutes"), e.isoformat(timespec="minutes")] for b, e in shared],
         "project": serialized_project,
         "project_id": project.id if project else None,
         "projects": [p.model_dump(mode="json") for p in selected],
@@ -169,6 +225,8 @@ def build_full_plan_context(
         # The user's own words on earlier plans of these projects (check-ins), newest last.
         "project_feedback": {p.id: [{k: f.get(k) for k in ("load", "timeFit", "date", "note")} for f in (state.get("projectFeedback") or {}).get(p.id, [])[-3:]]
                              for p in selected if (state.get("projectFeedback") or {}).get(p.id)},
+        # Each project's own past: what is done, what was missed and why (project layer, code-made).
+        "project_history": project_history(state, selected, start_date),
         "existing_tasks": [task.model_dump(mode="json") for task in (existing_tasks or [])],
         "current_plan": [
             {key: entry.get(key) for key in ("title", "minutes", "doneWhen", "dueDate", "completed")}
@@ -183,8 +241,53 @@ def build_full_plan_context(
         "profile_id": planning["profileId"],
         "profile_version": planning["profileVersion"],
         "slots": state["settings"]["slots"],
+        "daily_used": daily_used,
+        "fill": settings.fill,
         "source_planning_context": planning,
     }
+
+
+HISTORY_DAYS = 28
+HISTORY_TITLES = 20
+
+
+def project_history(state, projects, start_date):
+    """What each project's own records say, summed up by code for the plan AI (project layer only).
+
+    finished: tasks already done (not to plan again); unfinished: the latest misses and why;
+    recent: counts over the last two weeks.  Another project's records never appear here.
+    """
+    cutoff = (start_date - timedelta(days=HISTORY_DAYS)).isoformat()
+    recent_from = (start_date - timedelta(days=14)).isoformat()
+    history = {}
+    for project in projects:
+        records = [r for r in state.get("executionRecords") or []
+                   if r.get("projectId") == project.id and (r.get("plannedStart") or "") >= cutoff
+                   and (r.get("plannedStart") or "") < start_date.isoformat()]
+        if not records:
+            continue
+        latest = {}
+        for record in sorted(records, key=lambda r: r.get("plannedStart") or ""):
+            latest[record["taskId"]] = record
+        finished = list(dict.fromkeys(r["taskTitle"] for r in latest.values() if r["result"] == "completed"))
+        unfinished = [{"title": r["taskTitle"], "result": r["result"], "reason": r.get("reasonCode")}
+                      for r in latest.values() if r["result"] != "completed"]
+        recent = [r for r in latest.values() if (r.get("plannedStart") or "") >= recent_from]
+        done = [r for r in recent if r["result"] == "completed"]
+        ratios = sorted(r["actualMinutes"] / r["plannedMinutes"] for r in done
+                        if type(r.get("actualMinutes")) is int and r["actualMinutes"] > 0)
+        reasons = {}
+        for r in recent:
+            if r.get("reasonCode"):
+                reasons[r["reasonCode"]] = reasons.get(r["reasonCode"], 0) + 1
+        history[project.id] = {
+            "finished": finished[-HISTORY_TITLES:],
+            "unfinished": unfinished[-10:],
+            "recent": {"planned": len(recent), "finished": len(done),
+                       "actualToPlanned": round(ratios[len(ratios) // 2], 2) if ratios else None,
+                       "reasons": reasons},
+        }
+    return history
 
 
 class WeeklyRequest(Mutation):
@@ -198,6 +301,21 @@ class WeeklyRequest(Mutation):
     events: list[BusyEvent] = Field(default_factory=list, max_length=500)
     profileChangeProposalId: str | None = Field(default=None, min_length=1)
     merge: bool = False
+
+
+def week_projects(requested, listed, base, closed, start):
+    """The projects one plan request covers: the one asked for, and every other active project of the
+    week that has no task in it yet.  Planned together, they share the week by their deadlines; one
+    after another, the first one asked for would take all the time."""
+    end = start + timedelta(days=6)
+    planned = {entry_owner(base, e) for e in base["entries"] if e["kind"] == "task"} if base else set()
+    chosen = {requested.id: requested}
+    for project in listed:
+        if (project.id in chosen or project.id in closed or project.id in planned
+                or project.dueDate < start or project.startDate > end):
+            continue
+        chosen[project.id] = project
+    return list(chosen.values())
 
 
 def plan_projects(plan: dict) -> list[dict]:
@@ -446,7 +564,8 @@ def execution_router(store=None, llm=None):
         if not profile:
             raise ValueError("먼저 실행 프로필을 생성하고 확정해 주세요.")
         closed = state.get("closedProjects") or {}
-        if any(p.id in closed for p in [*request.projects, *([request.project] if request.project else [])]):
+        # With ``merge`` the other projects of the week only come along when they are still open.
+        if any(p.id in closed for p in [*([] if request.merge else request.projects), *([request.project] if request.project else [])]):
             raise ValueError("끝낸 프로젝트는 계획할 수 없어요. 다시 열면 이어서 계획할 수 있어요.")
 
         profile_change_context = None
@@ -488,21 +607,32 @@ def execution_router(store=None, llm=None):
 
         effective_goal = current_plan["goal"] if current_plan else request.goal
         effective_start_date = date.fromisoformat(current_plan["startDate"]) if current_plan else request.startDate
-        merge_base, held = None, []
+        merge_base, held, held_entries, joint = None, [], [], []
         if request.merge and not replan:
             from .adaptive.local import local_now
             merge_base = active_plan(state, local_now().date())
+            if request.project:
+                week_start = date.fromisoformat(merge_base["startDate"]) if merge_base else request.startDate
+                joint = week_projects(request.project, request.projects, merge_base, closed, week_start)
         if merge_base:
             effective_start_date = date.fromisoformat(merge_base["startDate"])
-            scope_id = request.project.id if request.project else None
-            held = [BusyEvent(date=e["start"][:10], startTime=e["start"][11:], endTime=e["end"][11:])
-                    for e in kept_entries(merge_base, scope_id)]
+            scope_ids = {p.id for p in joint} or {request.project.id if request.project else None}
+            kept = kept_entries(merge_base, scope_ids)
+            held = [BusyEvent(date=e["start"][:10], startTime=e["start"][11:], endTime=e["end"][11:]) for e in kept]
+            held_entries = [e for e in kept if e["kind"] == "task"]
+        goals = {}
         if scope:
             effective_goal, held = scope[3], scope[2]
+            held_entries = [e for e in kept_entries(current_plan, scope[0]["id"]) if e["kind"] == "task"]
             effective_projects = [ProjectContext.model_validate(scope[0])]
         elif current_plan:
             # An ended project keeps its finished tasks in the week but is never planned again.
             effective_projects = [ProjectContext.model_validate(p) for p in plan_projects(current_plan) if p["id"] not in closed]
+        elif joint:
+            effective_projects = joint
+            goals = {p.id: request.goal if p.id == request.project.id else p.goal for p in joint}
+            if len(joint) > 1:
+                effective_goal = "\n".join(f"[{p.title}] {goals[p.id]}" for p in joint)
         else:
             effective_projects = request.projects or ([request.project] if request.project else [])
         effective_project = effective_projects[0] if len(effective_projects) == 1 else None
@@ -515,8 +645,11 @@ def execution_router(store=None, llm=None):
             projects=effective_projects,
             current_plan=scope[1] if scope else current_plan,
             events=[*request.events, *held],
-            existing_tasks=request.existingTasks,
+            # A project's own to-dos only go to the plan that covers that project.
+            existing_tasks=[t for t in request.existingTasks
+                            if t.projectId is None or t.projectId in {p.id for p in effective_projects}],
             memories=[memory.model_dump() for memory in request.memories],
+            held_entries=held_entries,
         )
         result = await asyncio.to_thread(planning_graph.invoke, {
             "request": "replan" if replan else "new_plan",
@@ -529,11 +662,18 @@ def execution_router(store=None, llm=None):
             reason = (result.get("fallback") or {}).get("reason") or "계획 초안 생성에 실패했습니다."
             raise ValueError(reason)
         draft = result["plan_draft"]
-        if merge_base:
+        if merge_base and len(joint) > 1:
+            draft = merge_into(merge_base, draft, [p.model_dump(mode="json") for p in joint], goals)
+        elif merge_base:
             draft = merge_into(merge_base, draft, effective_project.model_dump(mode="json") if effective_project else None,
                                request.goal)
         elif scope:
             draft = merge_into(current_plan, draft, scope[0], scope[3])
+        elif len(joint) > 1:
+            draft["projectGoals"] = {thread_key(pid): goal for pid, goal in goals.items()}
+        elif current_plan and current_plan.get("projectGoals") and not draft.get("projectGoals"):
+            # A replan of the whole week keeps what each project was planned for.
+            draft["projectGoals"] = current_plan["projectGoals"]
         return change(request.revision, lambda doc: replace_plan_draft(doc, draft))
 
     @router.post("/plan/confirm")

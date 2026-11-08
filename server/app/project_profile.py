@@ -8,21 +8,48 @@ reaches every project that does not override that value.
 """
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .execution_store import ConflictError
 from .plan_merge import entry_owner
-from .user_profile import LearnedPattern, PlanningPreferences
+from .user_profile import LearnedPattern, PlanningPreferences, TimeSlot, unique_slots
 
 # Planning preferences a project may override.  Anything else stays a user trait.
-OVERRIDE_KEYS = ("blockMinutes", "dailyPlannedMinutes", "starterMinutes", "recoveryPreference")
+OVERRIDE_KEYS = ("blockMinutes", "dailyPlannedMinutes", "starterMinutes", "recoveryPreference", "pacePercent", "periodMinutes",
+                 "timeSlots")
 FIELD_LABELS = {
     "blockMinutes": "집중 구간", "dailyPlannedMinutes": "하루 계획량",
     "starterMinutes": "시작 행동", "recoveryPreference": "복구 방식",
+    "pacePercent": "실제로 걸리는 시간", "periodMinutes": "시간대별 한 번에 하는 시간",
+    "timeSlots": "이 프로젝트를 하는 요일·시간",
 }
+WEEKDAY_NAMES = "월화수목금토일"
+
+
+def slots_text(slots):
+    """'월·수·금 19~20시' for the hours a project is done in; [] is "no fixed time"."""
+    if slots is None:
+        return "아직 안 정함"
+    if not slots:
+        return "정해진 시간 없음"
+    by_hours = {}
+    for slot in sorted(slots, key=lambda s: (s["day"], s["hour"])):
+        by_hours.setdefault(slot["day"], []).append(slot["hour"])
+    groups = {}
+    for day, hours in by_hours.items():
+        ranges, start = [], None
+        for hour in hours:
+            if start is None or hour != end:
+                if start is not None:
+                    ranges.append(f"{start}~{end}시")
+                start = hour
+            end = hour + 1
+        ranges.append(f"{start}~{end}시")
+        groups.setdefault(", ".join(ranges), []).append(WEEKDAY_NAMES[day])
+    return " / ".join(f"{'·'.join(days)} {hours}" for hours, days in groups.items())
 
 
 def utc_now():
@@ -36,6 +63,14 @@ class ProjectPreferenceValues(BaseModel):
     dailyPlannedMinutes: int | None = Field(default=None, ge=1, le=720, strict=True)
     starterMinutes: int | None = Field(default=None, ge=1, le=180, strict=True)
     recoveryPreference: Literal["replan", "reduce", "continue", "abandon", "unknown"] = None
+    pacePercent: int | None = Field(default=None, ge=100, le=300, strict=True)
+    periodMinutes: dict[Literal["morning", "afternoon", "evening"], Annotated[int, Field(ge=5, le=180, strict=True)]] | None = None
+    timeSlots: list[TimeSlot] | None = Field(default=None, max_length=105)
+
+    @model_validator(mode="after")
+    def unique(self):
+        unique_slots(self.timeSlots)
+        return self
 
     def provided(self):
         return self.model_dump(include=self.model_fields_set)
@@ -43,7 +78,7 @@ class ProjectPreferenceValues(BaseModel):
 
 class ProjectOverride(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    value: int | str | None
+    value: int | str | dict | list | None
     source: Literal["declared", "learned"]
     proposalId: str | None = None
 
@@ -219,8 +254,8 @@ def apply_project_proposal(state, proposal_id, *, user_id):
                       or records[i].get("projectProfileId") != proposal.get("projectProfileId") for i in ids):
         raise ValueError("제안의 근거 실행 기록이 올바르지 않습니다.")
     changes = proposal.get("proposedChanges", {})
-    if set(changes) != {"blockMinutes"}:
-        raise ValueError("현재는 집중 구간(blockMinutes) 변경만 지원합니다.")
+    if not changes or set(changes) - set(OVERRIDE_KEYS):
+        raise ValueError("프로젝트에서 바꿀 수 없는 설정입니다.")
     prefs, _ = effective_preferences(base, current)
     for key, change in changes.items():
         if set(change) != {"from", "to"} or prefs.get(key) != change["from"]:
@@ -228,7 +263,7 @@ def apply_project_proposal(state, proposal_id, *, user_id):
     overrides = deepcopy((current or {}).get("overrides") or {})
     for key, change in changes.items():
         overrides[key] = {"value": change["to"], "source": "learned", "proposalId": proposal_id}
-    block = changes["blockMinutes"]["to"]
+    block = changes.get("blockMinutes", {}).get("to", prefs["blockMinutes"])
     # Same rule as the user profile: a starter never outgrows the focus block.
     if prefs.get("starterMinutes") is not None and prefs["starterMinutes"] > block:
         overrides["starterMinutes"] = {"value": block, "source": "learned", "proposalId": proposal_id}

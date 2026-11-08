@@ -88,8 +88,10 @@ export function PlannerChat({ state, busy, run, project, onApplyPlan, onAdjust, 
   })
 
   /** A card can be applied only with what its button needs. */
+  // A project done at its own hours needs no weekly hours to be planned.
+  const ownHours = (state.projectProfiles?.[project.id]?.overrides?.timeSlots?.value as unknown[] | undefined)?.length ?? 0
   function cardBlocked(card: PlannerAction) {
-    if (card.kind === 'plan') return !consent || !state.settings.slots.length
+    if (card.kind === 'plan') return !consent || (!state.settings.slots.length && !ownHours)
     if (card.kind === 'adjust') return !onAdjust || (!!card.payload.goal && !consent)
     return false
   }
@@ -142,7 +144,7 @@ export function PlannerChat({ state, busy, run, project, onApplyPlan, onAdjust, 
           {action.freeMinutes != null && <><dt>남은 빈 시간</dt><dd>{Math.floor(action.freeMinutes / 60)}시간{action.freeMinutes % 60 ? ` ${action.freeMinutes % 60}분` : ''}</dd></>}
         </dl>
         {week && <p className="execution-help">이번 주 계획에서 이 프로젝트의 남은 작업만 바꿔요. 다른 프로젝트 작업과 완료한 작업은 그대로 둬요.</p>}
-        {!state.settings.slots.length && <p className="form-error">이번 주 계획할 시간이 아직 없어요. ‘이번 주 시간’ 메뉴에서 고르거나 대화로 알려 주세요.</p>}
+        {!state.settings.slots.length && !ownHours && <p className="form-error">이번 주 계획할 시간이 아직 없어요. ‘이번 주 시간’ 메뉴에서 고르거나 대화로 알려 주세요.</p>}
         <div className="planner-action-buttons"><button className="primary-button" disabled={busy || cardBlocked(action)} onClick={() => { void applyCard(action) }}>확인하고 계획 초안 만들기</button></div>
       </> : action.kind === 'project_settings' ? <>
         <h3>‘{project.title}’ 프로젝트를 이렇게 맞출까요?</h3>
@@ -165,6 +167,7 @@ export function PlannerChat({ state, busy, run, project, onApplyPlan, onAdjust, 
           <dl className="planner-action-facts">
             {action.change.added.length > 0 && <><dt>더할 시간</dt><dd>{slotRanges(action.change.added)}</dd></>}
             {action.change.removed.length > 0 && <><dt>뺄 시간</dt><dd>{slotRanges(action.change.removed)}</dd></>}
+            {action.change.fill && <><dt>채우는 정도</dt><dd>{action.change.fill === 'full' ? '고른 시간을 비우지 않고 다 채움' : '고른 시간에 여유를 두고 채움'}</dd></>}
           </dl>
           <p className="execution-help">이번 주에 모든 프로젝트가 함께 쓰는 시간이에요. 바꾼 뒤에는 주 {action.payload.slots.length}시간이에요.</p>
         </> : <>

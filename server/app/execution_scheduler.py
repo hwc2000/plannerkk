@@ -89,15 +89,78 @@ def validate_tasks(payload, block, projects=()):
     return result
 
 
-def daily_budgets(windows, daily_cap=None):
-    """Work minutes per day: all the free time the user chose, never above the daily cap."""
+def daily_budgets(windows, daily_cap=None, daily_used=None):
+    """Work minutes per day: the free time the plan may use, never above the daily cap.
+
+    ``daily_used``: work other projects already hold that day, which counts against the cap.
+    """
     minutes = {}
     for begin, end in windows:
         key = begin.date().isoformat()
         minutes[key] = minutes.get(key, 0) + int((end-begin).total_seconds()//60)
     if daily_cap is not None:
-        minutes = {d: min(m, daily_cap) for d, m in minutes.items()}
+        minutes = {d: max(0, min(m, daily_cap - (daily_used or {}).get(d, 0))) for d, m in minutes.items()}
     return minutes
+
+
+# A project whose work fills at least this share of its free time is placed earliest first.
+SPREAD_FULL = 0.9
+
+
+def window_owners(windows, reserved=None):
+    """Who may use each window: the project whose own hours it is, or None (the shared hours)."""
+    own = {owner: {tuple(w) for w in items} for owner, items in (reserved or {}).items()}
+    return [next((owner for owner, items in own.items() if tuple(w) in items), None) for w in windows]
+
+
+def spread_targets(tasks, windows, daily_cap=None, daily_used=None, owner_caps=None, reserved=None):
+    """The first day each task may take, and how full each project's week is.
+
+    Work that fills a project's free time (breaks between tasks included) is placed
+    earliest first.  Less work than time (a few sessions a week, a short job) is not
+    packed into the first day: the project's work is stretched from its first free day
+    to its last, each task on the day whose start in the week's free time is nearest to where
+    its share of the work begins, so three sessions in five even days land on days 1, 3 and 5.
+    Free time is what the day may hold: the daily cap (less what other projects
+    hold) and a project's own cap (``owner_caps``) count.  A project with hours of its
+    own (``reserved``) counts only those; the others count only the shared hours.
+    Returns ({task index: day}, {project: planned minutes / free minutes}).
+    """
+    users = window_owners(windows, reserved)
+    budgets_of = {}
+    for key in set(users):
+        budgets_of[key] = daily_budgets([w for w, u in zip(windows, users) if u == key], daily_cap, daily_used)
+    owners = {}
+    for index, task in enumerate(tasks):
+        owners.setdefault(task.get("projectId"), []).append(index)
+    targets, fullness = {}, {}
+    for owner, indexes in owners.items():
+        first = max((tasks[i].get("notBefore") or "" for i in indexes), default="")
+        last = max((tasks[i].get("dueDate") or "9999-12-31" for i in indexes), default="9999-12-31")
+        own_cap = (owner_caps or {}).get(owner)
+        budgets = budgets_of.get(owner if owner in (reserved or {}) else None, {})
+        days = [(d, m if own_cap is None else min(m, own_cap)) for d, m in sorted(budgets.items()) if first <= d <= last]
+        days = [(d, m) for d, m in days if m > 0]
+        room = sum(m for _, m in days)
+        total = sum(tasks[i]["minutes"] for i in indexes)
+        fullness[owner] = (total + BREAK_MINUTES * len(indexes)) / room if room else 1.0
+        if not room or fullness[owner] >= SPREAD_FULL:
+            continue
+        # Where each day starts in the week's free time, 0 for the first day and 1 for the last.
+        span = room - days[-1][1]
+        starts, before = [], 0
+        for day, minutes in days:
+            starts.append((day, before / span if span else 0.0))
+            before += minutes
+        work_span = total - tasks[indexes[-1]]["minutes"]
+        done = 0
+        for i in indexes:
+            share = done / work_span if work_span else 0.0
+            done += tasks[i]["minutes"]
+            day = min(starts, key=lambda item: (abs(item[1] - share), item[1]))[0]
+            due = tasks[i].get("dueDate")
+            targets[i] = min(day, due) if due else day
+    return targets, fullness
 
 
 def _starter_entry(task, start, minutes):
@@ -110,8 +173,17 @@ def _starter_entry(task, start, minutes):
 
 
 def schedule(tasks, windows, *, daily_cap=None, starter_minutes=None, fill_daily_cap=False, project_policies=None,
-             shrink_to_fit=False):
+             shrink_to_fit=False, daily_used=None, pace_percent=None, reserved=None):
     """Place tasks in order; with ``starter_minutes`` each day's first task gets a short starter before it.
+
+    A project with less work than free time is spread over the week (``spread_targets``);
+    in a week of several projects, such light projects take their days first and the
+    projects that fill their time go around them.  ``daily_used`` is work other projects
+    already hold each day, counted against ``daily_cap``.  ``reserved`` maps a project to
+    the windows that are its own hours: its tasks go only there, and no other task does
+    (those projects are placed first, their time is fixed).  In a week of several projects,
+    a project whose work takes longer than the time the windows were shaped for
+    (``pace_percent``) gets that much free time after each of its tasks.
 
     ``fill_daily_cap`` cuts a task that is longer than what is left of today's plan, so the
     day is used up.  ``shrink_to_fit`` instead shortens a task to the free time it meets
@@ -120,31 +192,47 @@ def schedule(tasks, windows, *, daily_cap=None, starter_minutes=None, fill_daily
     """
     cursors = [begin for begin, _ in windows]
     # Daily work budget leaves the rest for breaks and interruptions.
-    budgets = daily_budgets(windows, daily_cap)
+    budgets = daily_budgets(windows, daily_cap, daily_used)
     # Days where the cap, not the buffer, limits the work; pending reasons name it.
-    cap_binds = set() if daily_cap is None else {d for d, b in daily_budgets(windows).items() if b > daily_cap}
+    cap_binds = set() if daily_cap is None else {d for d, b in daily_budgets(windows).items() if b > budgets.get(d, 0)}
+    owner_caps = {owner: policy.daily_cap_minutes for owner, policy in (project_policies or {}).items()
+                  if policy.daily_cap_minutes is not None}
+    targets, fullness = spread_targets(tasks, windows, daily_cap, daily_used, owner_caps, reserved)
+    users = window_owners(windows, reserved)
+    reserved = reserved or {}
+    order = list(range(len(tasks)))
+    if project_policies or reserved:
+        order.sort(key=lambda i: (tasks[i].get("projectId") not in reserved,
+                                  fullness.get(tasks[i].get("projectId"), 1.0) >= SPREAD_FULL))
+    base_pace = pace_percent or 100
     started_days = set()
     project_used = {}
     project_not_before = {}
     entries, pending = [], []
     not_before = windows[0][0] if windows else datetime.max
-    for raw in tasks:
+    for index in order:
+        raw = tasks[index]
         task = {k: v for k, v in raw.items() if k not in ("starter", "notBefore")}
         owner = task.get("projectId")
         own_policy = (project_policies or {}).get(owner)
         own_cap = own_policy.daily_cap_minutes if own_policy else None
+        # Free time after each task for work that runs long, beyond what the windows already leave.
+        slack = max(0.0, (own_policy.pace_percent or base_pace) / base_pace - 1) if own_policy else 0.0
         effective_cap = min((cap for cap in (daily_cap, own_cap) if cap is not None), default=None)
         binding_days = cap_binds | ({d for d, minutes in daily_budgets(windows).items() if minutes > own_cap}
                                    if own_cap is not None else set())
         own_starter = own_policy.starter_minutes if own_policy else starter_minutes
         earliest = project_not_before.get(owner, windows[0][0] if windows else datetime.max) if project_policies else not_before
-        first_day = raw.get("notBefore")
+        first_day = max(filter(None, (raw.get("notBefore"), targets.get(index))), default=None)
         shortest = min_piece(task["minutes"])
         saved = (list(cursors), dict(budgets), set(started_days), len(entries), dict(project_used))
         capped = False
+        usable = owner if owner in reserved else None
         for split in (False, True):
             left, pieces = task["minutes"], []
             for i, (_, end) in enumerate(windows):
+                if users[i] != usable:
+                    continue
                 while left > 0:
                     cursor = max(cursors[i], earliest)
                     day = cursor.date().isoformat()
@@ -182,6 +270,8 @@ def schedule(tasks, windows, *, daily_cap=None, starter_minutes=None, fill_daily
                     budgets[day] -= lead + piece
                     project_used[(owner, day)] = project_used.get((owner, day), 0) + lead + piece
                     left -= piece
+                    if slack:
+                        finish = min(end, finish + timedelta(minutes=int(piece * slack)))
                     cursors[i] = finish
                     if finish + timedelta(minutes=BREAK_MINUTES) <= end:
                         pause_end = finish + timedelta(minutes=BREAK_MINUTES)

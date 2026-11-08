@@ -27,7 +27,7 @@ from .execution_api import PlannerSettings
 from .execution_profile import CHOICE_LABELS
 from .execution_scheduler import availability_windows
 from .plan_merge import active_plan, entry_owner, thread_key
-from .project_profile import OVERRIDE_KEYS, project_preferences, set_declared_overrides
+from .project_profile import OVERRIDE_KEYS, project_preferences, set_declared_overrides, slots_text
 from .user_insights import insights_for_ai, reply_tone
 
 WEEKDAYS = "월화수목금토일"
@@ -35,11 +35,16 @@ PERIOD_NAMES = {"morning": "오전", "afternoon": "오후", "evening": "저녁",
 SETTING_NAMES = {
     "blockMinutes": "한 번에 집중할 시간", "dailyPlannedMinutes": "하루에 계획할 최대 시간",
     "starterMinutes": "첫 작업 앞 시작 행동", "recoveryPreference": "계획이 틀어졌을 때",
+    "timeSlots": "이 프로젝트를 하는 요일·시간",
 }
 UNSET_TEXT = {
-    "dailyPlannedMinutes": "정하지 않음(그날 고른 시간을 모두 채움)",
+    "dailyPlannedMinutes": "정하지 않음(그날 고른 시간에 여유를 두고 채움)",
     "starterMinutes": "없음",
+    "timeSlots": "아직 정하지 않음(이번 주 계획할 시간 안에서 배치)",
 }
+# Asked once in a project's conversation before its first plan: when is this project done?
+TIMES_QUESTION = ("계획을 짜기 전에 하나만 여쭤볼게요. 이 프로젝트를 하는 요일·시간이 따로 정해져 있나요? "
+                  "있으면 '월·수·금 저녁 7시부터 8시'처럼 알려 주시고, 없으면 '딱히 없어요'라고 해 주세요.")
 RESULT_NAMES = {"completed": "완료", "partial": "일부만 함", "not_started": "시작 못 함", "incomplete": "끝내지 못함"}
 REASON_NAMES = {
     "time_shortage": "시간 부족", "task_too_large": "작업이 너무 큼", "fatigue": "피로", "interruption": "외부 방해",
@@ -149,9 +154,17 @@ def week_view(ctx: ChatContext) -> dict:
     }
 
 
+def project_times(ctx: ChatContext):
+    """This project's own hours as the user set them: a list ([] is "no fixed time"), or None if never asked."""
+    prefs, overrides = project_preferences(ctx.state, ctx.user_id, ctx.scope_id)
+    return prefs.get("timeSlots") if "timeSlots" in overrides else None
+
+
 def _value_text(key: str, value: Any) -> str:
     if key == "recoveryPreference":
         return RECOVERY_LABELS.get(value, str(value))
+    if key == "timeSlots":
+        return slots_text(value)
     return f"{value}분"
 
 
@@ -301,6 +314,7 @@ class DaySlot(BaseModel):
 class Availability(Reply):
     change: Literal["add", "remove", "replace"] | None = None
     slots: list[DaySlot] | None = None
+    fill: Literal["free", "full"] | None = None
 
 
 class ProjectSettings(Reply):
@@ -374,26 +388,35 @@ def _adjust_card(ctx, value: PlanAdjust):
 
 def _availability_card(ctx, value: Availability):
     """The model says only what changes; code works out the whole weekly time from what is saved."""
-    if value.slots is None or value.change is None:
-        return None, None
-    said = PlannerSettings.model_validate({"slots": [{"day": WEEKDAYS.index(s.day), "hour": s.hour} for s in value.slots],
-                                           "view": "timeline"}).slots
-    current = {(s["day"], s["hour"]) for s in ctx.state["settings"]["slots"]}
-    told = {(s.day, s.hour) for s in said}
-    result = {"add": current | told, "remove": current - told, "replace": told}[value.change]
-    if result == current:
-        return None, "말씀하신 시간은 이미 그렇게 저장돼 있어요."
+    saved = ctx.state["settings"]
+    current = {(s["day"], s["hour"]) for s in saved["slots"]}
+    result = current
+    if value.slots is not None and value.change is not None:
+        said = PlannerSettings.model_validate({"slots": [{"day": WEEKDAYS.index(s.day), "hour": s.hour} for s in value.slots],
+                                               "view": "timeline"}).slots
+        told = {(s.day, s.hour) for s in said}
+        result = {"add": current | told, "remove": current - told, "replace": told}[value.change]
+    fill = value.fill or saved.get("fill", "free")
+    if result == current and fill == saved.get("fill", "free"):
+        return (None, "말씀하신 대로 이미 저장돼 있어요.") if (value.slots is not None or value.fill) else (None, None)
     settings = PlannerSettings.model_validate({"slots": [{"day": d, "hour": h} for d, h in sorted(result)],
-                                               "view": ctx.state["settings"]["view"]})
+                                               "view": saved["view"], "fill": fill})
     change = {"added": [{"day": d, "hour": h} for d, h in sorted(result - current)],
-              "removed": [{"day": d, "hour": h} for d, h in sorted(current - result)]}
+              "removed": [{"day": d, "hour": h} for d, h in sorted(current - result)],
+              **({"fill": fill} if fill != saved.get("fill", "free") else {})}
     return {"kind": "settings", "payload": settings.model_dump(), "change": change}, None
 
 
 def _project_settings_card(ctx, value: ProjectSettings):
     if not ctx.scope_id:
         return None, None
-    return project_settings_card(ctx.state, ctx.user_id, ctx.scope_id, value.projectSettings)
+    stated = dict(value.projectSettings or {})
+    if stated.get("timeSlots") is not None:
+        # The model names weekdays; code stores them as numbers, one hour each.
+        stated["timeSlots"] = sorted({(WEEKDAYS.index(s["day"]), s["hour"]) for s in stated["timeSlots"]
+                                      if s.get("day") in WEEKDAYS and type(s.get("hour")) is int})
+        stated["timeSlots"] = [{"day": d, "hour": h} for d, h in stated["timeSlots"]]
+    return project_settings_card(ctx.state, ctx.user_id, ctx.scope_id, stated)
 
 
 POLITE = "부드러운 존댓말"
@@ -476,6 +499,9 @@ SKILLS = {
         "여러 시간은 구간 여러 개로 넣는다: '토요일 오전 9시부터 12시까지'는 토 9, 토 10, 토 11이다. '평일'은 월~금, '주말'은 토·일이다. "
         "change는 기존 시간에 더하면 add, 기존 시간에서 빼면 remove, 기존 시간을 모두 이것으로 바꾸면 replace다. "
         "지금 저장된 시간은 lookups.week.weeklyHours에 있고, 합치는 일은 코드가 한다. " + SLOT_RULES +
+        "계획은 고른 시간의 일부를 비워 두고 채운다. 사용자가 고른 시간을 여유 없이 다 채워 달라고 하면 fill='full', "
+        "다시 여유를 두고 채워 달라고 하면 fill='free', 그런 말이 없으면 fill=null이다. 시간은 그대로 두고 채우는 정도만 "
+        "말하면 change=null, slots=null, fill만 넣는다. "
         "수업·출근 같은 고정 일정은 화면의 '고정 일정'에 저장하면 계획에서 자동으로 빠지므로 slots에서 따로 빼지 않는다. "
         "사용자가 고정 일정을 말하면 그곳에 저장하면 된다고 안내한다. 요일·시간이 모호하거나 30분처럼 정시로 나눌 수 없으면 "
         "되묻고 change=null, slots=null로 한다.",
@@ -483,24 +509,32 @@ SKILLS = {
                  "slots": {"type": ["array", "null"], "items": {
             "type": "object", "additionalProperties": False,
             "properties": {"day": {"type": "string", "enum": list(WEEKDAYS)}, "hour": {"type": "integer"}},
-            "required": ["day", "hour"]}}}),
+            "required": ["day", "hour"]}},
+                 "fill": {"type": ["string", "null"], "enum": ["free", "full", None]}}),
         Availability, _availability_card),
     "project_settings": Skill(
         "프로젝트 방식 정하기", "project가 있고, 이 프로젝트를 하는 방식(한 번에 몇 분, 하루 몇 분, 시작 행동, "
-        "틀어졌을 때 대응)을 바꾸겠다고 사용자가 값을 직접 말함. 지금 값을 묻는 질문은 answer", (),
+        "틀어졌을 때 대응, 이 프로젝트를 하는 요일·시간)을 사용자가 직접 말함. 지금 값을 묻는 질문은 answer", (),
         "이 프로젝트를 하는 방식을 정하는 단계다. projectSettings에는 이번 message에서 사용자가 직접 말한 값만 넣고 "
         "나머지는 모두 null로 둔다: blockMinutes('한 번에 25분', '25분씩'), dailyPlannedMinutes('하루 1시간'=60, "
         "'하루 40분만'), starterMinutes(첫 작업 앞 시작 행동 분), "
-        "recoveryPreference(replan=시간 다시 배치, reduce=할 일 줄이기, continue=건너뛰고 계속, abandon=그날 포기). "
+        "recoveryPreference(replan=시간 다시 배치, reduce=할 일 줄이기, continue=건너뛰고 계속, abandon=그날 포기), "
+        "timeSlots(이 프로젝트를 하는 요일·시간: '월수금 저녁 7시부터 8시'는 월 19, 수 19, 금 19처럼 요일 한 글자와 1시간 구간 "
+        "8~22시. 시작만 말하고 끝을 말하지 않으면 1시간이다. 정해진 시간이 없다고 하면('딱히 없어요', '정해진 건 없어') 빈 배열 []). "
+        + SLOT_RULES +
         "프로젝트 성격이나 일반론으로 값을 추측하지 않고, 지금 값이 얼마인지는 코드가 카드에 보여 주므로 말하지 않는다. "
         "reply는 바꾸려는 값만 한 문장으로 확인한다. 사용자가 말하지 않은 다른 설정을 묻거나 정해 달라고 하지 않는다. "
         "계획 요청이 함께 왔으면 이 방식을 먼저 정하고 계획은 이어서 말해 달라고 한다.",
-        _schema({"projectSettings": {"type": ["object", "null"], "additionalProperties": False, "properties": {
+        _schema({"projectSettings": {"type": ["object", "null"], "additionalProperties": False, "properties": (props := {
             "blockMinutes": {"type": ["integer", "null"]},
             "dailyPlannedMinutes": {"type": ["integer", "null"]},
             "starterMinutes": {"type": ["integer", "null"]},
             "recoveryPreference": {"type": ["string", "null"], "enum": ["replan", "reduce", "continue", "abandon", None]},
-        }, "required": list(OVERRIDE_KEYS)}}),
+            "timeSlots": {"type": ["array", "null"], "items": {
+                "type": "object", "additionalProperties": False,
+                "properties": {"day": {"type": "string", "enum": list(WEEKDAYS)}, "hour": {"type": "integer"}},
+                "required": ["day", "hour"]}},
+        }), "required": list(props)}}),
         ProjectSettings, _project_settings_card, hides=("profile",), history=False),
 }
 # The router's own two choices: answered without a skill call.
@@ -538,6 +572,8 @@ ROUTE_INSTRUCTIONS = (
     "이전 대화에 설정이나 계획 이야기가 있었어도 이번 message에 새로 말한 값이나 요청이 없으면 answer다. "
     "4) 규칙: 특정 날짜·시간만 안 되는 경우는 availability가 아니라 plan_adjust다. 매주 반복해서 계획할 수 있는 요일·시간을 "
     "더하거나 빼는 말이면 availability다. 하루에 몇 분·몇 시간만 하겠다, 한 번에 몇 분씩 하겠다는 말은 project_settings다. "
+    "이 프로젝트(이 일)를 하는 요일·시간을 말하거나, 그걸 물은 뒤 '딱히 없어요'처럼 답하면 project_settings다. "
+    "고른 시간을 다 채워 달라거나 여유를 두라는 말은 availability다. "
     "activeWeek가 null이면 plan_adjust 대신 plan_create다. project가 null이면 project_settings를 고르지 않는다. "
     "설정과 계획 요청이 함께 오면 project_settings를 먼저 고른다. "
     "예: '이번 주 남은 시간 얼마나 돼?' → answer, lookups [week]. '왜 이렇게 계획했어?' → answer, lookups [profile, tasks]. "
@@ -545,7 +581,8 @@ ROUTE_INSTRUCTIONS = (
     "'한 번에 몇 분씩 하게 돼 있어?' → answer, lookups [profile]. '지금 적용된 거 맞지?' → answer. "
     "'매주 토요일 오전 9시부터 12시도 추가해 줘' → availability. '토요일 저녁은 약속이 있어' → plan_adjust. "
     "'분량을 줄여 줘' → plan_adjust. '이번 주에 보고서 초안을 쓰고 싶어' → plan_create. '이 프로젝트는 25분씩 할래' → "
-    "project_settings. '하루에 1시간만 할래' → project_settings. (waitingCard가 있을 때) '응 그렇게 해 줘' → confirm. "
+    "project_settings. '하루에 1시간만 할래' → project_settings. '운동은 월수금 저녁 7시에 해요' → project_settings. "
+    "'가용 시간 다 채워 줘' → availability. (waitingCard가 있을 때) '응 그렇게 해 줘' → confirm. "
     "'고마워요' → small_talk(waitingCard가 있어도 인사·감사만 있으면 small_talk). "
     "lookups는 답에 필요한 것을 고른다. 남은 시간·일정 질문은 week, 설정·성향·이유 질문은 profile, 작업 질문은 tasks, "
     "지난 일·완료·기록 질문은 records. small_talk와 confirm은 lookups를 비운다. "
@@ -611,6 +648,10 @@ async def run_turn(llm, ctx: ChatContext, basic: dict) -> Turn:
             skill = "answer"
         if skill == "plan_adjust" and not ctx.week:
             skill = "plan_create"
+        if skill == "plan_create" and ctx.scope_id and project_times(ctx) is None \
+                and not any(TIMES_QUESTION in (m.get("content") or "") for m in basic.get("messages") or []):
+            # Before this project's first plan, once: is it done at set hours?  The answer goes to project_settings.
+            return Turn("plan_create", [], TIMES_QUESTION, waiting)
         spec = SKILLS[skill]
         lookups = [name for name in dict.fromkeys([*spec.lookups, *route.lookups]) if name not in spec.hides]
         data = {name: LOOKUPS[name].read(ctx) for name in lookups}

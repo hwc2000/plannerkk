@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import type { ExecutionState, Project } from '../../shared/types'
-import { executionApi } from './api'
+import type { AvailabilitySlot, ExecutionState, Project } from '../../shared/types'
+import { executionApi, hoursText } from './api'
 import { options } from './profileLabels'
 
 type Key = 'blockMinutes' | 'dailyPlannedMinutes' | 'starterMinutes' | 'recoveryPreference'
@@ -23,11 +23,13 @@ function show(field: Field, value: unknown) {
 
 /** The label of a project setting, for cards that propose one. */
 export function settingLabel(key: string) {
+  if (key === 'timeSlots') return '이 프로젝트를 하는 요일·시간'
   return FIELDS.find(f => f.key === key)?.label ?? key
 }
 
-/** A project setting's value as the user reads it ("25분", "할 일을 줄임"). */
+/** A project setting's value as the user reads it ("25분", "할 일을 줄임", "월·수·금 19~20시"). */
 export function settingValue(key: string, value: unknown) {
+  if (key === 'timeSlots') return hoursText(value as AvailabilitySlot[] | null)
   const field = FIELDS.find(f => f.key === key)
   return field ? show(field, value) : String(value ?? '없음')
 }

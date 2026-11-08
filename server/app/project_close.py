@@ -21,7 +21,7 @@ from uuid import uuid4
 from .adaptive.local import close_draft, drafts_for_plan
 from .execution_service import resolve_plan_draft
 from .plan_merge import entry_owner
-from .project_profile import load_project_profile
+from .project_profile import load_project_profile, slots_text
 from .user_profile import apply_profile_proposal
 
 CLOSE_RULE_VERSION = "project-close-v1"
@@ -31,12 +31,15 @@ BLOCK_SHARE = 0.5  # a task of at least half the block was planned at that block
 # What an approved recovery draft says about the user's own way back.
 RECOVERY_HABITS = {"shrink": "reduce", "reschedule": "replan"}
 LABELS = {"blockMinutes": "한 번에 집중할 시간", "recoveryPreference": "계획이 틀어졌을 때",
-          "dailyPlannedMinutes": "하루 계획량", "starterMinutes": "첫 작업 앞 시작 행동"}
+          "dailyPlannedMinutes": "하루 계획량", "starterMinutes": "첫 작업 앞 시작 행동",
+          "timeSlots": "이 프로젝트를 하는 요일·시간"}
 RECOVERY_TEXT = {"replan": "시간을 다시 배치", "reduce": "할 일을 줄임", "continue": "밀린 일을 건너뛰고 계속",
                  "abandon": "그날 계획을 포기", "unknown": "잘 모르겠어요"}
 
 
 def _text(key, value):
+    if key == "timeSlots":
+        return slots_text(value)
     return RECOVERY_TEXT.get(value, str(value)) if key == "recoveryPreference" else f"{value}분"
 
 

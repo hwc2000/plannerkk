@@ -103,6 +103,9 @@ class ProjectThreadTests(unittest.TestCase):
 
     def test_plan_card_uses_the_active_week(self):
         self.plan(ESSAY, "에세이 초안")
+        # The user answered "딱히 없어요" to the project's hours.
+        self.revision = self.client.put("/api/execution/projects/app/profile", json={
+            "revision": self.revision, "overrides": {"timeSlots": []}}).json()["revision"]
         self.llm.route = {"skill": "plan_create", "lookups": [], "reply": None}
         self.llm.replies = {"planner_plan_create": {"reply": "정리했어요", "ready": True, "goal": "로그인", "startDate": None}}
         state = self.call("/api/execution/chat/message", text="로그인 화면 만들래", consent=True, project=APP)

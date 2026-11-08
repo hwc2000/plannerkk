@@ -1,4 +1,4 @@
-import type { CalendarEvent, ClosePreview, ExecutionPlan, ExecutionState, InsightPattern, InsightQuestion, InsightSlot, Memory, Milestone, ProfileUpdateProposal, Project } from '../../shared/types'
+import type { AvailabilitySlot, CalendarEvent, ClosePreview, ExecutionPlan, ExecutionState, InsightPattern, InsightQuestion, InsightSlot, Memory, Milestone, ProfileUpdateProposal, Project } from '../../shared/types'
 
 type ReplanInput = {
   goal: string
@@ -107,17 +107,66 @@ export async function approveProposalAndReplan(
     ? state
     : await executionApi(`/proposals/${proposalId}/approve`, { revision: state.revision })
   if (!replan) return approved
-  return executionApi('/plan', {
-    revision: approved.revision,
-    ...input,
-    profileChangeProposalId: proposalId,
-  })
+  try {
+    return await executionApi('/plan', {
+      revision: approved.revision,
+      ...input,
+      profileChangeProposalId: proposalId,
+    })
+  } catch (error) {
+    // Late in the week no chosen time may be left to replan in: the change is saved and applies from the next plan.
+    if (error instanceof Error && NO_TIME_LEFT.test(error.message)) return approved
+    throw error
+  }
 }
+
+const NO_TIME_LEFT = /사용 가능한 시간이 없습니다|계획할 시간이 남지 않았습니다/
 
 export function projectContext(project: Project | undefined) {
   if (!project) return null
   const { id, title, goal, startDate, dueDate } = project
   return { id, title, goal: goal.trim() || title, startDate, dueDate }
+}
+
+const WEEKDAYS = '월화수목금토일'
+
+/** '월·수·금 19~20시' for the hours a project is done in; [] is "no fixed time". */
+export function hoursText(slots: AvailabilitySlot[] | null | undefined) {
+  if (slots == null) return '아직 안 정함'
+  if (!slots.length) return '정해진 시간 없음'
+  const byDay = new Map<number, number[]>()
+  for (const s of [...slots].sort((a, b) => a.day - b.day || a.hour - b.hour)) byDay.set(s.day, [...(byDay.get(s.day) ?? []), s.hour])
+  const groups = new Map<string, string[]>()
+  for (const [day, hours] of byDay) {
+    const ranges: string[] = []
+    let start = hours[0], end = hours[0] + 1
+    for (const hour of hours.slice(1)) {
+      if (hour === end) { end = hour + 1; continue }
+      ranges.push(`${start}~${end}시`); start = hour; end = hour + 1
+    }
+    ranges.push(`${start}~${end}시`)
+    const key = ranges.join(', ')
+    groups.set(key, [...(groups.get(key) ?? []), WEEKDAYS[day]])
+  }
+  return [...groups].map(([hours, days]) => `${days.join('·')} ${hours}`).join(' / ')
+}
+
+/** Save the hours a project is done in, keeping the other values the user set for it. */
+export function saveProjectHours(state: ExecutionState, projectId: string, slots: AvailabilitySlot[]) {
+  const declared = Object.fromEntries(Object.entries(state.projectProfiles?.[projectId]?.overrides ?? {})
+    .filter(([, item]) => item.source === 'declared').map(([key, item]) => [key, item.value]))
+  return executionApi(`/projects/${encodeURIComponent(projectId)}/profile`,
+    { revision: state.revision, overrides: { ...declared, timeSlots: slots } }, 'PUT')
+}
+
+/** The other open projects of the week: a plan asked for in one project's chat plans them too when they have no tasks yet. */
+export function weekProjects(projects: Project[], closed: Record<string, unknown> | undefined, startDate: string) {
+  const end = new Date(`${startDate}T00:00:00`)
+  end.setDate(end.getDate() + 6)
+  const last = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`
+  return projects
+    .filter(p => p.status === 'active' && !closed?.[p.id] && p.startDate <= last && p.dueDate >= startDate)
+    .map(p => projectContext(p)!)
 }
 
 export function planProjectIds(plan: ExecutionPlan | null | undefined): string[] {

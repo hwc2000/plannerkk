@@ -28,20 +28,32 @@ Window = tuple[datetime, datetime]
 
 @dataclass(frozen=True)
 class PlanPolicy:
-    block_minutes: int  # task length cap
+    block_minutes: int  # task length cap, in planned minutes
     daily_cap_minutes: int | None
     starter_minutes: int | None
     preferred_period: str | None
+    pace_percent: int | None = None  # how long planned work really takes, in percent of the plan
+
+
+def paced_block(prefs: Mapping[str, Any]) -> int:
+    """Planned minutes of one task: the focus block is real time, and work takes ``pacePercent`` of its plan.
+
+    Someone who focuses 60 minutes and needs 140% of every plan gets tasks of 42 planned
+    minutes, which really take the 60 they can do in one go.
+    """
+    block, pace = prefs["blockMinutes"], prefs.get("pacePercent")
+    return max(1, block * 100 // pace) if pace else block
 
 
 def plan_policy(user_profile: Mapping[str, Any]) -> PlanPolicy:
     prefs = user_profile["planningPreferences"]
     focus = prefs.get("focusTime")
     return PlanPolicy(
-        block_minutes=prefs["blockMinutes"],
+        block_minutes=paced_block(prefs),
         daily_cap_minutes=prefs.get("dailyPlannedMinutes"),
         starter_minutes=prefs.get("starterMinutes"),
         preferred_period=focus if focus in PERIODS else None,
+        pace_percent=prefs.get("pacePercent"),
     )
 
 
@@ -69,13 +81,14 @@ def _window_slots(room: int, block: int) -> list[int]:
     return slots
 
 
-def day_slots(windows: Sequence[Window], policy: PlanPolicy, block: int) -> list[dict[str, Any]]:
-    """Each day's task lengths, in placement order, that use all the time the user chose.
+def day_slots(windows: Sequence[Window], policy: PlanPolicy, block: int,
+              daily_used: Mapping[str, int] | None = None) -> list[dict[str, Any]]:
+    """Each day's task lengths, in placement order, that use the time the plan may fill.
 
-    The planner sizes tasks to these, so a day is full before work moves to the
-    next one: three free hours with 60-minute blocks are 60, 60 and 50 (breaks
-    between).  The day's first task follows the starter, and a daily cap ends
-    the day early.  A leftover too short for a task stays free.
+    The planner sizes tasks to these: three free hours with 60-minute blocks are
+    60, 60 and 50 (breaks between).  The day's first task follows the starter, and
+    a daily cap ends the day early, counting work other projects already hold that
+    day (``daily_used``).  A leftover too short for a task stays free.
     """
     days: dict[str, list[int]] = {}
     used: dict[str, int] = {}
@@ -84,19 +97,138 @@ def day_slots(windows: Sequence[Window], policy: PlanPolicy, block: int) -> list
         slots = days.setdefault(day, [])
         room = int((end - begin).total_seconds() // 60)
         if day not in used:
-            used[day] = policy.starter_minutes or 0
-            room -= used[day]
+            used[day] = (daily_used or {}).get(day, 0) + (policy.starter_minutes or 0)
+            room -= policy.starter_minutes or 0
         for minutes in _window_slots(room, block):
             if policy.daily_cap_minutes is not None and used[day] + minutes > policy.daily_cap_minutes:
                 # The cap ends the day: what it leaves is a task only if it is not a sliver.
                 minutes = policy.daily_cap_minutes - used[day]
                 if minutes >= min_task_minutes(block):
                     slots.append(minutes)
-                used[day] = policy.daily_cap_minutes
+                used[day] = max(used[day], policy.daily_cap_minutes)
                 break
             slots.append(minutes)
             used[day] += minutes
     return [{"date": day, "minutes": slots} for day, slots in days.items() if slots]
+
+
+MIN_SHAPED_MINUTES = 10  # a stretch shorter than this after shaping is not worth a task
+# System value: the share of each chosen stretch that gets work.  The rest stays free, so a
+# task that runs long, a break or something unplanned does not push the day over.
+PLANNED_SHARE = 0.8
+
+
+def shape_windows(windows: Sequence[Window], prefs: Mapping[str, Any]) -> list[Window]:
+    """The chosen time as the plan may use it, after learned limits (approved values only).
+
+    A part of the day with a learned length holds at most that many minutes per
+    stretch, and when work takes ``pacePercent`` of its plan, only that share of
+    each stretch is planned: the rest stays free for the work to run long.
+    """
+    pace = (prefs.get("pacePercent") or 100) / 100
+    caps = prefs.get("periodMinutes") or {}
+    shaped = []
+    for begin, end in windows:
+        minutes = (end - begin).total_seconds() / 60
+        period = next((name for name, (low, high) in PERIODS.items() if low <= begin.hour < high), None)
+        if period in caps:
+            minutes = min(minutes, caps[period])
+        minutes = int(minutes / pace)
+        if minutes >= MIN_SHAPED_MINUTES:
+            shaped.append((begin, begin + timedelta(minutes=minutes)))
+    return shaped
+
+
+def leave_free(windows: Sequence[Window], block: int, daily_cap: int | None = None,
+               free_minutes: Mapping[str, float] | None = None, daily_used: Mapping[str, int] | None = None,
+               share: float | None = None) -> list[Window]:
+    """Keep ``PLANNED_SHARE`` of each stretch for work and leave the rest free.
+
+    A stretch no longer than one task keeps that task.  Applied last, to the stretches
+    the plan will use, so leaving time free never pulls in a part of the day the
+    daily cap would not have used.  A day whose cap already leaves that share of its
+    free time (``free_minutes``, before the cap picked) unplanned is left as it is: the
+    free share is of the chosen time, not a second cut of what the person can do.
+    """
+    share = PLANNED_SHARE if share is None else share
+    kept = []
+    for begin, end in windows:
+        minutes = (end - begin).total_seconds() / 60
+        day = begin.date().isoformat()
+        if daily_cap is not None and free_minutes and \
+                daily_cap - (daily_used or {}).get(day, 0) <= share * free_minutes.get(day, 0):
+            kept.append((begin, end))
+            continue
+        minutes = int(max(minutes * share, min(minutes, block)))
+        if minutes >= MIN_SHAPED_MINUTES:
+            kept.append((begin, begin + timedelta(minutes=minutes)))
+    return kept
+
+
+ODDS_DAYS = 28  # records this recent decide how likely each part of the day is picked
+
+
+def period_odds(records: Sequence[Mapping[str, Any]], today: str) -> dict[str, float]:
+    """How likely each part of the day is to be kept when a daily cap cuts the chosen time.
+
+    (finished + 1) / (planned + 2) of the recent tasks planned in it: with no records every
+    part is even, and a part that keeps going badly is still picked now and then, so it is
+    tried again and the odds can change.
+    """
+    cutoff = (datetime.fromisoformat(today) - timedelta(days=ODDS_DAYS)).date().isoformat()
+    counts: dict[str, list[int]] = {}
+    for r in records:
+        start = r.get("plannedStart") or ""
+        if not start or start[:10] < cutoff:
+            continue
+        period = next((name for name, (low, high) in PERIODS.items() if low <= int(start[11:13]) < high), None)
+        if period:
+            item = counts.setdefault(period, [0, 0])
+            item[0] += 1
+            item[1] += r.get("result") == "completed"
+    return {period: (finished + 1) / (planned + 2) for period, (planned, finished) in counts.items()}
+
+
+def pick_windows_for_cap(windows: Sequence[Window], cap: int, odds: Mapping[str, float], seed: str,
+                         preferred: str | None = None, daily_used: Mapping[str, int] | None = None) -> list[Window]:
+    """Which of a day's chosen stretches a daily cap keeps: drawn by each part of the day's odds, not the earliest first.
+
+    Whole stretches are kept (the scheduler still stops at the cap and keeps its breaks); a
+    known best part of the day (approved or declared) is kept first.  Work other projects
+    already hold that day (``daily_used``) counts against the cap.  The draw is seeded by
+    the user and the day, so the same plan request gives the same week.
+    """
+    import random
+    by_day: dict[str, list[Window]] = {}
+    for window in windows:
+        by_day.setdefault(window[0].date().isoformat(), []).append(window)
+    kept: list[Window] = []
+    for day, items in by_day.items():
+        room = cap - (daily_used or {}).get(day, 0)
+        if room <= 0:
+            continue
+        total = sum((end - begin).total_seconds() / 60 for begin, end in items)
+        if total <= room:
+            kept += items
+            continue
+        rng = random.Random(f"{seed}:{day}")
+        left, chosen = room, []
+        pool = [w for w in items if _period_of(w[0]) != preferred]
+        for window in [w for w in items if _period_of(w[0]) == preferred]:
+            if left > 0:
+                chosen.append(window)
+                left -= (window[1] - window[0]).total_seconds() / 60
+        while pool and left > 0:
+            weights = [odds.get(_period_of(begin), 0.5) for begin, _ in pool]
+            window = pool.pop(rng.choices(range(len(pool)), weights=weights)[0])
+            chosen.append(window)
+            left -= (window[1] - window[0]).total_seconds() / 60
+        kept += sorted(chosen)
+    return kept
+
+
+def _period_of(moment: datetime) -> str | None:
+    return next((name for name, (low, high) in PERIODS.items() if low <= moment.hour < high), None)
 
 
 def preferred_windows(windows: Sequence[Window], period: str) -> list[Window]:
@@ -112,12 +244,12 @@ def preferred_windows(windows: Sequence[Window], period: str) -> list[Window]:
 
 def place_tasks(
     tasks: Sequence[Mapping[str, Any]], windows: Sequence[Window], policy: PlanPolicy, *, fill_daily_cap: bool = False,
-    shrink_to_fit: bool = False,
+    shrink_to_fit: bool = False, daily_used: Mapping[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Placement | None]:
     """Schedule in the preferred period when it holds as much as the whole week does."""
     def run(chosen: Sequence[Window]):
         return schedule(tasks, list(chosen), daily_cap=policy.daily_cap_minutes, starter_minutes=policy.starter_minutes,
-                        fill_daily_cap=fill_daily_cap, shrink_to_fit=shrink_to_fit)
+                        fill_daily_cap=fill_daily_cap, shrink_to_fit=shrink_to_fit, daily_used=daily_used)
 
     entries, pending = run(windows)
     if policy.preferred_period is None:
@@ -151,6 +283,12 @@ RECOVERY_LABELS = {"replan": "시간을 다시 배치", "reduce": "할 일을 �
 def _value_text(field: str, value: Any) -> str:
     if field == "recoveryPreference":
         return RECOVERY_LABELS.get(value, str(value))
+    if value is None:
+        return "없음"
+    if field == "pacePercent":
+        return f"{value}%"
+    if field == "periodMinutes":
+        return ", ".join(f"{PERIOD_LABELS[k]} {v}분" for k, v in value.items()) or "없음"
     return f"{value}분"
 
 
@@ -175,7 +313,9 @@ def _project_reason(key: str, applied: str, field: str, override: Mapping[str, A
 
 def _task_length(facts, prefs, survey, patterns, overrides) -> dict[str, Any]:
     block = prefs["blockMinutes"]
-    applied = f"작업은 한 번에 {block}분 이하로 나눴습니다."
+    planned = paced_block(prefs)
+    applied = (f"작업은 한 번에 {block}분 이하로 나눴습니다." if planned == block
+               else f"작업은 계획상 {planned}분 이하로 나눴습니다(실제로는 {block}분쯤 걸리는 양).")
     if "blockMinutes" in overrides:
         return _project_reason("taskLength", applied, "blockMinutes", overrides["blockMinutes"], "집중 구간", patterns)
     for pattern in patterns:
@@ -273,6 +413,7 @@ def personalization_reasons(
     placement: Placement | None,
     starter_used: bool,
     memory_count: int = 0,
+    fill: str = "free",
 ) -> list[dict[str, Any]]:
     """Explain each profile value the plan applied. Free-text survey notes never appear here."""
     facts, prefs = user_profile["declaredFacts"], user_profile["planningPreferences"]
@@ -292,6 +433,26 @@ def personalization_reasons(
     if prefs.get("dailyPlannedMinutes"):
         reasons.append(project_or("dailyCap", f"하루에 최대 {prefs['dailyPlannedMinutes']}분만 계획했습니다.",
                                   "dailyPlannedMinutes", "하루 계획량", lambda: _daily_cap(facts, prefs, survey)))
+    if prefs.get("pacePercent"):
+        pace = prefs["pacePercent"]
+        reasons.append(project_or("pace", f"작업이 계획한 시간의 {pace}%쯤 걸려서, 고른 시간의 {round(10000 / pace)}%만 작업으로 채우고 나머지는 비웠습니다.",
+                                  "pacePercent", "걸리는 시간",
+                                  lambda: _reason("pace", f"고른 시간의 {round(10000 / pace)}%만 작업으로 채웠습니다.",
+                                                  f"확정한 프로필의 걸리는 시간 {pace}%를 따랐습니다.", "profile", ["pacePercent"])))
+    if prefs.get("periodMinutes"):
+        text = ", ".join(f"{PERIOD_LABELS[k]}에는 한 번에 {v}분까지" for k, v in prefs["periodMinutes"].items())
+        reasons.append(project_or("periodLength", f"{text}만 계획했습니다.", "periodMinutes", "시간대별 길이",
+                                  lambda: _reason("periodLength", f"{text}만 계획했습니다.",
+                                                  "확정한 프로필의 시간대별 길이를 따랐습니다.", "profile", ["periodMinutes"])))
+    if prefs.get("timeSlots"):
+        from ..project_profile import slots_text
+        reasons.append(_reason("ownHours", f"이 프로젝트는 정한 요일·시간({slots_text(prefs['timeSlots'])})에만 넣었습니다.",
+                               "이 프로젝트를 하는 요일·시간을 직접 정했습니다.", "project", ["timeSlots"]))
+    if fill == "full":
+        reasons.append(_reason("freeTime", "고른 시간을 비우지 않고 채웠습니다.", "고른 시간을 다 채워 달라고 했습니다.", "declared", ["fill"]))
+    else:
+        reasons.append(_reason("freeTime", f"고른 시간의 {round(PLANNED_SHARE * 100)}%쯤만 작업으로 채우고 나머지는 비워 두었습니다.",
+                               "일이 예상보다 길어지거나 쉬어 갈 때를 위한 여유입니다. ‘다 채워 줘’라고 하면 비우지 않아요.", "default", []))
     if placement is not None:
         reasons.append(_period(prefs, patterns, placement))
     style = _schedule_style(facts, prefs, survey)
@@ -313,6 +474,11 @@ def project_task_length_reasons(projects: Sequence[Mapping[str, Any]],
     for project in projects:
         profile = (settings.get(project["id"]) or {}).get("user_profile")
         overrides = (profile or {}).get("projectOverrides") or {}
+        slots = (profile or {}).get("planningPreferences", {}).get("timeSlots")
+        if slots:
+            from ..project_profile import slots_text
+            reasons.append(_reason(f"ownHours:{project['id']}", f"‘{project['title']}’은 정한 요일·시간({slots_text(slots)})에만 넣었습니다.",
+                                   "이 프로젝트를 하는 요일·시간을 직접 정했습니다.", "project", ["timeSlots"]))
         if "blockMinutes" not in overrides:
             continue
         facts, prefs = profile["declaredFacts"], profile["planningPreferences"]
