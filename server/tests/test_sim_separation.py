@@ -8,6 +8,7 @@ import re
 import unittest
 from pathlib import Path
 
+from sim.life import PEOPLE, SCENARIOS
 from sim.personas import PERSONAS, PROJECT
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,9 @@ class SimSeparationTests(unittest.TestCase):
 
     def test_the_app_never_names_a_virtual_user(self):
         marks = [PROJECT["id"], PROJECT["title"], *(p.label for p in PERSONAS), *(r for p in PERSONAS for r in p.remarks)]
+        # Daily-life cases (life.py): project ids and goals, people and what they say.
+        marks += [x for s in SCENARIOS for p in s.projects for x in (p.id, p.goal)]
+        marks += [*(p.label for p in PEOPLE), *(r for p in PEOPLE for r in p.remarks)]
         for path, text in sources(APP).items():
             for mark in marks:
                 self.assertNotIn(mark, text, f"{path} names the experiment: {mark}")

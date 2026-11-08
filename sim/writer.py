@@ -17,7 +17,8 @@ from openai import OpenAI
 
 MODEL = os.getenv("SIM_WRITER_MODEL") or os.getenv("OPENAI_PLAN_MODEL") or "gpt-6.1-terra"
 ATTEMPTS = 2
-REASONS = ["time_shortage", "task_too_large", "fatigue", "interruption", "underestimated"]
+# "other": a session the person skipped because the goal did not need it (life.py: 주 3회 already done).
+REASONS = ["time_shortage", "task_too_large", "fatigue", "interruption", "underestimated", "other"]
 LEVELS = ["good", "ok", "poor"]
 
 SCHEMA = {
@@ -61,7 +62,7 @@ def facts_for(outcomes, session, answers, remark):
     return {
         "tasks": [{"title": o.title, "result": {"completed": "다 함", "partial": "조금 함", "not_started": "못 함"}[o.result],
                    "minutes": o.actual if o.result != "not_started" else None, "reason": o.reason,
-                   "plannedMinutes": o.planned} for o in outcomes],
+                   "plannedMinutes": o.planned, **({"why": o.note} if getattr(o, "note", None) else {})} for o in outcomes],
         "day": {"focus": session["focus"], "condition": session["condition"], "place": session["place"]},
         "answers": answers, "remark": remark,
     }
