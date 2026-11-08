@@ -1,6 +1,7 @@
 import itertools
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from server.app.adaptive.llm_generator import COMMON_INSTRUCTIONS as RECOVERY_IN
 from server.app.adaptive.personalization import (
     PlanPolicy,
     day_slots,
+    leave_free,
+    paced_block,
     personalization_reasons,
     place_tasks,
     plan_policy,
@@ -90,6 +93,49 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(slots(("2030-01-07T19:00", "2030-01-07T22:00"), PlanPolicy(60, None, 5, None), 60), [60, 60, 45])
         self.assertEqual(slots(("2030-01-07T19:00", "2030-01-07T22:00"), PlanPolicy(60, 90, None, None), 60), [60, 30])
         self.assertEqual(day_slots(windows(("2030-01-07T19:00", "2030-01-07T19:05")), PlanPolicy(60, None, None, None), 60), [])
+
+    def test_less_work_than_time_is_spread_over_the_week(self):
+        # Three sessions in a week of five even days: days 1, 3 and 5, not three times on the first day.
+        week = windows(*[(f"2030-01-{d:02d}T10:00", f"2030-01-{d:02d}T12:00") for d in range(7, 12)])
+        entries, pending = schedule([task(f"연습 {i}", 60) for i in range(3)], week)
+        self.assertEqual(pending, [])
+        self.assertEqual([e["start"] for e in entries if e["kind"] == "task"],
+                         ["2030-01-07T10:00", "2030-01-09T10:00", "2030-01-11T10:00"])
+        # Work that fills its time still goes earliest first.
+        entries, _ = schedule([task(f"공부 {i}", 55) for i in range(10)], week)
+        self.assertEqual([e["start"] for e in entries if e["kind"] == "task"][:3],
+                         ["2030-01-07T10:00", "2030-01-07T11:00", "2030-01-08T10:00"])
+
+    def test_a_light_project_takes_its_days_first_in_a_shared_week(self):
+        week = windows(*[(f"2030-01-{d:02d}T10:00", f"2030-01-{d:02d}T12:00") for d in range(7, 10)])
+        light = [dict(task(f"운동 {i}", 30), projectId="light") for i in range(2)]
+        dense = [dict(task(f"공부 {i}", 50), projectId="dense") for i in range(6)]
+        policies = {"light": PlanPolicy(60, None, None, None), "dense": PlanPolicy(60, None, None, None)}
+        entries, pending = schedule([*dense, *light], week, project_policies=policies)
+        work = [e for e in entries if e["kind"] == "task"]
+        self.assertEqual(sorted(e["start"][:10] for e in work if e["projectId"] == "light"), ["2030-01-07", "2030-01-09"])
+        # The project that fills its time gives up what does not fit, not the light one.
+        self.assertTrue(pending and all(p["projectId"] == "dense" for p in pending))
+
+    def test_a_daily_cap_counts_what_other_projects_hold_that_day(self):
+        week = windows(("2030-01-07T09:00", "2030-01-07T12:00"), ("2030-01-08T09:00", "2030-01-08T12:00"))
+        used = {"2030-01-07": 90}
+        entries, pending = schedule([task("A", 60), task("B", 60)], week, daily_cap=120, daily_used=used)
+        self.assertEqual([(e["start"][:10], e["minutes"]) for e in entries if e["kind"] == "task"], [("2030-01-08", 60), ("2030-01-08", 60)])
+        self.assertEqual(day_slots(week, PlanPolicy(60, 120, None, None), 60, used)[0], {"date": "2030-01-07", "minutes": [30]})
+
+    def test_part_of_each_stretch_is_left_free(self):
+        two_hours = windows(("2030-01-07T19:00", "2030-01-07T21:00"))
+        self.assertEqual(leave_free(two_hours, 60), windows(("2030-01-07T19:00", "2030-01-07T20:36")))
+        one_hour = windows(("2030-01-07T19:00", "2030-01-07T20:00"))
+        self.assertEqual(leave_free(one_hour, 60), one_hour)  # one task's stretch keeps its task
+        # A daily cap of 120 in 240 free minutes already leaves half the day free: no second cut.
+        self.assertEqual(leave_free(two_hours, 60, 120, {"2030-01-07": 240}), two_hours)
+        self.assertEqual(leave_free(two_hours, 60, 200, {"2030-01-07": 240}), windows(("2030-01-07T19:00", "2030-01-07T20:36")))
+
+    def test_a_task_is_planned_shorter_when_work_takes_longer(self):
+        self.assertEqual(paced_block({"blockMinutes": 60, "pacePercent": 140}), 42)
+        self.assertEqual(paced_block({"blockMinutes": 60}), 60)
 
     def test_tasks_longer_than_the_days_rest_are_split_to_fill_the_cap(self):
         # Real gpt-4o-mini output for a 50-minute / 90-minute-a-day user: every task 50 minutes.
@@ -527,7 +573,7 @@ class TwoUsersApiTests(unittest.TestCase):
 
 
 class FillTheDayLLM(PlanLLM):
-    """Sizes every task to the focus block first; after the retry, fits each day's slots."""
+    """Fills the week with tasks of the focus block first; after the retry, fits each day's slots."""
 
     async def generate(self, **kwargs):
         if kwargs["name"] != "execution_tasks":
@@ -535,9 +581,9 @@ class FillTheDayLLM(PlanLLM):
         self.calls.append(kwargs)
         context = kwargs["context"]
         if context.get("previousErrors"):
-            sizes = [m for day in context["daySlots"] for m in day["minutes"]][:4]
+            sizes = [m for day in context["daySlots"] for m in day["minutes"]]
         else:
-            sizes = [context["maxBlockMinutes"]] * 4
+            sizes = [context["maxBlockMinutes"]] * 6
         return {"tasks": [{"title": f"보고서 {i}", "minutes": m, "doneWhen": "한 부분 완성", "dueDate": None}
                           for i, m in enumerate(sizes, 1)]}
 
@@ -553,8 +599,9 @@ class StubbornLLM(PlanLLM):
                            "doneWhen": "한 부분 완성", "dueDate": None} for i in range(1, 7)]}
 
 
+@mock.patch("server.app.adaptive.personalization.PLANNED_SHARE", 1.0)  # these check filling, not the free share
 class FillTheDayTests(unittest.TestCase):
-    """The time the user chose is used: a day is full before work moves to the next one."""
+    """Work that fills the week fills it: a day is full before work moves to the next one."""
 
     def test_a_day_is_filled_before_the_next(self):
         answers = {**USER_A, "focusMinutes": 60, "dailyMinutes": None, "energy": "unknown"}
@@ -578,7 +625,7 @@ class FillTheDayTests(unittest.TestCase):
         first, retry = llm.calls
         self.assertEqual(first["context"]["daySlots"][0], {"date": "2030-01-07", "minutes": [60, 60, 50]})
         self.assertEqual(first["context"]["budgetMinutes"], 340)
-        self.assertIn("1/7(월)에 50분이 비었는데 다음 작업 '보고서 3'(60분)", retry["context"]["previousErrors"][0])
+        self.assertTrue(any("1/7(월)에 50분이 비었는데 다음 작업 '보고서 3'(60분)" in e for e in retry["context"]["previousErrors"]))
         monday = [(e["start"][11:], e["minutes"]) for e in state["planDraft"]["entries"]
                   if e["kind"] == "task" and e["start"].startswith("2030-01-07")]
         self.assertEqual(monday, [("19:00", 60), ("20:05", 60), ("21:10", 50)])

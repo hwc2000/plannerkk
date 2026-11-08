@@ -31,6 +31,19 @@ class SurveyAnswers(BaseModel):
         return self
 
 
+class TimeSlot(BaseModel):
+    """One hour of the week: weekday (0 = Monday) and the hour it starts (8-22)."""
+    model_config = ConfigDict(extra="forbid")
+    day: int = Field(ge=0, le=6, strict=True)
+    hour: int = Field(ge=8, le=22, strict=True)
+
+
+def unique_slots(slots):
+    if slots is not None and len({(s.day, s.hour) for s in slots}) != len(slots):
+        raise ValueError("같은 요일·시간을 두 번 넣을 수 없어요.")
+    return slots
+
+
 class PlanningPreferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
     blockMinutes: int = Field(ge=1, le=180, strict=True)
@@ -46,10 +59,14 @@ class PlanningPreferences(BaseModel):
     # in percent of the plan, and the longest stretch of work a part of the day holds.
     pacePercent: int | None = Field(default=None, ge=100, le=300, strict=True)
     periodMinutes: dict[Literal["morning", "afternoon", "evening"], Annotated[int, Field(ge=5, le=180, strict=True)]] | None = None
+    # Project layer only (a value the user states for one project): the weekdays and hours that
+    # project is done in.  An empty list is the answer "no fixed time"; None: not asked.
+    timeSlots: list[TimeSlot] | None = Field(default=None, max_length=105)
     status: Literal["provisional", "confirmed"]
 
     @model_validator(mode="after")
     def bounded(self):
+        unique_slots(self.timeSlots)
         if self.dailyPlannedMinutes is not None and self.blockMinutes > self.dailyPlannedMinutes:
             raise ValueError("집중 구간은 하루 작업 예산을 넘을 수 없습니다.")
         if self.starterMinutes is not None and self.starterMinutes > self.blockMinutes:

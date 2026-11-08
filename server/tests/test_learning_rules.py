@@ -160,10 +160,65 @@ class LearningRuleTests(unittest.TestCase):
             self.record(plan_id, entries[i + 2], "partial", 5, "fatigue")
             state = self.record(plan_id, entries[i + 3], "not_started", 0, "fatigue")
         [cap] = self.proposals(state, "dailyPlannedMinutes")
-        self.assertEqual((cap["ruleVersion"], cap["proposedChanges"]["dailyPlannedMinutes"]), ("daily-cap-v1", {"from": None, "to": 120}))
+        self.assertEqual((cap["ruleVersion"], cap["proposedChanges"]["dailyPlannedMinutes"]), ("daily-cap-v2", {"from": None, "to": 120}))
+        self.assertIsNone(cap["projectId"])  # a day's limit is the person's, not one project's
         # The evenings were missed after a day's worth of work: that is not the evening's fault.
         self.assertEqual(self.proposals(state, "focusTime"), [])
         self.assertEqual(self.proposals(state, "periodMinutes"), [])
+
+    def put_shared_plan(self, tasks):
+        """A confirmed week of (start, minutes, project) tasks from two projects."""
+        state = self.store.read()
+        profile = state["profile"]
+        projects = [{"id": pid, "title": pid, "goal": pid, "startDate": "2030-01-01", "dueDate": "2030-03-31"} for pid in ("a", "b")]
+        entries = [{"id": str(uuid4()), "kind": "task", "title": f"{project} {i + 1}", "minutes": minutes, "doneWhen": "정리",
+                    "dueDate": None, "start": start, "completed": False, "projectId": project, "projectProfileId": None,
+                    "end": (datetime.fromisoformat(start) + timedelta(minutes=minutes)).isoformat(timespec="minutes")}
+                   for i, (start, minutes, project) in enumerate(tasks)]
+        plan = {"id": str(uuid4()), "profileId": profile["id"], "profileVersion": profile["version"], "projectId": None,
+                "project": None, "projects": projects, "goal": "공부", "startDate": "2030-01-07", "endDate": "2030-01-13",
+                "timezone": "Asia/Seoul", "status": "confirmed", "slots": [], "entries": entries, "pendingTasks": []}
+        self.revision = self.store.change(self.revision, lambda state: state.update(plan=plan))["revision"]
+        return plan["id"], entries
+
+    def test_a_daily_limit_is_learned_from_the_whole_day_of_every_project(self):
+        # Project a always finishes; b, later in the day, runs out.  Neither alone shows the day's limit.
+        plan_id, entries = self.put_shared_plan([(self.day(d, h, m), n, p) for d in (7, 8, 9)
+                                                 for h, m, n, p in ((9, 0, 60, "a"), (10, 5, 55, "a"), (19, 0, 60, "b"), (20, 5, 55, "b"))])
+        for i in range(0, 12, 4):
+            self.record(plan_id, entries[i], "completed", 60)
+            self.record(plan_id, entries[i + 1], "completed", 55)
+            self.record(plan_id, entries[i + 2], "partial", 5, "fatigue")
+            state = self.record(plan_id, entries[i + 3], "not_started", 0, "fatigue")
+        [cap] = self.proposals(state, "dailyPlannedMinutes")
+        self.assertEqual((cap["projectId"], cap["proposedChanges"]["dailyPlannedMinutes"]), (None, {"from": None, "to": 120}))
+        self.assertIn("모든 프로젝트를 합쳐", cap["reason"])
+
+    def test_a_partial_task_without_minutes_is_left_blank(self):
+        plan_id, entries = self.put_plan([(self.day(d, h, m), n) for d in (7, 8, 9)
+                                          for h, m, n in ((9, 0, 60), (10, 5, 55), (19, 0, 60), (20, 5, 55))])
+        for i in range(0, 12, 4):
+            self.record(plan_id, entries[i], "completed", 60)
+            self.record(plan_id, entries[i + 1], "partial", None, "fatigue")  # "조금 했어요", no minutes
+            self.record(plan_id, entries[i + 2], "partial", None, "fatigue")
+            state = self.record(plan_id, entries[i + 3], "not_started", 0, "fatigue")
+        # "조금 했어요" is nearly not done, with no number: no cap is made out of it.
+        self.assertEqual(self.proposals(state, "dailyPlannedMinutes"), [])
+        # The evening misses still come after the day's work (counted at least 0 minutes): not the evening's fault.
+        self.assertEqual(self.proposals(state, "focusTime"), [])
+
+    def test_work_that_uses_up_its_time_and_is_still_not_done_steps_the_pace_up(self):
+        plan_id, entries = self.put_plan([(self.day(d, 9), 60) for d in range(7, 11)])
+        for task in entries:
+            state = self.record(plan_id, task, "partial", 60, "underestimated")
+        [pace] = self.proposals(state, "pacePercent")
+        self.assertEqual(pace["proposedChanges"]["pacePercent"], {"from": None, "to": 125})
+        self.call(f"/api/execution/proposals/{pace['id']}/approve")
+        slots = [{"day": d, "hour": h} for d in range(7) for h in (9, 10)]
+        self.call("/api/execution/settings", method="put", settings={"slots": slots, "view": "timeline"})
+        draft = self.call("/api/execution/plan", goal="공부", startDate="2030-01-07", consent=True)["planDraft"]
+        # A 60-minute focus at 125% is a 48-minute task on the plan.
+        self.assertTrue(all(e["minutes"] <= 48 for e in draft["entries"] if e["kind"] == "task"))
 
     def test_work_that_takes_longer_leaves_time_free_in_the_plan(self):
         plan_id, entries = self.put_plan([(self.day(d, 9), 60) for d in range(7, 11)])

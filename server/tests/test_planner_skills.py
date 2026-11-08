@@ -96,7 +96,46 @@ class PlannerSkillTests(unittest.TestCase):
         records = self.llm.chat_calls[1]["context"]["lookups"]["records"]
         self.assertEqual((records["records"], records["waitingChanges"]), ([], []))
 
+    def no_fixed_hours(self, project_id="essay"):
+        """The user already answered that this project has no set hours ("딱히 없어요")."""
+        self.call(f"/api/execution/projects/{project_id}/profile", method="put", overrides={"timeSlots": []})
+
+    def test_before_a_projects_first_plan_its_hours_are_asked_once(self):
+        self.llm.route = {"skill": "plan_create", "lookups": [], "reply": None}
+        self.llm.replies = {"planner_plan_create": {"reply": "정리했어요", "ready": True, "goal": "에세이", "startDate": MONDAY}}
+        _, thread = self.say("에세이 계획해 줘")
+        self.assertEqual([c["name"] for c in self.llm.chat_calls], ["planner_route"])
+        self.assertIn("요일·시간이 따로 정해져 있나요", thread["messages"][-1]["content"])
+        self.assertIsNone(thread["action"])
+        # Asked once: asking for the plan again without answering goes ahead.
+        _, thread = self.say("그냥 계획해 줘")
+        self.assertEqual(thread["action"]["kind"], "plan")
+
+    def test_the_hours_a_project_is_done_in_become_a_card(self):
+        self.llm.route = {"skill": "project_settings", "lookups": [], "reply": None}
+        self.llm.replies = {"planner_project_settings": {"reply": "월·수·금 저녁 7시죠.", "projectSettings": {
+            "blockMinutes": None, "dailyPlannedMinutes": None, "starterMinutes": None, "recoveryPreference": None,
+            "timeSlots": [{"day": "금", "hour": 19}, {"day": "월", "hour": 19}, {"day": "수", "hour": 19}]}}}
+        _, thread = self.say("운동은 월수금 저녁 7시에 해요")
+        card = thread["action"]
+        self.assertEqual(card["kind"], "project_settings")
+        self.assertEqual(card["payload"]["overrides"]["timeSlots"], [{"day": 0, "hour": 19}, {"day": 2, "hour": 19}, {"day": 4, "hour": 19}])
+        schema = self.llm.chat_calls[1]["schema"]["properties"]["projectSettings"]
+        self.assertEqual(set(schema["required"]), set(schema["properties"]))  # strict schemas name every property
+        # "딱히 없어요" is an answer too: an empty list, so the question is not asked again.
+        self.llm.replies["planner_project_settings"]["projectSettings"]["timeSlots"] = []
+        _, thread = self.say("딱히 없어요")
+        self.assertEqual(thread["action"]["payload"]["overrides"]["timeSlots"], [])
+
+    def test_filling_all_the_chosen_time_is_a_weekly_time_card(self):
+        self.llm.route = {"skill": "availability", "lookups": [], "reply": None}
+        self.llm.replies = {"planner_availability": {"reply": "고른 시간을 다 채우는 거죠.", "change": None, "slots": None, "fill": "full"}}
+        _, thread = self.say("가용 시간 다 채워 줘")
+        self.assertEqual((thread["action"]["kind"], thread["action"]["payload"]["fill"]), ("settings", "full"))
+        self.assertEqual(thread["action"]["change"]["fill"], "full")
+
     def test_a_skill_always_reads_what_it_needs(self):
+        self.no_fixed_hours()
         self.plan(ESSAY, "에세이 초안")
         self.llm.route = {"skill": "plan_create", "lookups": [], "reply": None}
         self.llm.replies = {"planner_plan_create": {"reply": "정리했어요", "ready": True, "goal": "에세이 퇴고", "startDate": None}}
@@ -110,6 +149,7 @@ class PlannerSkillTests(unittest.TestCase):
         self.assertEqual(thread["action"]["payload"], {"goal": "에세이 퇴고", "startDate": MONDAY})
 
     def test_adjusting_without_a_week_plans_instead(self):
+        self.no_fixed_hours()
         self.llm.route = {"skill": "plan_adjust", "lookups": [], "reply": None}
         self.llm.replies = {"planner_plan_create": {"reply": "정리했어요", "ready": True, "goal": "에세이", "startDate": MONDAY}}
 

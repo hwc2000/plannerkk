@@ -124,11 +124,26 @@ def test_single_project_only_fills_daily_cap_after_retries_exhausted():
     ctx["source_planning_context"]["userProfile"] = profile(60)
     ctx["available_windows"].append(["2030-01-08T09:00", "2030-01-08T12:00"])
     value["retry_limit"] = 1
+    filling = [task("A", 40), task("B", 40), task("C", 30)]  # the capped week holds 120 minutes
     with unittest.TestCase().assertRaises(PlanValidationError):
-        generate([task("A", 40), task("B", 40)], value)
+        generate(filling, value)
     value["retry_count"] = 1
-    plan, _ = generate([task("A", 40), task("B", 40)], value)
+    plan, _ = generate(filling, value)
     assert any("(1/2)" in e["title"] for e in plan["entries"])
+
+
+def test_lighter_work_than_the_capped_week_is_spread_not_split():
+    value = state()
+    ctx = value["planning_context"]
+    ctx["projects"] = PROJECTS[:1]
+    ctx["project_settings"] = {}
+    ctx["source_planning_context"]["userProfile"] = profile(60)
+    ctx["available_windows"].append(["2030-01-08T09:00", "2030-01-08T12:00"])
+    value["retry_limit"] = 1
+    plan, llm = generate([task("A", 40), task("B", 40)], value)
+    assert len(llm.calls) == 1
+    assert [(e["title"], e["start"][:10]) for e in plan["entries"] if e["kind"] == "task"] == [
+        ("A", "2030-01-07"), ("B", "2030-01-08")]
 
 
 def test_each_project_starts_once_per_day_and_resets_next_day():

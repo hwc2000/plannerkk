@@ -6,8 +6,11 @@ Rules run after every record (``propose_all``):
 - grow-revert-v1: back to the block before a longer one that made things worse.
 - focus-grow-v1: a longer focus block when block-sized work keeps getting done,
   and most of everything planned since the last change was finished.
-- daily-cap-v1: a daily plan the user can really get through, from the days they ran out.
-- pace-v1: how much longer than planned finished work really takes; the plan leaves that time free.
+- daily-cap-v2: a daily plan the user can really get through, from the days they ran out.  A day is
+  one day for the person: every project's tasks that day count, and the cap is the user's (layer 1).
+- pace-v1: how much longer than planned work really takes; the plan makes tasks that much shorter
+  and leaves that time free.  Work that used up its planned time and still was not done says the
+  pace is above what it shows: one step up, then look again.
 - period-cap-v1: a shorter stretch for one part of the day that keeps falling short
   while the rest goes well.
 - focus-time-v1: the part of the day the user finishes work best.
@@ -70,14 +73,20 @@ def median(values):
     return values[len(values) // 2] if values else None
 
 
-def worked_minutes(record):
-    """Minutes the user worked on a task; a partial task without minutes counts 0 (a lower bound)."""
+def worked_minutes(record, unknown=None):
+    """Minutes the user worked on a task; for a partial task without minutes, ``unknown``.
+
+    "조금 했어요" without minutes means less than half and nearly not done; the app does not ask
+    again for the minutes.  So no rule makes a number out of it: setting a daily cap leaves the
+    day out (None), and telling whether a miss came after a day's work counts it as 0 (a lower
+    bound, which can only explain fewer misses).
+    """
     if record['result'] == 'not_started':
         return 0
     actual = record.get('actualMinutes')
     if type(actual) is int and actual > 0:
         return actual
-    return record['plannedMinutes'] if record['result'] == 'completed' else 0
+    return record['plannedMinutes'] if record['result'] == 'completed' else unknown
 
 
 def record_day(record):
@@ -105,8 +114,10 @@ def pace_explained(records):
     return explained
 
 
-def ran_out_days(records):
+def ran_out_days(records, unknown=None):
     """Days the user got through part of the plan and then ran out, with the minutes worked and planned.
+
+    A day with a partial task of unknown minutes is left out unless ``unknown`` gives them a value.
 
     A day with nothing finished says the tasks were too big, not that the day was too long;
     a shortage after an overrun says work takes longer than planned (pace), not that energy ran out.
@@ -120,7 +131,7 @@ def ran_out_days(records):
                                              (r['result'] != 'completed' and r.get('reasonCode') in LOAD_REASONS))
                    for r in items):
             continue
-        worked = [worked_minutes(r) for r in items]
+        worked = [worked_minutes(r, unknown) for r in items]
         if None in worked:
             continue
         out.append({'date': day, 'worked': sum(worked), 'planned': sum(r['plannedMinutes'] for r in items)})
@@ -129,7 +140,7 @@ def ran_out_days(records):
 
 def load_explained(records):
     """Ids of misses that come after the user had worked about a day's worth (their own median)."""
-    capacity = median([d['worked'] for d in ran_out_days(records)])
+    capacity = median([d['worked'] for d in ran_out_days(records, unknown=0)])
     if not capacity:
         return set()
     explained = set()
@@ -138,8 +149,7 @@ def load_explained(records):
         for r in items:
             if r['result'] != 'completed' and before >= capacity * LOAD_EXPLAINS:
                 explained.add(r['id'])
-            worked = worked_minutes(r)
-            before += worked or 0
+            before += worked_minutes(r, unknown=0)
     return explained
 
 
@@ -394,22 +404,33 @@ def propose_revert(state, project_id=None):
              f'늘리기 전의 {before}분으로 되돌리자고 제안합니다.', [r['id'] for r in records], REVERT_RULE_VERSION)
 
 
-# daily-cap-v1: a daily plan the user can get through.
-CAP_RULE_VERSION = 'daily-cap-v1'
+# daily-cap-v2: a daily plan the user can get through (the whole day, every project).
+CAP_RULE_VERSION = 'daily-cap-v2'
 CAP_MIN_DAYS = 3
 CAP_RECENT_DAYS = 5
 CAP_SHARE = 0.85          # propose only when the user manages clearly less than what was planned
 
 
+def day_records(state, profile):
+    """Every record of the current profile from the last window, any project: what the person's days held."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
+    return [r for r in state['executionRecords']
+            if r.get('profileId') == profile['id'] and datetime.fromisoformat(r['createdAt']) >= cutoff]
+
+
 def propose_daily_cap(state, project_id=None):
-    """A daily plan as long as the user really works before running out, from their own days."""
-    scope = _scope(state, project_id)
-    if not scope:
+    """A daily plan as long as the user really works before running out, from their own days.
+
+    How much a day holds belongs to the person, not to one project: the days are read with every
+    project's tasks in them, and the cap goes to the user profile.  ``project_id`` is ignored.
+    """
+    profile = state['profile']
+    if not profile:
         return
-    profile, project_profile, prefs = scope
-    if _pending(state, profile, project_id, 'dailyPlannedMinutes'):
+    prefs = profile['planningPreferences']
+    if _pending(state, profile, None, 'dailyPlannedMinutes'):
         return
-    records = _scope_records(state, profile, project_id, (project_profile or {}).get('id'), 0, 0)
+    records = day_records(state, profile)
     days = ran_out_days(records)[-CAP_RECENT_DAYS:]
     if len(days) < CAP_MIN_DAYS:
         return
@@ -420,10 +441,11 @@ def propose_daily_cap(state, project_id=None):
     to = max(floor_step(worked), prefs['blockMinutes'])
     if current is not None and to >= current:
         return
-    ids = [r['id'] for r in records if r['plannedStart'][:10] in {d['date'] for d in days}]
-    scope_text = '이 프로젝트에서 ' if project_id else ''
-    _propose(state, profile, project_profile, project_id, {'dailyPlannedMinutes': {'from': current, 'to': to}},
-             f'{scope_text}최근 {len(days)}일은 하루 {planned}분쯤 계획했는데 {worked}분쯤 하고 지치거나 시간이 모자랐습니다.',
+    ids = [r['id'] for r in records if (r.get('plannedStart') or '')[:10] in {d['date'] for d in days}]
+    several = len({r.get('projectId') for r in records if r['id'] in ids}) > 1
+    _propose(state, profile, None, None, {'dailyPlannedMinutes': {'from': current, 'to': to}},
+             f'최근 {len(days)}일은 {"모든 프로젝트를 합쳐 " if several else ""}하루 {planned}분쯤 계획했는데 '
+             f'{worked}분쯤 하고 지치거나 시간이 모자랐습니다.',
              f'하루에 {to}분까지만 계획하자고 제안합니다.', ids, CAP_RULE_VERSION)
 
 
@@ -432,10 +454,18 @@ PACE_RULE_VERSION = 'pace-v1'
 PACE_MIN_RECORDS = 4
 PACE_FROM = 1.2           # finished work taking at least this many times the plan leaves time free
 MAX_PACE_PERCENT = 300
+# Tasks that used up their planned time and still were not done: their real pace is above what they
+# show, so the value goes one step past it and the next records say whether that was enough.
+PACE_UNFINISHED = 3
+PACE_STEP = 1.25
+
+
+def _round_up(value, step=STEP_MINUTES):
+    return -(-int(value) // step) * step
 
 
 def propose_pace(state, project_id=None):
-    """When finished tasks keep taking longer than planned, plan less into each stretch of time."""
+    """When work keeps taking longer than planned, plan shorter tasks and leave the time free."""
     scope = _scope(state, project_id)
     if not scope:
         return
@@ -450,13 +480,26 @@ def propose_pace(state, project_id=None):
     ratio = median([r['actualMinutes'] / r['plannedMinutes'] for r in records])
     current = prefs.get('pacePercent') or 100
     to = min(MAX_PACE_PERCENT, int(round(ratio * 100 / STEP_MINUTES)) * STEP_MINUTES)
-    if ratio < PACE_FROM or to <= current:
+    latest = records[-PACE_MIN_RECORDS:]
+    unfinished = [r for r in latest if r['result'] != 'completed']
+    stepped = len(unfinished) >= PACE_UNFINISHED and len({record_day(r) for r in unfinished}) >= SIZE_MIN_DAYS
+    if stepped:
+        to = min(MAX_PACE_PERCENT, max(to, _round_up(max(current, ratio * 100) * PACE_STEP)))
+    elif ratio < PACE_FROM:
+        return
+    if to <= current:
         return
     scope_text = '이 프로젝트에서 ' if project_id else ''
+    if stepped:
+        reason = (f'{scope_text}최근 작업 {len(latest)}건 중 {len(unfinished)}건이 계획한 시간을 다 쓰고도 끝나지 않았습니다'
+                  f'(실제로는 계획의 {ratio:.1f}배보다 더 걸림).')
+        sizing = (f'계획의 {to}%쯤 걸린다고 보고, 작업 하나를 그만큼 짧게 잡고 남는 시간은 비워 두자고 제안합니다. '
+                  '그래도 끝나지 않으면 한 단계 더 조정합니다.')
+    else:
+        reason = f'{scope_text}작업 {len(records)}건이 계획한 시간의 {ratio:.1f}배쯤 걸렸습니다.'
+        sizing = f'작업 하나를 그만큼 짧게 잡고, 계획할 때 시간의 {round(10000 / to)}%만 작업으로 채우고 나머지는 비워 두자고 제안합니다.'
     _propose(state, profile, project_profile, project_id, {'pacePercent': {'from': prefs.get('pacePercent'), 'to': to}},
-             f'{scope_text}작업 {len(records)}건이 계획한 시간의 {ratio:.1f}배쯤 걸렸습니다.',
-             f'계획할 때 시간의 {round(10000 / to)}%만 작업으로 채우고 나머지는 비워 두자고 제안합니다.',
-             [r['id'] for r in records], PACE_RULE_VERSION)
+             reason, sizing, [r['id'] for r in records], PACE_RULE_VERSION)
 
 
 # period-cap-v1: a shorter stretch in a part of the day that keeps falling short.

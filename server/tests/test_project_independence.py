@@ -98,6 +98,52 @@ class ProjectIndependenceTests(unittest.TestCase):
     def tasks(plan, project_id):
         return [e for e in plan["entries"] if e["kind"] == "task" and e.get("projectId") == project_id]
 
+    def joint(self, project, goal, *others):
+        draft = self.call("/api/execution/plan", goal=goal, startDate="2030-01-07", consent=True, project=project,
+                          projects=[project, *others], merge=True)["planDraft"]
+        return self.call("/api/execution/plan/confirm", planId=draft["id"], project=draft["project"])["plan"]
+
+    def test_the_first_plan_of_the_week_plans_every_open_project_together(self):
+        week = self.joint(ESSAY, "에세이 초안", APP)
+        [call] = self.llm.plan_calls
+        self.assertEqual([p["id"] for p in call["context"]["projects"]], ["essay", "app"])
+        self.assertTrue(self.tasks(week, "essay") and self.tasks(week, "app"))
+        self.assertEqual(week["projectGoals"], {"essay": "에세이 초안", "app": "로그인 화면"})
+        # Asking again in the other project's chat replans only that project; the first one keeps its tasks.
+        essay = [e["id"] for e in self.tasks(week, "essay")]
+        week = self.joint(APP, "로그인 화면", ESSAY)
+        self.assertEqual([p["id"] for p in self.llm.plan_calls[-1]["context"]["projects"]], ["app"])
+        self.assertEqual([e["id"] for e in self.tasks(week, "essay")], essay)
+
+    def test_a_project_with_its_own_hours_is_planned_only_there(self):
+        # 에세이 is done Monday, Wednesday and Friday at 19:00 (the user said so); 앱 개발 has no set hours.
+        own = [{"day": d, "hour": 19} for d in (0, 2, 4)]
+        self.call("/api/execution/projects/essay/profile", method="put", overrides={"timeSlots": own})
+        week = self.joint(ESSAY, "에세이 초안", APP)
+        essay, app = self.tasks(week, "essay"), self.tasks(week, "app")
+        self.assertTrue(essay and app)
+        hours = {(datetime.fromisoformat(e["start"]).weekday(), datetime.fromisoformat(e["start"]).hour) for e in essay}
+        self.assertLessEqual(hours, {(0, 19), (2, 19), (4, 19)})
+        self.assertFalse([e for e in app if (datetime.fromisoformat(e["start"]).weekday(), datetime.fromisoformat(e["start"]).hour)
+                          in {(0, 19), (2, 19), (4, 19)}])
+        [call] = self.llm.plan_calls
+        essay_context = next(p for p in call["context"]["projects"] if p["id"] == "essay")
+        self.assertTrue(essay_context["fixedTimes"])
+        # The user's own hours are not shortened by the free share: each one keeps all its time.
+        self.assertEqual([d["minutes"] for d in essay_context["daySlots"]][0], [BASE_BLOCK, 25])
+
+    def test_a_projects_own_hours_count_even_outside_the_weeks_grid(self):
+        self.call("/api/execution/projects/essay/profile", method="put", overrides={"timeSlots": [{"day": 0, "hour": 9}]})
+        week = self.joint(ESSAY, "에세이 초안")
+        self.assertEqual({e["start"] for e in self.tasks(week, "essay")} and
+                         {e["start"][:13] for e in self.tasks(week, "essay")}, {"2030-01-07T09"})
+
+    def test_a_project_outside_the_week_or_ended_does_not_come_along(self):
+        later = {**APP, "id": "later", "startDate": "2030-02-01", "dueDate": "2030-02-28"}
+        self.call("/api/execution/projects/app/close", project=APP, outcome="completed")
+        self.joint(ESSAY, "에세이 초안", APP, later)
+        self.assertEqual([p["id"] for p in self.llm.plan_calls[-1]["context"]["projects"]], ["essay"])
+
     def test_each_project_plans_and_records_with_its_own_settings(self):
         essay_settings = self.set_project("essay", blockMinutes=15)
         self.llm.minutes = {"essay": 15}
