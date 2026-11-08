@@ -34,3 +34,19 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m unittest server/tests/test_*.py -v
+
+  deploy:
+    name: Deploy to Render
+    needs: [web, api]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::warning::RENDER_DEPLOY_HOOK_URL secret is not set, skipping deploy"
+            exit 0
+          fi
+          curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL" > /dev/null
+          echo "Render deploy requested for ${GITHUB_SHA::7}"
