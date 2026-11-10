@@ -77,7 +77,35 @@ class UserInsightTests(unittest.TestCase):
         self.assertEqual(self.place(state)["status"], "supported")
         state["checkInSessions"] += [session(i, focus="poor") for i in range(5)]
         self.assertEqual(self.place(state)["status"], "mixed")  # lifetime 80% cannot hide reversal
-        self.assertEqual(self.candidates({"checkInSessions": [session(i) for i in range(40, 45)]}), [])
+        old = ui.WINDOW_DAYS + 10
+        self.assertEqual(self.candidates({"checkInSessions": [session(i) for i in range(old, old + 5)]}), [])
+
+    def test_recent_days_weigh_more_than_old_ones(self):
+        # Five poor days six weeks ago and six good days this week: equal weights said "mixed" (6/11),
+        # but the old days have faded, so the place is supported now.
+        state = {"checkInSessions": [session(i) for i in range(6)] + [session(i, focus="poor") for i in range(40, 45)]}
+        p = self.place(state)
+        self.assertAlmostEqual(p["goodFocusRatio"], 6 / 11)
+        self.assertGreater(p["weightedGoodFocusRatio"], .85)
+        self.assertEqual(p["status"], "supported")
+        self.assertEqual(p["halfLifeDays"], 14)
+        # The other way round: good long ago, poor lately, is not a recommendation.
+        state = {"checkInSessions": [session(i, focus="poor") for i in range(6)] + [session(i) for i in range(40, 52)]}
+        p = self.place(state)
+        self.assertGreater(p["goodFocusRatio"], .6)
+        self.assertLess(p["weightedGoodFocusRatio"], .3)
+        self.assertEqual(p["status"], "mixed")
+
+    def test_records_inside_the_window_still_count_less_with_age(self):
+        # Same three good days and one poor day; only when the poor day is: today or two months ago.
+        lately = self.place({"checkInSessions": [session(i) for i in (20, 21, 22)] + [session(0, focus="poor")]})
+        long_ago = self.place({"checkInSessions": [session(i) for i in (20, 21, 22)] + [session(60, focus="poor")]})
+        self.assertEqual(lately["goodFocusRatio"], long_ago["goodFocusRatio"])
+        self.assertLess(lately["weightedGoodFocusRatio"], .7)
+        self.assertGreater(long_ago["weightedGoodFocusRatio"], .9)
+        policy = ui.insights_for_ai({"checkInSessions": []})["evidencePolicy"]
+        self.assertEqual(policy["recency"]["halfLifeDays"], 14)
+        self.assertEqual(policy["windowDays"], 90)
 
     def test_project_scope_and_global_declarations_do_not_mutate_profile(self):
         state = {"checkInSessions": [session(i) for i in range(3)] + [session(i, place="집", project="app", focus="poor") for i in range(3)],
@@ -142,7 +170,7 @@ class UserInsightTests(unittest.TestCase):
         for _ in range(6):
             ui.apply_insights(state, {"place": "카페"})
         self.assertEqual(state["userInsights"]["place"]["evidence"]["confirmations"], 1)
-        ui.apply_insights(state, {"place": "카페"}, event_id="old", date=session(40)["date"])
+        ui.apply_insights(state, {"place": "카페"}, event_id="old", date=session(ui.WINDOW_DAYS + 10)["date"])
         self.assertEqual(state["userInsights"]["place"]["evidence"]["confirmations"], 1)
         self.assertEqual(len(state["userInsights"]["place"]["evidence"]["samples"]), 2)
 
@@ -205,8 +233,8 @@ class UserInsightTests(unittest.TestCase):
                              ("2026-10-27T00:00:00+00:00", "2026-10-27")):
             with self.subTest(instant=instant), patch.object(ui, "_now", return_value=datetime.fromisoformat(instant)):
                 today = datetime.fromisoformat(day)
-                oldest = (today - timedelta(days=29)).date().isoformat()
-                expired = (today - timedelta(days=30)).date().isoformat()
+                oldest = (today - timedelta(days=ui.WINDOW_DAYS - 1)).date().isoformat()
+                expired = (today - timedelta(days=ui.WINDOW_DAYS)).date().isoformat()
                 future = (today + timedelta(days=1)).date().isoformat()
                 self.assertTrue(ui._in_window(day))
                 self.assertTrue(ui._in_window(oldest))

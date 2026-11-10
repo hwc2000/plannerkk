@@ -298,7 +298,14 @@ class LearningRuleTests(unittest.TestCase):
         records = ([{"plannedStart": "2030-01-06T10:00", "result": "partial"}] * 8
                    + [{"plannedStart": "2030-01-06T19:00", "result": "completed"}] * 8)
         odds = period_odds(records, "2030-01-07")
-        self.assertEqual(odds, {"morning": 0.1, "evening": 0.9})
+        # Each record a day old weighs 0.5 ** (1/14) (recency-v1): (finished + 1) / (planned + 2) in weights.
+        w = 8 * 0.5 ** (1 / 14)
+        self.assertEqual(set(odds), {"morning", "evening"})
+        self.assertAlmostEqual(odds["morning"], 1 / (w + 2))
+        self.assertAlmostEqual(odds["evening"], (w + 1) / (w + 2))
+        # The same records a month earlier weigh less, so the odds sit closer to even.
+        older = [dict(r, plannedStart=r["plannedStart"].replace("2030-01-06", "2029-12-08")) for r in records]
+        self.assertGreater(period_odds(older, "2030-01-07")["morning"], odds["morning"])
         kept = pick_windows_for_cap(windows, 120, odds, "user-1")
         self.assertEqual(kept, pick_windows_for_cap(windows, 120, odds, "user-1"))  # the same request, the same week
         evenings = sum(begin.hour == 19 for begin, _ in kept)

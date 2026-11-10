@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
+from .. import recency
 from ..execution_profile import FOCUS_PERIODS, generate_profile
 from ..execution_scheduler import BREAK_MINUTES, MIN_PIECE_MINUTES, min_task_minutes, schedule
 from .state import PREFERENCE_STRATEGY
@@ -165,7 +166,7 @@ def leave_free(windows: Sequence[Window], block: int, daily_cap: int | None = No
     return kept
 
 
-ODDS_DAYS = 28  # records this recent decide how likely each part of the day is picked
+ODDS_DAYS = recency.HORIZON_DAYS  # records this recent decide how likely each part of the day is picked (was 28)
 
 
 def period_odds(records: Sequence[Mapping[str, Any]], today: str) -> dict[str, float]:
@@ -173,7 +174,9 @@ def period_odds(records: Sequence[Mapping[str, Any]], today: str) -> dict[str, f
 
     (finished + 1) / (planned + 2) of the recent tasks planned in it: with no records every
     part is even, and a part that keeps going badly is still picked now and then, so it is
-    tried again and the odds can change.
+    tried again and the odds can change.  Each task counts by how recent it is (recency.py:
+    half as much every 14 days before ``today``), so a part of the day that got better lately
+    is picked more soon.
     """
     cutoff = (datetime.fromisoformat(today) - timedelta(days=ODDS_DAYS)).date().isoformat()
     counts: dict[str, list[int]] = {}
@@ -183,9 +186,10 @@ def period_odds(records: Sequence[Mapping[str, Any]], today: str) -> dict[str, f
             continue
         period = next((name for name, (low, high) in PERIODS.items() if low <= int(start[11:13]) < high), None)
         if period:
-            item = counts.setdefault(period, [0, 0])
-            item[0] += 1
-            item[1] += r.get("result") == "completed"
+            w = recency.weight(start[:10], now=datetime.fromisoformat(today))
+            item = counts.setdefault(period, [0.0, 0.0])
+            item[0] += w
+            item[1] += w * (r.get("result") == "completed")
     return {period: (finished + 1) / (planned + 2) for period, (planned, finished) in counts.items()}
 
 

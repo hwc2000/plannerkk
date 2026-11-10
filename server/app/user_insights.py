@@ -8,6 +8,8 @@ apart from the injectable clock.
 """
 from datetime import datetime, timedelta, timezone
 
+from . import recency
+
 ASK_PER_CHECK_IN = 2
 ASK_AGAIN_AFTER = timedelta(days=3)  # a skipped question waits before it comes back
 HISTORY = 5
@@ -116,7 +118,8 @@ def known_insights(state):
     return result
 
 
-WINDOW_DAYS = 30
+# Check-ins are read for 90 days, recent days weighing more (recency.py); was 30 days, all equal.
+WINDOW_DAYS = recency.HORIZON_DAYS
 MAX_SESSIONS = 100
 MIN_OBSERVATIONS = 3
 MIN_DAYS = 3
@@ -226,18 +229,22 @@ def _pattern(field, value, sessions):
     days = {s["date"] for s in known}
     good = sum(s["focus"] == "good" for s in known)
     ratio = good / len(known) if known else None
+    # The status reads the weighted share: a day two weeks ago counts half of today (recency.py).
+    # The plain share stays alongside so the AI and screen can see both.
+    weighted = recency.weighted_share([(s["focus"] == "good", recency.weight(s["date"], _now())) for s in known])
     # Compare recent independent DAYS, so several tasks/check-ins cannot hide reversal.
     recent_days = sorted(days)[-5:]
     recent = [s for s in known if s["date"] in recent_days]
     recent_ratio = sum(s["focus"] == "good" for s in recent) / len(recent) if recent else None
     enough = len(known) >= MIN_OBSERVATIONS and len(days) >= MIN_DAYS
     status = "insufficient" if not enough else (
-        "supported" if ratio is not None and recent_ratio is not None
-        and ratio >= GOOD_RATIO and recent_ratio >= GOOD_RATIO else "mixed")
+        "supported" if weighted is not None and recent_ratio is not None
+        and weighted >= GOOD_RATIO and recent_ratio >= GOOD_RATIO else "mixed")
     return {"field": field, "value": value, "status": status, "samples": len(samples),
             "distinctDays": len({s["date"] for s in samples if s["date"]}),
             "knownFocus": len(known), "knownFocusDays": len(days), "unknownFocus": len(samples) - len(known),
-            "goodFocus": good, "goodFocusRatio": ratio, "recentGoodFocusRatio": recent_ratio,
+            "goodFocus": good, "goodFocusRatio": ratio, "weightedGoodFocusRatio": weighted,
+            "recentGoodFocusRatio": recent_ratio, "halfLifeDays": recency.HALF_LIFE_DAYS,
             "recentKnownFocus": len(recent), "windowDays": WINDOW_DAYS,
             "observationUnit": "calendar_day", "calendarTimezone": "Asia/Seoul",
             "projectIds": sorted({s["projectId"] for s in raw if s.get("projectId")})}
@@ -261,6 +268,7 @@ def insights_for_ai(state, project_id=None):
             "recommendations": recommendations, "selectionPolicy": SELECTION_POLICY,
             "evidencePolicy": {"minObservations": MIN_OBSERVATIONS, "minDistinctDays": MIN_DAYS,
                                "minGoodFocusRatio": GOOD_RATIO, "windowDays": WINDOW_DAYS,
+                               "recency": recency.policy(), "statusUses": "weightedGoodFocusRatio",
                                "maxSessions": MAX_SESSIONS, "recentDays": 5,
                                "maxSessionsAppliesTo": "session_summary_only",
                                "observationUnit": "calendar_day", "calendarTimezone": "Asia/Seoul",
@@ -268,7 +276,8 @@ def insights_for_ai(state, project_id=None):
             "interpretationPolicy": "Declarations are reported statements, not established habits. "
                                     "Compare dated evidence, not personality; associations are not causal. "
                                     "Unknown focus is not failure; undated history is unverified. "
-                                    "Patterns are provisional and may decline or expire. Global aggregation "
+                                    "Patterns are provisional and may decline or expire; recent days weigh more "
+                                    "(weight halves every 14 days). Global aggregation "
                                     "is descriptive only, not an automatic UserProfile update."}
 
 def reply_tone(state):
