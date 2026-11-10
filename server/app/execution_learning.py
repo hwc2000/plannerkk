@@ -15,6 +15,11 @@ Rules run after every record (``propose_all``):
   while the rest goes well.
 - focus-time-v1: the part of the day the user finishes work best.
 
+How much each record counts (recency-v1, recency.py): *when* to propose still needs
+recent evidence (the last few records, within 14 days), but *how much* (a median of
+minutes, a share of finished tasks) is read from up to 90 days of records, each weighing
+half as much every 14 days.  Counts of evidence stay real counts.
+
 Misses that the day's load explains (the user had already worked about as much as
 they manage in a day) do not count against a part of the day.
 
@@ -28,6 +33,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from . import recency
 from .execution_profile import FOCUS_PERIODS, object_schema
 from .execution_store import ConflictError
 from .project_profile import effective_preferences
@@ -37,7 +43,8 @@ REASON_CODES = ('time_shortage', 'task_too_large', 'fatigue', 'interruption',
 
 # long-task-v2 rule parameters (system rule; every size comes from the user's own values and records).
 RULE_VERSION = 'long-task-v2'
-WINDOW_DAYS = 14
+WINDOW_DAYS = 14                     # recent evidence that decides *when* to propose
+HISTORY_DAYS = recency.HORIZON_DAYS  # weighted history that decides *how much*
 EVIDENCE_COUNT = 3
 # 'underestimated' (it took longer than planned) is not a reason to shorten: that calls for more time (pace-v1).
 SIZE_REASONS = ('time_shortage', 'task_too_large')
@@ -71,6 +78,21 @@ def floor_step(minutes):
 def median(values):
     values = sorted(values)
     return values[len(values) // 2] if values else None
+
+
+def record_weight(record):
+    """How much a record counts now: halves every 14 days after the day it was told (recency.py)."""
+    return recency.weight(record.get('createdAt'))
+
+
+def is_recent(record, days=WINDOW_DAYS):
+    return recency.in_horizon(record.get('createdAt'), horizon=days)
+
+
+def weighted_done(records, explained=()):
+    """(weight of finished, weight of all) of the records not explained away."""
+    pairs = [(r['result'] == 'completed', record_weight(r)) for r in records if r['id'] not in explained]
+    return sum(w for done, w in pairs if done), sum(w for _, w in pairs)
 
 
 def worked_minutes(record, unknown=None):
@@ -134,13 +156,16 @@ def ran_out_days(records, unknown=None):
         worked = [worked_minutes(r, unknown) for r in items]
         if None in worked:
             continue
-        out.append({'date': day, 'worked': sum(worked), 'planned': sum(r['plannedMinutes'] for r in items)})
+        out.append({'date': day, 'worked': sum(worked), 'planned': sum(r['plannedMinutes'] for r in items),
+                    # a day counts as recent as the last thing told about it
+                    'weight': max(record_weight(r) for r in items),
+                    'recent': any(is_recent(r) for r in items)})
     return out
 
 
 def load_explained(records):
     """Ids of misses that come after the user had worked about a day's worth (their own median)."""
-    capacity = median([d['worked'] for d in ran_out_days(records, unknown=0)])
+    capacity = recency.weighted_median([(d['worked'], d['weight']) for d in ran_out_days(records, unknown=0)])
     if not capacity:
         return set()
     explained = set()
@@ -305,9 +330,13 @@ REVERT_MIN_RECORDS = 4
 REVERT_BELOW = 0.6        # finished share after growing that means the longer block did not work
 
 
-def _scope_records(state, profile, project_id, project_profile_id, block, share):
-    """Records of one scope made under its current settings, of tasks at least ``share`` of the block."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
+def _scope_records(state, profile, project_id, project_profile_id, block, share, days=WINDOW_DAYS):
+    """Records of one scope made under its current settings, of tasks at least ``share`` of the block.
+
+    ``days`` is how far back: the recent window for rules that look at the last few records,
+    the weighted history (``HISTORY_DAYS``) for rules that read a share or a median.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     return [r for r in state['executionRecords']
             if r.get('profileId') == profile['id'] and r.get('projectId') == project_id
             and r.get('projectProfileId') == project_profile_id
@@ -392,11 +421,13 @@ def propose_revert(state, project_id=None):
     if not grown or _pending(state, profile, project_id, 'blockMinutes'):
         return
     before = grown[-1]['proposedChanges']['blockMinutes']['from']
-    records = _scope_records(state, profile, project_id, (project_profile or {}).get('id'), block, FULL_BLOCK_SHARE)
+    records = _scope_records(state, profile, project_id, (project_profile or {}).get('id'), block, FULL_BLOCK_SHARE,
+                             HISTORY_DAYS)
     if len(records) < REVERT_MIN_RECORDS:
         return
     done = sum(r['result'] == 'completed' for r in records)
-    if done >= REVERT_BELOW * len(records):
+    weighted, total = weighted_done(records)
+    if weighted >= REVERT_BELOW * total:  # the finished share, recent records weighing more
         return
     scope_text = '이 프로젝트에서 ' if project_id else ''
     _propose(state, profile, project_profile, project_id, {'blockMinutes': {'from': block, 'to': before}},
@@ -406,14 +437,13 @@ def propose_revert(state, project_id=None):
 
 # daily-cap-v2: a daily plan the user can get through (the whole day, every project).
 CAP_RULE_VERSION = 'daily-cap-v2'
-CAP_MIN_DAYS = 3
-CAP_RECENT_DAYS = 5
+CAP_MIN_DAYS = 3          # ran-out days within the recent window before proposing
 CAP_SHARE = 0.85          # propose only when the user manages clearly less than what was planned
 
 
-def day_records(state, profile):
-    """Every record of the current profile from the last window, any project: what the person's days held."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
+def day_records(state, profile, days=HISTORY_DAYS):
+    """Every record of the current profile from the weighted history, any project: what the person's days held."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     return [r for r in state['executionRecords']
             if r.get('profileId') == profile['id'] and datetime.fromisoformat(r['createdAt']) >= cutoff]
 
@@ -431,10 +461,12 @@ def propose_daily_cap(state, project_id=None):
     if _pending(state, profile, None, 'dailyPlannedMinutes'):
         return
     records = day_records(state, profile)
-    days = ran_out_days(records)[-CAP_RECENT_DAYS:]
-    if len(days) < CAP_MIN_DAYS:
+    days = ran_out_days(records)
+    # When: running out keeps happening lately.  How much: every such day, recent ones weighing more.
+    if sum(d['recent'] for d in days) < CAP_MIN_DAYS:
         return
-    worked, planned = median([d['worked'] for d in days]), median([d['planned'] for d in days])
+    worked = recency.weighted_median([(d['worked'], d['weight']) for d in days])
+    planned = recency.weighted_median([(d['planned'], d['weight']) for d in days])
     if worked >= planned * CAP_SHARE:
         return
     current = prefs.get('dailyPlannedMinutes')
@@ -446,7 +478,7 @@ def propose_daily_cap(state, project_id=None):
     _propose(state, profile, None, None, {'dailyPlannedMinutes': {'from': current, 'to': to}},
              f'최근 {len(days)}일은 {"모든 프로젝트를 합쳐 " if several else ""}하루 {planned}분쯤 계획했는데 '
              f'{worked}분쯤 하고 지치거나 시간이 모자랐습니다.',
-             f'하루에 {to}분까지만 계획하자고 제안합니다.', ids, CAP_RULE_VERSION)
+             f'최근 날일수록 크게 반영해 하루에 {to}분까지만 계획하자고 제안합니다.', ids, CAP_RULE_VERSION)
 
 
 # pace-v1: how much longer than planned finished work takes.
@@ -472,12 +504,14 @@ def propose_pace(state, project_id=None):
     profile, project_profile, prefs = scope
     if _pending(state, profile, project_id, 'pacePercent'):
         return
-    records = [r for r in _scope_records(state, profile, project_id, (project_profile or {}).get('id'), 0, 0)
+    records = [r for r in _scope_records(state, profile, project_id, (project_profile or {}).get('id'), 0, 0, HISTORY_DAYS)
                if type(r.get('actualMinutes')) is int and r['actualMinutes'] > 0
                and (r['result'] == 'completed' or (r.get('reasonCode') == 'underestimated' and r['actualMinutes'] >= r['plannedMinutes']))]
     if len(records) < PACE_MIN_RECORDS:
         return
-    ratio = median([r['actualMinutes'] / r['plannedMinutes'] for r in records])
+    ratio = recency.weighted_median([(r['actualMinutes'] / r['plannedMinutes'], record_weight(r)) for r in records])
+    if ratio is None:
+        return
     current = prefs.get('pacePercent') or 100
     to = min(MAX_PACE_PERCENT, int(round(ratio * 100 / STEP_MINUTES)) * STEP_MINUTES)
     latest = records[-PACE_MIN_RECORDS:]
@@ -497,7 +531,8 @@ def propose_pace(state, project_id=None):
                   '그래도 끝나지 않으면 한 단계 더 조정합니다.')
     else:
         reason = f'{scope_text}작업 {len(records)}건이 계획한 시간의 {ratio:.1f}배쯤 걸렸습니다.'
-        sizing = f'작업 하나를 그만큼 짧게 잡고, 계획할 때 시간의 {round(10000 / to)}%만 작업으로 채우고 나머지는 비워 두자고 제안합니다.'
+        sizing = (f'최근 작업일수록 크게 반영했습니다. 작업 하나를 그만큼 짧게 잡고, '
+                  f'계획할 때 시간의 {round(10000 / to)}%만 작업으로 채우고 나머지는 비워 두자고 제안합니다.')
     _propose(state, profile, project_profile, project_id, {'pacePercent': {'from': prefs.get('pacePercent'), 'to': to}},
              reason, sizing, [r['id'] for r in records], PACE_RULE_VERSION)
 
@@ -518,18 +553,20 @@ def propose_period_minutes(state, project_id=None):
     if _pending(state, profile, project_id, 'periodMinutes'):
         return
     block = prefs['blockMinutes']
-    records = _scope_records(state, profile, project_id, (project_profile or {}).get('id'), block, FULL_BLOCK_SHARE)
+    records = _scope_records(state, profile, project_id, (project_profile or {}).get('id'), block, FULL_BLOCK_SHARE,
+                             HISTORY_DAYS)
     explained = load_explained(records)
     current = dict(prefs.get('periodMinutes') or {})
     for period in FOCUS_PERIODS:
         mine = [r for r in records if r.get('plannedStart') and period_of(r['plannedStart']) == period]
-        latest = mine[-PERIOD_EVIDENCE:]
+        latest = [r for r in mine if is_recent(r)][-PERIOD_EVIDENCE:]  # when: the latest ones, lately
         if len(latest) < PERIOD_EVIDENCE or any(r['result'] != 'partial' or r.get('reasonCode') not in ('fatigue', 'task_too_large')
                                                  or r['id'] in explained or type(r.get('actualMinutes')) is not int
                                                  for r in latest):
             continue
         others = [r for r in records if r not in mine and r['id'] not in explained]
-        if len(others) < PERIOD_MIN_OTHERS or sum(r['result'] == 'completed' for r in others) < PERIOD_OTHERS_DONE * len(others):
+        done, total = weighted_done(others)  # the rest of the day, recent records weighing more
+        if len(others) < PERIOD_MIN_OTHERS or done < PERIOD_OTHERS_DONE * total:
             continue
         to = max(STEP_MINUTES, floor_step(median([r['actualMinutes'] for r in latest])))
         if to >= min(current.get(period, block), block):
@@ -634,7 +671,7 @@ def apply_ai_size(state, proposal_id, to, reason):
 
 # focus-time-v1 rule parameters (system rule; the period comes from the user's own records).
 FOCUS_RULE_VERSION = 'focus-time-v1'
-FOCUS_WINDOW_DAYS = 28
+FOCUS_WINDOW_DAYS = HISTORY_DAYS  # was 28 days, all equal; now 90 days, recent ones weighing more
 FOCUS_MIN_PER_PERIOD = 6  # a part of the day needs this many planned tasks to be compared
 FOCUS_MIN_LEAD = 0.25     # its share of finished tasks must lead every other part by this much
 FOCUS_SAME_LENGTH = 0.8   # only tasks at least this share of the current block are compared
@@ -667,6 +704,16 @@ def focus_evidence(records):
             item['planned'] += 1
             item['finished'] += record['result'] == 'completed'
     return periods
+
+
+def focus_shares(records):
+    """Share of finished tasks per part of the day, recent records weighing more (recency.py)."""
+    pairs = {}
+    for record in records:
+        period = period_of(record['plannedStart'])
+        if period:
+            pairs.setdefault(period, []).append((record['result'] == 'completed', record_weight(record)))
+    return {period: share for period, items in pairs.items() if (share := recency.weighted_share(items)) is not None}
 
 
 def propose_focus_time(state):
@@ -709,7 +756,10 @@ def propose_focus_time(state):
     comparable = {k: v for k, v in periods.items() if v['planned'] >= FOCUS_MIN_PER_PERIOD}
     if len(comparable) < 2:
         return
-    share = {k: v['finished'] / v['planned'] for k, v in comparable.items()}
+    weighted = focus_shares(records)
+    share = {k: weighted[k] for k in comparable if k in weighted}
+    if len(share) < 2:
+        return
     best = max(share, key=share.get)
     if any(share[best] - value < FOCUS_MIN_LEAD for key, value in share.items() if key != best):
         return
@@ -719,7 +769,8 @@ def propose_focus_time(state):
         counts = {k: v for k, v in focus_evidence(part).items() if k in comparable}
         if len(counts) < len(comparable) or any(v['planned'] < 2 for v in counts.values()):
             return
-        shares = {k: v['finished'] / v['planned'] for k, v in counts.items()}
+        part_shares = focus_shares(part)
+        shares = {k: part_shares.get(k, 0.0) for k in counts}
         if any(shares[best] - value < FOCUS_MIN_LEAD / 2 for key, value in shares.items() if key != best):
             return
     current = profile['planningPreferences'].get('focusTime', 'unknown')
@@ -731,8 +782,9 @@ def propose_focus_time(state):
         'id': str(uuid4()), 'profileId': profile['id'], 'projectId': None, 'projectProfileId': None,
         'proposedChanges': {'focusTime': {'from': current, 'to': best}},
         'reason': f'최근 기록에서 {summary}을 끝냈습니다.',
-        'sizing': f'끝낸 비율이 가장 높은 {PERIOD_LABELS[best]}을 집중이 잘 되는 시간대로 제안합니다. 승인하면 그 시간대에 먼저 배치합니다.',
+        'sizing': f'최근 기록일수록 크게 반영해 끝낸 비율이 가장 높은 {PERIOD_LABELS[best]}을 집중이 잘 되는 시간대로 제안합니다. 승인하면 그 시간대에 먼저 배치합니다.',
         'sizedBy': 'evidence', 'focusStats': comparable,
+        'focusWeightedShares': {k: round(v, 3) for k, v in share.items()},
         'evidenceRecordIds': [r['id'] for r in records if period_of(r['plannedStart']) in comparable],
         'ruleVersion': FOCUS_RULE_VERSION,
         'status': 'pending', 'createdAt': datetime.now(timezone.utc).isoformat(), 'decidedAt': None,

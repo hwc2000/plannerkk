@@ -240,7 +240,7 @@ export type CheckInRecord = {
 }
 /** A field the planner learns about the user, and what is known in it. */
 export type InsightSlot = { key: string; label: string; value: string | null; history: string[]; updatedAt: string | null; source?: string; kind?: string; status?: string; confidence?: number | string; evidenceRecordIds?: string[]; evidence?: { confirmations?: number; distinctDays?: number; windowDays?: number } }
-export type InsightPattern = { field: string; value: string; status: string; samples: number; distinctDays: number; knownFocus?: number; unknownFocus?: number; windowDays?: number; projectIds?: string[] }
+export type InsightPattern = { field: string; value: string; status: string; samples: number; distinctDays: number; knownFocus?: number; unknownFocus?: number; windowDays?: number; halfLifeDays?: number; goodFocusRatio?: number | null; weightedGoodFocusRatio?: number | null; projectIds?: string[] }
 export type InsightQuestion = { key: string; label: string; question: string }
 /** How a project's plan felt; only that project uses it, and it goes when the project ends. */
 export type ProjectFeedback = { id: string; load?: 'too_much' | 'right' | 'too_little'; timeFit?: 'too_short' | 'right' | 'too_long' | 'unknown'; note: string; date?: string; planId: string | null; createdAt: string }

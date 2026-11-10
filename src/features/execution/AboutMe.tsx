@@ -24,7 +24,7 @@ export function AboutMe({ revision }: { revision: number }) {
     </li>)}</ul>
     {patterns.length > 0 && <div aria-label="관찰 후보의 근거"><h3>실행에서 관찰한 후보 패턴</h3><ul>{patterns.map(p => <li key={`${p.field}-${p.value}`}>
       <strong>{p.value}</strong> · {p.status === 'supported' ? '최근 관찰 근거 있음 · 가설' : p.status === 'mixed' ? '관찰 결과가 엇갈림' : '근거 부족'}
-      <small> · 체크인 {p.samples}회 · {p.distinctDays}일{p.windowDays ? ` · 최근 ${p.windowDays}일` : ''}{p.unknownFocus != null ? ` · 집중 미응답 ${p.unknownFocus}회` : ''}</small>
+      <small> · 체크인 {p.samples}회 · {p.distinctDays}일{p.windowDays ? ` · 최근 ${p.windowDays}일` : ''}{p.halfLifeDays ? ` · 최근 기록일수록 크게 반영(${p.halfLifeDays}일마다 절반)` : ''}{p.unknownFocus != null ? ` · 집중 미응답 ${p.unknownFocus}회` : ''}</small>
     </li>)}</ul><p className="execution-help">연관성이지 원인은 아니에요. 다른 프로젝트에 자동 적용하거나 기본 프로필을 바꾸지 않아요.</p></div>}
   </section>
 }
