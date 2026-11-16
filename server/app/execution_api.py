@@ -37,6 +37,7 @@ from .availability import (
 )
 from .planner import ProjectContext, ExistingTask
 from .plan_merge import active_plan, entry_owner, kept_entries, merge_into, thread_key
+from .project_attention import LateItem, project_attention, save_late_records
 
 class Mutation(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -388,6 +389,17 @@ class BlockedTimesRequest(Mutation):
     events: list[BusyEvent] = Field(default_factory=list, max_length=500)
 
 
+class AttentionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # The projects the user has not paused; a paused project is not asked about.
+    projects: list[ProjectContext] = Field(default_factory=list, max_length=50)
+
+
+class LateRecordsRequest(Mutation):
+    planId: str
+    items: list[LateItem] = Field(min_length=1, max_length=100)
+
+
 class CloseProjectRequest(Mutation):
     project: ProjectContext
     outcome: Literal["completed", "abandoned"]
@@ -737,6 +749,16 @@ def execution_router(store=None, llm=None):
         before = {p["id"] for p in store.read()["profileUpdateProposals"]}
         state = service.record_execution(request.revision, request.model_dump(exclude={"revision", "consent"}))
         return envelope(refine_new_proposals(store, llm, state, before, consent=request.consent))
+
+    @router.post("/attention")
+    def attention(request: AttentionRequest):
+        """Projects the home screen asks about: deadline passed, or the last tasks never checked in."""
+        return {"items": project_attention(store.read(), request.projects)}
+
+    @router.post("/records/late")
+    def late_records(request: LateRecordsRequest):
+        # Recalled results keep the plan honest but never teach the profile (project_attention.py).
+        return change(request.revision, lambda state: save_late_records(state, request.planId, request.items))
 
     @router.post("/proposals/{proposal_id}/{decision}")
     def decide_proposal(proposal_id: str, decision: Literal["approve", "reject"], request: Mutation):

@@ -30,6 +30,7 @@ from uuid import uuid4
 
 from .execution_profile import FOCUS_PERIODS, object_schema
 from .execution_store import ConflictError
+from .project_attention import learnable
 from .project_profile import effective_preferences
 
 REASON_CODES = ('time_shortage', 'task_too_large', 'fatigue', 'interruption',
@@ -309,7 +310,7 @@ def _scope_records(state, profile, project_id, project_profile_id, block, share)
     """Records of one scope made under its current settings, of tasks at least ``share`` of the block."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
     return [r for r in state['executionRecords']
-            if r.get('profileId') == profile['id'] and r.get('projectId') == project_id
+            if learnable(r) and r.get('profileId') == profile['id'] and r.get('projectId') == project_id
             and r.get('projectProfileId') == project_profile_id
             and r['plannedMinutes'] >= block * share
             and datetime.fromisoformat(r['createdAt']) >= cutoff]
@@ -415,7 +416,7 @@ def day_records(state, profile):
     """Every record of the current profile from the last window, any project: what the person's days held."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
     return [r for r in state['executionRecords']
-            if r.get('profileId') == profile['id'] and datetime.fromisoformat(r['createdAt']) >= cutoff]
+            if learnable(r) and r.get('profileId') == profile['id'] and datetime.fromisoformat(r['createdAt']) >= cutoff]
 
 
 def propose_daily_cap(state, project_id=None):
@@ -689,7 +690,7 @@ def propose_focus_time(state):
                 default=datetime.now(timezone.utc) - timedelta(days=FOCUS_WINDOW_DAYS))
     since = max(since, datetime.now(timezone.utc) - timedelta(days=FOCUS_WINDOW_DAYS))
     records = [r for r in state['executionRecords']
-               if r.get('profileId') == profile['id'] and r.get('plannedStart') and period_of(r['plannedStart'])
+               if learnable(r) and r.get('profileId') == profile['id'] and r.get('plannedStart') and period_of(r['plannedStart'])
                and datetime.fromisoformat(r['createdAt']) > since]
     # A task missed after a day's worth of work says nothing about the hour it was in.
     explained = set()

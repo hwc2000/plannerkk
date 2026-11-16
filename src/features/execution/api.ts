@@ -1,4 +1,4 @@
-import type { AvailabilitySlot, CalendarEvent, ClosePreview, ExecutionPlan, ExecutionState, InsightPattern, InsightQuestion, InsightSlot, Memory, Milestone, ProfileUpdateProposal, Project } from '../../shared/types'
+import type { AttentionItem, AvailabilitySlot, CalendarEvent, ClosePreview, ExecutionPlan, ExecutionState, InsightPattern, InsightQuestion, InsightSlot, Memory, Milestone, ProfileUpdateProposal, Project } from '../../shared/types'
 
 type ReplanInput = {
   goal: string
@@ -157,6 +157,18 @@ export function saveProjectHours(state: ExecutionState, projectId: string, slots
     .filter(([, item]) => item.source === 'declared').map(([key, item]) => [key, item.value]))
   return executionApi(`/projects/${encodeURIComponent(projectId)}/profile`,
     { revision: state.revision, overrides: { ...declared, timeSlots: slots } }, 'PUT')
+}
+
+/** Projects to ask about on the home screen. Paused and ended projects are not sent, so they are never asked about. */
+export async function fetchAttention(projects: Project[], closed: Record<string, unknown> | undefined): Promise<AttentionItem[]> {
+  const open = projects.filter(p => p.status !== 'paused' && !closed?.[p.id]).map(p => projectContext(p)!)
+  if (!open.length) return []
+  const response = await fetch('/api/execution/attention', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projects: open }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '확인할 프로젝트를 불러오지 못했어요.')
+  return data.items ?? []
 }
 
 /** The other open projects of the week: a plan asked for in one project's chat plans them too when they have no tasks yet. */
