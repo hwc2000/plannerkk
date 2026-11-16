@@ -76,6 +76,18 @@ npm run dev
 
 브라우저에서 `http://localhost:5173`을 엽니다. Vite가 `/api` 요청을 FastAPI의 `8000` 포트로 프록시합니다.
 
+### 시연용 데모 계정 (OpenAI 크레딧 없이)
+
+```bash
+.venv/bin/python scripts/seed_demo.py                          # data/demo.sqlite3를 새로 만듦
+REPLAN_DB_PATH=data/demo.sqlite3 .venv/bin/python run_local.py  # 로그인: demo@replan.kr / replan2026
+```
+
+가짜 시계로 지난 일주일(프로젝트 3개, 매일 체크인)을 실제 API로 진행해, 학습 규칙이 만든 제안(승인 1건·대기 1건)과
+승인한 값으로 짠 이번 주 계획이 들어간다. 작업 제목만 스크립트가 대신 쓰고 배치·검증·학습·제안은 실제 코드다.
+날짜는 실행한 날 기준이라 시연 당일 다시 실행한다. 크레딧 없이도 보기·완료 체크·버튼만으로 체크인은 되고,
+체크인에 글 덧붙이기·새 계획·승인 후 재계획은 OpenAI가 필요하다.
+
 ## AI 계획 사용법
 
 1. `실행 프로필·주간 계획`에서 설문에 답하고 프로필을 확정합니다.
