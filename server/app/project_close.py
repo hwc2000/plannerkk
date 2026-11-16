@@ -21,6 +21,7 @@ from uuid import uuid4
 from .adaptive.local import close_draft, drafts_for_plan
 from .execution_service import resolve_plan_draft
 from .plan_merge import entry_owner
+from .project_attention import learnable
 from .project_profile import load_project_profile, slots_text
 from .user_profile import apply_profile_proposal
 
@@ -55,7 +56,7 @@ def carry_over(state, user_id, project_id):
     profile = state["profile"]
     prefs = profile["planningPreferences"]
     records = [r for r in state.get("executionRecords") or []
-               if r.get("projectId") == project_id and r.get("profileId") == profile["id"]]
+               if learnable(r) and r.get("projectId") == project_id and r.get("profileId") == profile["id"]]
     overrides = ((load_project_profile(state, user_id, project_id) or {}).get("overrides") or {})
     changes, carried, kept, evidence = {}, [], [], []
 

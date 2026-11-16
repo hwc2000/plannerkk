@@ -301,3 +301,13 @@ export type WorkspaceData = {
   events: CalendarEvent[]
   memories: Memory[]
 }
+
+/** A project the home screen asks about: its deadline passed, or its last planned tasks never got a check-in. */
+export type AttentionTask = { taskId: string; title: string; start: string; minutes: number }
+export type AttentionItem = {
+  projectId: string; title: string; dueDate: string; kind: 'overdue' | 'idle'
+  /** Planned tasks in a row, up to the latest past one, with no check-in. */
+  silentInRow: number
+  /** Past tasks with no check-in, which the user may record afterwards. */
+  tasks: AttentionTask[]
+}

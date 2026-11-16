@@ -274,3 +274,12 @@
 .home-project span.meter { display: block; }
 .checkin-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
 .chat-checkin .checkin-footer .primary-button { background: var(--thread-color); }
+
+/* Projects the home screen asks about (deadline passed, check-ins stopped). */
+.home-attention { display: grid; gap: 12px; }
+.home-attention h2 { margin: 0; }
+.attention-item { display: grid; gap: 6px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+.attention-item p { margin: 0; }
+.attention-late { display: grid; gap: 8px; }
+.attention-late .checkin-choices button.chosen { border-color: var(--violet); background: var(--violet); color: white; }
+.home-project-paused { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }

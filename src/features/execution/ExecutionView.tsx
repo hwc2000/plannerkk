@@ -11,6 +11,7 @@ import { AboutMe } from './AboutMe'
 import { AvailabilityGrid, blockedLabel } from './AvailabilityGrid'
 import { PlanReasons } from './PlanReasons'
 import { ProjectSettings } from './ProjectSettings'
+import { ProjectAttention } from './ProjectAttention'
 import { answerLabels, focusTimeText, formatAnswer, notAsked } from './profileLabels'
 import { approveProposalAndReplan, executionApi, existingTasksFor, planIsStale, planProjectIds, projectContext, replansCurrentPlan, staleProjectIds, weekProjects } from './api'
 import { projectColor } from '../../shared/projectColors'
@@ -303,6 +304,9 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
     const week = state.plan && state.plan.endDate >= dateKey(new Date()) ? state.plan : null
     return <section className="execution-workspace">
       {status}
+      {state.profile && <ProjectAttention state={state} projects={projects} busy={busy} run={run} onOpenProject={onOpenProject}
+        onEditProject={onEditProject} onCloseProject={closeProject}
+        onPause={onProjectStatus && (id => onProjectStatus(id, 'paused'))}/>}
       {state.profile && <section className="execution-card home-projects" aria-label="진행 중인 프로젝트"><h2>진행 중인 프로젝트</h2>
         {ongoing.length ? <div className="home-project-list">{ongoing.map(p => {
           const tasks = week?.entries.filter(e => e.kind === 'task' && !e.starter && (e.projectId ?? week.projectId) === p.id) ?? []
@@ -316,7 +320,10 @@ export function ExecutionView({ state, onChange, projects, milestones, events, m
                   <small>이번 주 작업 <strong>{tasks.filter(t => t.completed).length}/{tasks.length}개</strong> 완료</small>
                 </> : <small>아직 계획 없음 · 눌러서 대화로 계획하기</small>}</span>
             </button>
-            {checkIn && <button type="button" className="primary-button checkin-start" onClick={() => onOpenProject?.(p.id, true)}>{checkIn}</button>}
+            {p.status === 'paused'
+              ? <p className="home-project-paused"><small>잠시 쉬는 중 · 함께 계획하지 않고 묻지도 않아요</small>
+                {onProjectStatus && <button type="button" className="secondary-button" onClick={() => onProjectStatus(p.id, 'active')}>다시 시작</button>}</p>
+              : checkIn && <button type="button" className="primary-button checkin-start" onClick={() => onOpenProject?.(p.id, true)}>{checkIn}</button>}
           </div>
         })}</div> : <p>아직 프로젝트가 없어요. <button type="button" className="secondary-button" onClick={onCreateProject}>+ 새 프로젝트</button></p>}
       </section>}
